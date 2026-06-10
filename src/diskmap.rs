@@ -100,7 +100,9 @@ impl DiskMap<'_> {
     /// Brick label; the font size is fitted per brick rather than globally
     /// (fixes a bug of the original, §6.5.7). Returns the font size used.
     fn draw_label(&self, frame: &mut Frame, label: &str, rect: Rectangle) -> f32 {
-        let fit = rect.width / (CHAR_WIDTH * label.len() as f32);
+        // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
+        let char_count = label.chars().count().max(1);
+        let fit = rect.width / (CHAR_WIDTH * char_count as f32);
         let font_size = fit.clamp(MIN_FONT, MAX_FONT);
         if rect.height < font_size + 8.0 || rect.width < 2.0 * font_size {
             return 0.0;
