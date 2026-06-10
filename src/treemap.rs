@@ -1,4 +1,4 @@
-//! Row-based treemap layout (a port of the original's BrickDrawer, §3.2 ANALYSIS.md).
+//! Row-based treemap layout (a port of the original's BrickDrawer).
 //! A pure function: layout is separated from drawing.
 
 use iced::Rectangle;

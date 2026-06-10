@@ -79,6 +79,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 current: app.path_input.clone(),
                 files: 0,
             };
+            app.tree = None;
+            app.current = NodeId(0);
+            app.nav_stack.clear();
+            app.active = None;
+            app.cache.clear();
             Task::run(
                 scanner::start_scan(PathBuf::from(&app.path_input), app.cancel.clone()),
                 Message::Scan,
@@ -95,15 +100,23 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                         app.scan = ScanState::Running { current, files };
                     }
                 }
+                // A late snapshot arriving after Finished is ignored.
+                ScanEvent::Snapshot(tree) => {
+                    if let ScanState::Running { .. } = app.scan {
+                        app.tree = Some(tree);
+                        app.cache.clear();
+                    }
+                }
                 ScanEvent::Finished(tree) => {
-                    app.current = tree.root;
+                    // NodeIds are stable across snapshots: keep any navigation
+                    // made during the scan.
+                    if app.tree.is_none() {
+                        app.current = tree.root;
+                    }
                     app.tree = Some(tree);
-                    app.nav_stack.clear();
-                    app.active = None;
                     app.scan = ScanState::Done;
                     app.cache.clear();
                 }
-                ScanEvent::Canceled => app.scan = ScanState::Idle,
             }
             Task::none()
         }
@@ -122,7 +135,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 }
             } else {
                 // A file is opened with an external application.
-                let _ = open::that_detached(&node.path);
+                let _ = open::that_detached(node.path.as_os_str());
             }
             Task::none()
         }
@@ -149,7 +162,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 fn view(app: &App) -> Element<'_, Message> {
     match &app.scan {
         ScanState::Idle => idle_view(app),
-        ScanState::Running { current, files } => running_view(current, *files),
+        ScanState::Running { current, files } => running_view(app, current, *files),
         ScanState::Done => map_view(app),
     }
 }
@@ -172,16 +185,30 @@ fn idle_view(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn running_view(current: &str, files: u64) -> Element<'_, Message> {
-    center(
-        column![
-            text(format!("Scanning… files: {files}")).size(20),
-            text(format::shorten_path(current, PATH_BAR_MAX_CHARS)),
-            button(text("Cancel")).on_press(Message::CancelScan),
-        ]
-        .spacing(16),
-    )
-    .into()
+/// Scan screen: a counter until the first snapshot, after that the map grows
+/// right as the scan proceeds (navigating it already works: NodeIds are stable).
+fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Message> {
+    if app.tree.is_none() {
+        return center(
+            column![
+                text(format!("Scanning… files: {files}")).size(20),
+                text(format::shorten_path(current, PATH_BAR_MAX_CHARS)),
+                button(text("Cancel")).on_press(Message::CancelScan),
+            ]
+            .spacing(16),
+        )
+        .into();
+    }
+    let bar = row![
+        text(format!("Scanning… files: {files}")),
+        container(text(format::shorten_path(current, PATH_BAR_MAX_CHARS)))
+            .width(Fill)
+            .padding(8),
+        button(text("Cancel")).on_press(Message::CancelScan),
+    ]
+    .spacing(8)
+    .padding(8);
+    column![bar, map_canvas(app)].into()
 }
 
 fn map_view(app: &App) -> Element<'_, Message> {
@@ -200,16 +227,21 @@ fn map_view(app: &App) -> Element<'_, Message> {
     .spacing(8)
     .padding(8);
 
-    let map = canvas(DiskMap {
+    column![bar, map_canvas(app)].into()
+}
+
+/// The map canvas; call only when `app.tree.is_some()`.
+fn map_canvas(app: &App) -> Element<'_, Message> {
+    let tree = app.tree.as_ref().expect("map_canvas requires a tree");
+    canvas(DiskMap {
         tree,
         current: app.current,
         active: app.active,
         cache: &app.cache,
     })
     .width(Fill)
-    .height(Fill);
-
-    column![bar, map].into()
+    .height(Fill)
+    .into()
 }
 
 fn main() -> iced::Result {

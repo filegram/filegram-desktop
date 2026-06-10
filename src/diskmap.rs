@@ -1,6 +1,6 @@
 //! Disk map canvas widget: drawing bricks with labels and nested
-//! silhouettes (§3.2–3.5 ANALYSIS.md), hit-testing and active brick highlighting.
-//! Map geometry is cached in a `canvas::Cache` (analog of the offscreen Bitmap),
+//! silhouettes, hit-testing and active brick highlighting.
+//! Map geometry is cached in a `canvas::Cache` (analog of the original's offscreen Bitmap),
 //! the highlight is drawn as a separate layer on top.
 
 use iced::widget::canvas::{self, Action, Event, Frame, Path, Stroke, Text};
@@ -25,7 +25,7 @@ const MIN_FONT: f32 = 12.0;
 /// Empirical average glyph width as a fraction of the font size — for fitting the font
 /// per brick (canvas offers no cheap way to measure text).
 const CHAR_WIDTH: f32 = 0.6;
-/// Minimum area for nested content.
+/// Minimum side length of the nested-content area.
 const MIN_CONTENT_SIDE: f32 = 12.0;
 /// Margin of a nested silhouette (left and bottom).
 const SILHOUETTE_MARGIN: f32 = 6.0;
@@ -98,21 +98,19 @@ impl DiskMap<'_> {
     }
 
     /// Brick label; the font size is fitted per brick rather than globally
-    /// (fixes a bug of the original, §6.5.7). Returns the font size used.
+    /// (fixes a bug of the original). Returns the font size used.
     fn draw_label(&self, frame: &mut Frame, label: &str, rect: Rectangle) -> f32 {
         // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
         let char_count = label.chars().count().max(1);
-        let fit = rect.width / (CHAR_WIDTH * char_count as f32);
-        let font_size = fit.clamp(MIN_FONT, MAX_FONT);
-        if rect.height < font_size + 8.0 || rect.width < 2.0 * font_size {
+        let Some(font_size) = label_font_size(char_count, rect) else {
             return 0.0;
-        }
+        };
         // If even the minimum size does not fit, truncate the text to the width.
         let max_chars = (rect.width / (CHAR_WIDTH * font_size)) as usize;
         let content: String = label.chars().take(max_chars).collect();
         frame.fill_text(Text {
             content,
-            position: Point::new(rect.x + 4.0, rect.y + 4.0),
+            position: label_origin(rect),
             color: Color::WHITE,
             size: Pixels(font_size),
             shaping: iced::widget::text::Shaping::Advanced,
@@ -160,6 +158,70 @@ impl DiskMap<'_> {
             };
             frame.fill_rectangle(silhouette.position(), silhouette.size(), fill);
         }
+    }
+}
+
+/// Label font size for the brick width; `None` — the brick is too small for a label.
+/// The font size is strictly integral: cosmic-text rasterizes glyphs separately for
+/// each f32 size (`CacheKey::font_size_bits`), and fractional sizes — distinct for
+/// every brick and every progressive-scan snapshot — overflow iced's glyph
+/// atlas (`PrepareError::AtlasFull` is silently ignored, text breaks).
+fn label_font_size(char_count: usize, rect: Rectangle) -> Option<f32> {
+    let fit = rect.width / (CHAR_WIDTH * char_count.max(1) as f32);
+    // Down to an even integer: fewer distinct font sizes — a more stable atlas.
+    let font_size = (fit.clamp(MIN_FONT, MAX_FONT) / 2.0).floor() * 2.0;
+    (rect.height >= font_size + 8.0 && rect.width >= 2.0 * font_size).then_some(font_size)
+}
+
+/// Label origin aligned to whole pixels: a fractional position changes
+/// each glyph's subpixel bin (`CacheKey::{x_bin,y_bin}`), while bricks
+/// shift slightly on every scan snapshot — without rounding the same
+/// letters are re-rasterized into new bins, and the glyph atlas keeps
+/// evicting/reallocating regions (see the comment on [`label_font_size`]).
+fn label_origin(rect: Rectangle) -> Point {
+    Point::new((rect.x + 4.0).round(), (rect.y + 4.0).round())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced::{Point, Size};
+
+    fn rect(width: f32, height: f32) -> Rectangle {
+        Rectangle::new(Point::ORIGIN, Size::new(width, height))
+    }
+
+    #[test]
+    fn font_size_is_whole_even_pixels() {
+        // fit = 200 / (0.6 · 15) = 22.22… — the font size rounds down to an even
+        // integer: each distinct f32 size is rasterized in the glyph atlas
+        // separately, and the fewer distinct sizes, the more stable the atlas.
+        assert_eq!(label_font_size(15, rect(200.0, 100.0)), Some(22.0));
+        // fit = 210 / (0.6 · 14) = 25.0 — an odd value is pushed down to 24.
+        assert_eq!(label_font_size(14, rect(210.0, 100.0)), Some(24.0));
+    }
+
+    #[test]
+    fn label_origin_is_whole_pixels() {
+        // A fractional text position changes each glyph's subpixel bin;
+        // bricks shift on every scan snapshot, and without rounding
+        // every snapshot re-rasterizes the same letters into new bins.
+        let brick = Rectangle::new(Point::new(10.6, 20.4), Size::new(100.0, 50.0));
+        let origin = label_origin(brick);
+        assert_eq!((origin.x, origin.y), (15.0, 24.0));
+    }
+
+    #[test]
+    fn font_size_clamped_to_limits() {
+        assert_eq!(label_font_size(5, rect(1000.0, 100.0)), Some(MAX_FONT));
+        assert_eq!(label_font_size(40, rect(100.0, 100.0)), Some(MIN_FONT));
+    }
+
+    #[test]
+    fn label_skipped_when_brick_too_small() {
+        // Height under font size + 8 or width under two font sizes — no label.
+        assert_eq!(label_font_size(10, rect(200.0, 15.0)), None);
+        assert_eq!(label_font_size(10, rect(20.0, 100.0)), None);
     }
 }
 
