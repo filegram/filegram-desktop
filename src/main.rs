@@ -1,4 +1,5 @@
 mod format;
+mod treemap;
 
 use iced::widget::{center, text};
 use iced::Element;
