@@ -50,7 +50,7 @@ impl FsTree {
     /// Builds a tree snapshot from a (possibly partially filled) arena.
     /// The arena must not be empty: the root is placed there before the scan starts.
     pub fn from_arena(arena: &[ScanNode]) -> FsTree {
-        debug_assert!(!arena.is_empty(), "the arena always contains the root");
+        assert!(!arena.is_empty(), "the arena always contains the root");
 
         // Sizes are aggregated in a single reverse pass: a child is always to the right
         // of its parent, so by the time sizes[parent] is read all contributions are in.
@@ -115,6 +115,12 @@ mod tests {
             is_dir: true,
             parent,
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "the arena always contains the root")]
+    fn empty_arena_panics() {
+        FsTree::from_arena(&[]);
     }
 
     #[test]

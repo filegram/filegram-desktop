@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use iced::futures::Stream;
@@ -49,7 +49,11 @@ pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = 
         is_dir: true,
         parent: 0,
     }]));
-    let done = Arc::new(AtomicBool::new(false));
+    // Condvar instead of a bare flag: the snapshot thread wakes up immediately
+    // when the scan finishes, not after sitting out the rest of the interval
+    // (the stream — and the app's tests — would otherwise hang for up to
+    // SNAPSHOT_INTERVAL_MS after the scan).
+    let done = Arc::new((Mutex::new(false), Condvar::new()));
 
     std::thread::spawn({
         let arena = arena.clone();
@@ -62,7 +66,8 @@ pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = 
                 last_sent: Mutex::new(Instant::now()),
             };
             scan_dir(&root, 0, &arena, &cancel, &progress);
-            done.store(true, Ordering::Release);
+            *done.0.lock().unwrap() = true;
+            done.1.notify_all();
             let tree = FsTree::from_arena(&arena.lock().unwrap());
             let _ = tx.unbounded_send(ScanEvent::Finished(Arc::new(tree)));
         }
@@ -72,11 +77,19 @@ pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = 
     // (cheap Arc clones); the tree itself is built outside the lock.
     std::thread::spawn(move || {
         let mut mirror: Vec<ScanNode> = Vec::new();
+        let (done_flag, done_signal) = &*done;
         loop {
-            std::thread::sleep(Duration::from_millis(SNAPSHOT_INTERVAL_MS));
-            if done.load(Ordering::Acquire) {
+            let (finished, _) = done_signal
+                .wait_timeout_while(
+                    done_flag.lock().unwrap(),
+                    Duration::from_millis(SNAPSHOT_INTERVAL_MS),
+                    |done| !*done,
+                )
+                .unwrap();
+            if *finished {
                 return;
             }
+            drop(finished);
             {
                 let nodes = arena.lock().unwrap();
                 mirror.extend_from_slice(&nodes[mirror.len()..]);
@@ -138,6 +151,11 @@ fn scan_dir(
     let mut files = Vec::new();
     let mut dirs = Vec::new();
     for entry in entries.flatten() {
+        // On a huge directory, cancellation mid-enumeration keeps what's
+        // already collected instead of stat'ing the rest.
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
         let Ok(file_type) = entry
             .file_type()
             .or_else(|_| entry.metadata().map(|m| m.file_type()))
