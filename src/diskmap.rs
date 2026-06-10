@@ -100,7 +100,9 @@ impl DiskMap<'_> {
     /// Подпись кирпича; размер шрифта подбирается на кирпич, а не глобально
     /// (фикс бага оригинала, §6.5.7). Возвращает использованный кегль.
     fn draw_label(&self, frame: &mut Frame, label: &str, rect: Rectangle) -> f32 {
-        let fit = rect.width / (CHAR_WIDTH * label.len() as f32);
+        // Считаем символы, не байты: кириллица в UTF-8 занимает 2 байта на глиф.
+        let char_count = label.chars().count().max(1);
+        let fit = rect.width / (CHAR_WIDTH * char_count as f32);
         let font_size = fit.clamp(MIN_FONT, MAX_FONT);
         if rect.height < font_size + 8.0 || rect.width < 2.0 * font_size {
             return 0.0;

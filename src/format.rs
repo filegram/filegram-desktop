@@ -23,22 +23,30 @@ pub fn human_size(bytes: u64) -> String {
 /// сегменты на `..` (как `hideFolderNameInPath` в оригинале).
 /// Последний сегмент не заменяется никогда.
 pub fn shorten_path(path: &str, max_chars: usize) -> String {
-    let mut segments: Vec<&str> = path.split('/').collect();
-    let len = |segments: &[&str]| {
-        segments.iter().map(|s| s.len()).sum::<usize>() + segments.len().saturating_sub(1)
+    // Windows-пути отображаются через `\` — определяем разделитель по факту.
+    let separator = if path.contains('\\') && !path.contains('/') {
+        '\\'
+    } else {
+        '/'
     };
-    while len(&segments) > max_chars {
+    let mut segments: Vec<&str> = path.split(separator).collect();
+    let len = |segments: &[&str]| {
+        segments.iter().map(|s| s.chars().count()).sum::<usize>()
+            + segments.len().saturating_sub(1)
+    };
+    while len(&segments) > max_chars && segments.len() > 2 {
         let last = segments.len() - 1;
-        // Кандидаты — средние сегменты: не пустой корень и не последний.
-        let Some(victim) = segments[..last]
+        // Кандидаты — только средние сегменты: первый (корень/диск)
+        // и последний не заменяются никогда.
+        let Some(victim) = segments[1..last]
             .iter()
             .position(|s| !s.is_empty() && *s != "..")
         else {
             break;
         };
-        segments[victim] = "..";
+        segments[victim + 1] = "..";
     }
-    segments.join("/")
+    segments.join(&separator.to_string())
 }
 
 #[cfg(test)]
@@ -78,5 +86,23 @@ mod tests {
     fn shorten_path_keeps_last_segment() {
         // Даже если не влезает — последний сегмент не трогаем.
         assert_eq!(shorten_path("/home/user/filegram", 5), "/../../filegram");
+    }
+
+    #[test]
+    fn shorten_path_windows_separators() {
+        assert_eq!(
+            shorten_path(r"C:\Users\stan\projects\filegram", 22),
+            r"C:\..\..\..\filegram"
+        );
+    }
+
+    #[test]
+    fn shorten_path_never_replaces_first_segment() {
+        // Первый сегмент (корень/диск) не заменяется даже при нехватке места.
+        assert_eq!(
+            shorten_path("home/user/projects/filegram", 1),
+            "home/../../filegram"
+        );
+        assert_eq!(shorten_path(r"C:\Users\filegram", 1), r"C:\..\filegram");
     }
 }
