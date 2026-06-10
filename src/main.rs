@@ -1,4 +1,5 @@
 mod format;
+mod fs_tree;
 mod treemap;
 
 use iced::widget::{center, text};
