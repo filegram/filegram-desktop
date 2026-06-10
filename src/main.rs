@@ -1,3 +1,5 @@
+mod format;
+
 use iced::widget::{center, text};
 use iced::Element;
 
