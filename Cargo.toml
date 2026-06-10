@@ -1,0 +1,12 @@
+[package]
+name = "filegram"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[dependencies]
+iced = "0.14"
+
+[profile.release]
+strip = true
+lto = true
