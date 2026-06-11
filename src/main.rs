@@ -221,7 +221,12 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::DeleteRequested(id) => {
-            app.pending_delete = Some(id);
+            // The UI disables deletion mid-scan; the same invariant is
+            // enforced here so no other path can desync the tree from the
+            // scanner's arena.
+            if matches!(app.scan, ScanState::Done) {
+                app.pending_delete = Some(id);
+            }
             Task::none()
         }
         Message::DeleteCancelled => {
@@ -238,6 +243,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             let Some(id) = app.pending_delete.take() else {
                 return Task::none();
             };
+            // Filesystem mutation requires a finished scan: the snapshot
+            // must not be edited while the scanner still produces them.
+            if !matches!(app.scan, ScanState::Done) {
+                return Task::none();
+            }
             let Some(tree) = &app.tree else {
                 return Task::none();
             };
@@ -635,9 +645,16 @@ fn main() -> iced::Result {
 mod tests {
     use super::*;
 
+    /// `boot()` with the scan already finished — deletion is only legal then.
+    fn scanned_app() -> App {
+        let (mut app, _) = boot();
+        app.scan = ScanState::Done;
+        app
+    }
+
     #[test]
     fn delete_requires_confirmation() {
-        let (mut app, _) = boot();
+        let mut app = scanned_app();
         let _ = update(&mut app, Message::DeleteRequested(NodeId(3)));
         assert_eq!(app.pending_delete, Some(NodeId(3)));
 
@@ -646,8 +663,24 @@ mod tests {
     }
 
     #[test]
-    fn confirm_without_tree_clears_pending() {
+    fn delete_request_ignored_until_scan_finishes() {
         let (mut app, _) = boot();
+        for scan in [
+            ScanState::Idle,
+            ScanState::Running {
+                current: String::new(),
+                files: 0,
+            },
+        ] {
+            app.scan = scan;
+            let _ = update(&mut app, Message::DeleteRequested(NodeId(3)));
+            assert_eq!(app.pending_delete, None);
+        }
+    }
+
+    #[test]
+    fn confirm_without_tree_clears_pending() {
+        let mut app = scanned_app();
         let _ = update(&mut app, Message::DeleteRequested(NodeId(3)));
         let _ = update(&mut app, Message::DeleteConfirmed);
         assert_eq!(app.pending_delete, None);
@@ -664,7 +697,7 @@ mod tests {
 
     #[test]
     fn new_scan_drops_pending_delete() {
-        let (mut app, _) = boot();
+        let mut app = scanned_app();
         app.path_input = std::env::temp_dir().display().to_string();
         let _ = update(&mut app, Message::DeleteRequested(NodeId(3)));
         let _ = update(&mut app, Message::StartScan);

@@ -93,10 +93,15 @@ impl FsTree {
     }
 
     /// Removes a direct child of `parent` (after a successful filesystem delete)
-    /// and subtracts its size from `parent` and every node in `ancestors`
-    /// (the navigation chain from the root down to `parent`).
+    /// and subtracts its size from `parent` and every node in `ancestors` —
+    /// the navigation chain from the root down to `parent`, excluding `parent`
+    /// itself (its size is adjusted here already).
     /// Returns `false` — and changes nothing — if `child` is not a direct child.
     pub fn remove_child(&mut self, parent: NodeId, child: NodeId, ancestors: &[NodeId]) -> bool {
+        debug_assert!(
+            !ancestors.contains(&parent),
+            "ancestors must not include parent: its size would be subtracted twice"
+        );
         let Some(position) = self.nodes[parent.0]
             .children
             .iter()
@@ -106,9 +111,11 @@ impl FsTree {
         };
         let removed = self.nodes[child.0].size;
         self.nodes[parent.0].children.remove(position);
-        self.nodes[parent.0].size -= removed;
+        // Saturating: a broken ancestor list must clamp at zero, not wrap
+        // around in release builds and corrupt every size above it.
+        self.nodes[parent.0].size = self.nodes[parent.0].size.saturating_sub(removed);
         for &ancestor in ancestors {
-            self.nodes[ancestor.0].size -= removed;
+            self.nodes[ancestor.0].size = self.nodes[ancestor.0].size.saturating_sub(removed);
         }
         true
     }
@@ -236,6 +243,21 @@ mod tests {
         assert_eq!(tree.node(tree.root).size, DIR_ENTRY_SIZE * 2 + 50);
         // The root still has both children: sub and top.
         assert_eq!(tree.node(tree.root).children.len(), 2);
+    }
+
+    #[test]
+    fn remove_child_saturates_on_broken_ancestors() {
+        // A bogus ancestor smaller than the removed child must clamp at
+        // zero instead of wrapping around and corrupting the tree.
+        let mut tree = FsTree::from_arena(&[
+            dir(0, "root"),
+            dir(0, "sub"),
+            file(1, "big", 500),
+            file(0, "small", 10),
+        ]);
+        let small = NodeId(3);
+        assert!(tree.remove_child(NodeId(1), NodeId(2), &[small]));
+        assert_eq!(tree.node(small).size, 0);
     }
 
     #[test]
