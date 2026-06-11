@@ -33,6 +33,10 @@ const RMB_ICON: &[u8] = include_bytes!("../assets/rmb.svg");
 /// Hover panel action icons.
 const FOLDER_ICON: &[u8] = include_bytes!("../assets/folder.svg");
 const TRASH_ICON: &[u8] = include_bytes!("../assets/trash.svg");
+/// Top bar button icons: a circular arrow for Rescan, a treemap-like
+/// brick layout for New scan.
+const RESCAN_ICON: &[u8] = include_bytes!("../assets/rescan.svg");
+const BRICKS_ICON: &[u8] = include_bytes!("../assets/bricks.svg");
 /// Quick-scan folder icons on the start screen.
 const HOME_ICON: &[u8] = include_bytes!("../assets/home.svg");
 const DOWNLOADS_ICON: &[u8] = include_bytes!("../assets/downloads.svg");
@@ -100,6 +104,7 @@ enum Message {
     SetActive(Option<NodeId>),
     GoBack,
     NewScan,
+    Rescan,
     Reveal(NodeId),
     DeleteRequested(NodeId),
     DeleteConfirmed,
@@ -289,6 +294,15 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::NewScan => {
             app.scan = ScanState::Idle;
             Task::none()
+        }
+        Message::Rescan => {
+            // Rescan the root the map was built from — not the directory
+            // currently navigated to and not whatever the input holds.
+            let Some(tree) = &app.tree else {
+                return Task::none();
+            };
+            app.path_input = tree.node(tree.root).path.display().to_string();
+            update(app, Message::StartScan)
         }
         Message::Reveal(id) => {
             if let Some(tree) = &app.tree
@@ -613,9 +627,11 @@ fn map_view(app: &App) -> Element<'_, Message> {
     let bar = container(
         top.push(
             container(
-                button(text("New scan"))
-                    .style(chrome_button)
-                    .on_press(Message::NewScan),
+                row![
+                    chrome_icon_button(RESCAN_ICON, "Rescan", Message::Rescan),
+                    chrome_icon_button(BRICKS_ICON, "New scan", Message::NewScan),
+                ]
+                .spacing(8),
             )
             .width(Fill)
             .align_x(iced::Right),
@@ -760,6 +776,22 @@ fn brick_actions(app: &App, target: NodeId, brick: Rectangle, bounds: Size) -> E
             ..Padding::ZERO
         })
         .into()
+}
+
+/// An outline chrome button with a leading icon: the Rescan / New scan pair.
+fn chrome_icon_button<'a>(
+    icon: &'static [u8],
+    label: &'a str,
+    on_press: Message,
+) -> Element<'a, Message> {
+    button(
+        row![themed_icon(icon).width(16).height(16), text(label)]
+            .spacing(6)
+            .align_y(Center),
+    )
+    .style(chrome_button)
+    .on_press(on_press)
+    .into()
 }
 
 /// A status bar action: an icon button with a tooltip.
@@ -925,6 +957,48 @@ mod tests {
         app.tree = None;
         let _ = update(&mut app, Message::DeleteConfirmed);
         assert_eq!(app.pending_delete, None);
+    }
+
+    #[test]
+    fn rescan_restarts_scan_at_tree_root() {
+        // A real (empty) dir as the scan root: the rescan threads exit
+        // immediately, and the path survives StartScan's existence check.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().display().to_string();
+        let mut app = test_app();
+        app.scan = ScanState::Done;
+        app.tree = Some(Arc::new(FsTree::from_arena(&[
+            fs_tree::ScanNode {
+                name: "root".into(),
+                path: dir.path().into(),
+                size: 0,
+                is_dir: true,
+                parent: 0,
+            },
+            fs_tree::ScanNode {
+                name: "sub".into(),
+                path: dir.path().join("sub").into(),
+                size: 0,
+                is_dir: true,
+                parent: 0,
+            },
+        ])));
+        // Navigated into a subdirectory with a stale input: the rescan
+        // must use the scan root, not either of those.
+        app.current = NodeId(1);
+        app.path_input = "/somewhere/else".into();
+        let _ = update(&mut app, Message::Rescan);
+        assert_eq!(app.path_input, root);
+        assert!(matches!(&app.scan, ScanState::Running { current, .. } if *current == root));
+        app.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn rescan_ignored_without_tree() {
+        let mut app = scanned_app();
+        app.tree = None;
+        let _ = update(&mut app, Message::Rescan);
+        assert!(matches!(app.scan, ScanState::Done));
     }
 
     #[test]
