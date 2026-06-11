@@ -112,22 +112,29 @@ fn boot() -> (App, Task<Message>) {
         .map(history::History::load)
         .unwrap_or_default();
     (
-        App {
-            tree: None,
-            current: NodeId(0),
-            nav_stack: Vec::new(),
-            active: None,
-            pending_delete: None,
-            scan: ScanState::Idle,
-            path_input: initial_path(&history),
-            history,
-            history_file,
-            cache: canvas::Cache::new(),
-            cancel: Arc::new(AtomicBool::new(false)),
-            theme_mode: Mode::default(),
-        },
+        initial_app(history, history_file),
         iced::system::theme().map(Message::SystemThemeChanged),
     )
+}
+
+/// The initial application state. `boot` feeds it the persisted history;
+/// tests pass an in-memory one with `history_file: None` so they never
+/// touch the developer's real config directory.
+fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App {
+    App {
+        tree: None,
+        current: NodeId(0),
+        nav_stack: Vec::new(),
+        active: None,
+        pending_delete: None,
+        scan: ScanState::Idle,
+        path_input: initial_path(&history),
+        history,
+        history_file,
+        cache: canvas::Cache::new(),
+        cancel: Arc::new(AtomicBool::new(false)),
+        theme_mode: Mode::default(),
+    }
 }
 
 fn theme(app: &App) -> Theme {
@@ -706,10 +713,15 @@ fn main() -> iced::Result {
 mod tests {
     use super::*;
 
-    /// `boot()` with a finished scan and a loaded (root-only) tree —
+    /// A disk-isolated `App`: an empty in-memory history, no history file.
+    fn test_app() -> App {
+        initial_app(history::History::default(), None)
+    }
+
+    /// [`test_app`] with a finished scan and a loaded (root-only) tree —
     /// deletion is only legal in that state.
     fn scanned_app() -> App {
-        let (mut app, _) = boot();
+        let mut app = test_app();
         app.scan = ScanState::Done;
         app.tree = Some(Arc::new(FsTree::from_arena(&[fs_tree::ScanNode {
             name: "root".into(),
@@ -733,7 +745,7 @@ mod tests {
 
     #[test]
     fn delete_request_ignored_until_scan_finishes() {
-        let (mut app, _) = boot();
+        let mut app = test_app();
         for scan in [
             ScanState::Idle,
             ScanState::Running {
@@ -766,7 +778,7 @@ mod tests {
 
     #[test]
     fn theme_follows_system_mode() {
-        let (mut app, _) = boot();
+        let mut app = test_app();
         let _ = update(&mut app, Message::SystemThemeChanged(Mode::Dark));
         assert_eq!(theme(&app), Theme::Dark);
         let _ = update(&mut app, Message::SystemThemeChanged(Mode::Light));
@@ -785,9 +797,7 @@ mod tests {
 
     #[test]
     fn start_scan_records_history() {
-        let (mut app, _) = boot();
-        app.history_file = None;
-        app.history = history::History::default();
+        let mut app = test_app();
         app.path_input = std::env::temp_dir().display().to_string();
         let _ = update(&mut app, Message::StartScan);
         assert_eq!(app.history.latest(), Some(app.path_input.as_str()));
@@ -796,9 +806,7 @@ mod tests {
 
     #[test]
     fn history_pick_fills_input_and_starts_scan() {
-        let (mut app, _) = boot();
-        app.history_file = None;
-        app.history = history::History::default();
+        let mut app = test_app();
         let dir = std::env::temp_dir().display().to_string();
         let _ = update(&mut app, Message::HistoryPicked(dir.clone()));
         assert_eq!(app.path_input, dir);
@@ -810,7 +818,6 @@ mod tests {
     #[test]
     fn new_scan_drops_pending_delete() {
         let mut app = scanned_app();
-        app.history_file = None;
         app.path_input = std::env::temp_dir().display().to_string();
         let _ = update(&mut app, Message::DeleteRequested(NodeId(3)));
         let _ = update(&mut app, Message::StartScan);
