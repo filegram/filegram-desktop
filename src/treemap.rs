@@ -25,16 +25,19 @@ fn aspect_score(width: f32, height: f32) -> f32 {
 
 /// The worst shape in a row of total weight `sum`: with the row height fixed,
 /// brick width is proportional to weight, so the extremes are the heaviest
-/// (`first`) and the lightest (`last`) items — the input is sorted descending.
-fn worst_row_score(first: f32, last: f32, sum: f32, area_width: f32, ratio: f32) -> f32 {
+/// and the lightest items of the row.
+fn worst_row_score(heaviest: f32, lightest: f32, sum: f32, area_width: f32, ratio: f32) -> f32 {
     let row_height = sum * ratio / area_width;
     let score = |w: f32| aspect_score(w * ratio / row_height, row_height);
-    score(first).max(score(last))
+    score(heaviest).max(score(lightest))
 }
 
-/// Lays out items with weights `weights` (sorted in descending order)
-/// inside rectangle `area`. Rows are stacked bottom-up, bricks within a row go
-/// left to right. Returns rectangles in input order.
+/// Lays out items with weights `weights` inside rectangle `area`. Rows are
+/// stacked bottom-up, bricks within a row go left to right. Returns
+/// rectangles in input order. The input is typically sorted descending, but
+/// each row's extremes are tracked explicitly, so a heavier trailing weight
+/// (the aggregate rest brick appended by `diskmap::level1`) is judged
+/// correctly too.
 ///
 /// A row keeps accepting items while that does not worsen its worst aspect
 /// score (strip treemap aiming at [`TARGET_RATIO`]).
@@ -51,17 +54,26 @@ pub fn layout(weights: &[f32], area: Rectangle) -> Vec<Rectangle> {
     let mut rows: Vec<(usize, f32)> = Vec::new();
     let mut row_start = 0;
     while row_start < weights.len() {
-        let first = weights[row_start];
-        let mut sum = first;
+        let mut row_min = weights[row_start];
+        let mut row_max = row_min;
+        let mut sum = row_min;
         let mut row_end = row_start + 1;
         while row_end < weights.len() {
             let next = weights[row_end];
-            let current = worst_row_score(first, weights[row_end - 1], sum, area.width, ratio);
-            let extended = worst_row_score(first, next, sum + next, area.width, ratio);
+            let current = worst_row_score(row_max, row_min, sum, area.width, ratio);
+            let extended = worst_row_score(
+                row_max.max(next),
+                row_min.min(next),
+                sum + next,
+                area.width,
+                ratio,
+            );
             if extended > current {
                 break;
             }
             sum += next;
+            row_min = row_min.min(next);
+            row_max = row_max.max(next);
             row_end += 1;
         }
         rows.push((row_start, sum));
@@ -114,13 +126,13 @@ mod tests {
         (0..n).map(|i| normalize_weight((1000 * (n - i)) as u64)).collect()
     }
 
-    /// Вытянутость кирпича: отношение длинной стороны к короткой.
+    /// Brick elongation: the long side over the short one.
     fn elongation(r: &Rectangle) -> f32 {
         (r.width / r.height).max(r.height / r.width)
     }
 
-    /// Веса с доминирующим элементом (≈половина суммарного веса):
-    /// √размеров файлов 900, 350, 200, … МБ.
+    /// Weights with a dominant item (≈half of the total weight):
+    /// √sizes of 900, 350, 200, … MB files.
     fn dominant() -> Vec<f32> {
         [900, 350, 200, 120, 80, 60, 40, 25, 15, 10, 8, 5, 3, 2, 1]
             .map(|mb: u64| normalize_weight(mb * 1_000_000))
@@ -129,8 +141,9 @@ mod tests {
 
     #[test]
     fn equal_items_in_square_form_two_rows_of_two() {
-        // Четыре равных веса в квадрате: ряд из одного — лежачий «блин» 4:1,
-        // ряд из трёх — стоячие щепки; оптимум критерия — два ряда по два.
+        // Four equal weights in a square: a one-item row is a flat 4:1
+        // pancake, a three-item row gives standing slivers; the criterion's
+        // optimum is two rows of two.
         let rects = layout(&[1.0, 1.0, 1.0, 1.0], area_100x100());
         for r in &rects {
             assert!((r.width - 50.0).abs() < EPS, "{r:?}");
@@ -142,7 +155,8 @@ mod tests {
     fn dominant_item_does_not_span_full_width() {
         let area = Rectangle::new(Point::ORIGIN, Size::new(320.0, 200.0));
         let rects = layout(&dominant(), area);
-        // Гигант делит нижний ряд с соседом, а не занимает всю ширину блином.
+        // The giant shares the bottom row with a neighbor instead of
+        // stretching into a full-width pancake.
         assert!(rects[0].width < 0.7 * area.width, "{:?}", rects[0]);
     }
 
@@ -151,19 +165,31 @@ mod tests {
         let area = Rectangle::new(Point::ORIGIN, Size::new(320.0, 200.0));
         let rects = layout(&dominant(), area);
         let worst = rects.iter().map(elongation).fold(0.0, f32::max);
-        // Со старой эвристикой row_limit здесь выходило ≈19:1.
+        // The old row_limit heuristic produced ≈19:1 here.
         assert!(worst <= 5.0, "worst elongation {worst}");
     }
 
     #[test]
     fn thin_last_row_merges_into_previous() {
-        // Хвост [0.5, 0.4] лёг бы верхним рядом толщиной ~8 px — нечитаемая
-        // полоса сливается с нижним рядом, и все кирпичи занимают полную
-        // высоту области.
+        // The [0.5, 0.4] tail would form a ~8 px top row — the unreadable
+        // strip merges into the bottom row, and every brick spans the full
+        // area height.
         let rects = layout(&[10.0, 0.5, 0.4], area_100x100());
         for r in &rects {
             assert!((r.height - 100.0).abs() < EPS, "{r:?}");
         }
+    }
+
+    #[test]
+    fn row_extremes_tracked_for_unsorted_weights() {
+        // level1 appends the aggregate rest weight last, so the input is not
+        // strictly descending. Judging the third item of [10, 4, 30], the
+        // criterion must use the true extremes (4, 30): one row of all three
+        // would squeeze the 4-weight brick into a 27×100 sliver, so the
+        // 30-weight item gets its own full-width row instead.
+        let area = Rectangle::new(Point::new(0.0, 0.0), Size::new(300.0, 100.0));
+        let rects = layout(&[10.0, 4.0, 30.0], area);
+        assert!((rects[2].width - 300.0).abs() < EPS, "{:?}", rects[2]);
     }
 
     #[test]

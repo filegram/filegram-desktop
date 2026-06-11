@@ -449,7 +449,7 @@ mod tests {
         Rectangle::new(Point::ORIGIN, Size::new(width, height))
     }
 
-    /// Дерево: корень и его дети с заданными (size, is_dir).
+    /// A tree: the root and its children with the given (size, is_dir).
     fn tree_with_children(entries: &[(u64, bool)]) -> FsTree {
         use crate::fs_tree::ScanNode;
         let mut arena = vec![ScanNode {
@@ -474,8 +474,8 @@ mod tests {
     #[test]
     fn tail_of_tiny_items_collapses_into_rest() {
         use crate::fs_tree::DIR_ENTRY_SIZE;
-        // Три крупных файла и хвост мелочи: 4 файла по 100 КБ и 2 пустые папки —
-        // у каждого элемента хвоста доля веса ≈1% < 5%.
+        // Three large files and a small tail: 4 files of 100 KB and 2 empty
+        // folders — every tail item's weight share is ≈1% < 5%.
         let mut entries = vec![(100_000_000, false); 3];
         entries.extend([(100_000, false); 4]);
         entries.extend([(0, true); 2]);
@@ -499,8 +499,8 @@ mod tests {
 
     #[test]
     fn single_tiny_item_stays_a_node() {
-        // Один кандидат на схлопывание: «…»-кирпич занял бы ту же площадь,
-        // поэтому элемент остаётся обычным кирпичом.
+        // A single collapse candidate: the rest brick would occupy the same
+        // area, so the item stays a regular brick.
         let tree = tree_with_children(&[
             (100_000_000, false),
             (100_000_000, false),
@@ -532,8 +532,9 @@ mod tests {
 
     #[test]
     fn label_unfit_tail_collapses_even_with_large_shares() {
-        // Канвас-«напёрсток»: доли по 25%, но кирпичи 31×16 ниже минимума
-        // для подписи (высота < шрифт + 8) — схлопывается всё в один «…».
+        // A thimble-sized canvas: shares of 25%, but the 31×16 bricks are
+        // below the caption minimum (height < font + 8) — everything
+        // collapses into a single rest brick.
         let tree = tree_with_children(&[(100_000, false); 4]);
         let bricks = level1(&tree, tree.root, Size::new(70.0, 40.0));
         assert_eq!(bricks.len(), 1, "{bricks:?}");
@@ -545,8 +546,9 @@ mod tests {
 
     #[test]
     fn uniform_children_are_not_swallowed_by_rest() {
-        // 25 равных файлов: доля каждого 4% < 5%, но прятать всю карту в один
-        // «…» нельзя — крупные элементы хвоста достаются обратно.
+        // 25 equal files: each share is 4% < 5%, but hiding the whole map
+        // behind one rest brick is wrong — the heaviest tail items are
+        // released back.
         let tree = tree_with_children(&[(1_000_000, false); 25]);
         let bricks = level1(&tree, tree.root, Size::new(800.0, 500.0));
         assert_eq!(bricks.len(), 25, "{bricks:?}");
@@ -560,8 +562,9 @@ mod tests {
 
     #[test]
     fn equal_tail_items_outweighing_each_other_stay_nodes() {
-        // Один крупный файл и 30 равных средних: «…» из любых двух средних
-        // был бы крупнее каждого из остальных — хвост не схлопывается вовсе.
+        // One large file and 30 equal mid-size items: a rest of any two of
+        // them would outweigh each of the others — the tail does not
+        // collapse at all.
         let mut entries = vec![(100_000_000, false)];
         entries.extend([(1_000_000, false); 30]);
         let tree = tree_with_children(&entries);
@@ -577,8 +580,9 @@ mod tests {
 
     #[test]
     fn decaying_tail_collapses_into_rest_smaller_than_any_brick() {
-        // Резко убывающий хвост (веса √размера: 1000, 100, 40, 18, 8, 3):
-        // «…» = 40+18+8+3 = 69 — меньше младшего показанного кирпича (100).
+        // A sharply decaying tail (√size weights: 1000, 100, 40, 18, 8, 3):
+        // the rest = 40+18+8+3 = 69 — lighter than the smallest displayed
+        // brick (100).
         let tree = tree_with_children(&[
             (1_000_000, false),
             (10_000, false),
@@ -598,7 +602,7 @@ mod tests {
             },
             "{bricks:?}"
         );
-        // Геометрически «…» меньше каждого обычного кирпича.
+        // Geometrically the rest brick is smaller than every regular brick.
         let rest_area = rest_rect.width * rest_rect.height;
         for (brick, r) in &bricks[..bricks.len() - 1] {
             assert!(
@@ -617,9 +621,9 @@ mod tests {
 
     #[test]
     fn share_collapse_needs_two_small_items() {
-        // Хвост из трёх элементов с долями <5% схлопывается…
+        // A tail of three sub-5% items collapses…
         assert_eq!(share_collapse_count(&[10.0, 0.3, 0.2, 0.1]), 3);
-        // …а единственный мелкий элемент — нет.
+        // …while a single small item does not.
         assert_eq!(share_collapse_count(&[10.0, 0.3]), 0);
         assert_eq!(share_collapse_count(&[1.0, 1.0, 1.0]), 0);
         assert_eq!(share_collapse_count(&[]), 0);
@@ -627,13 +631,14 @@ mod tests {
 
     #[test]
     fn share_collapse_keeps_rest_below_smallest_kept_item() {
-        // Хвост равных элементов перевесил бы каждый из оставшихся —
-        // не схлопываем ничего.
+        // A tail of equal items would outweigh each remaining one —
+        // nothing collapses.
         let mut weights = vec![4.0];
         weights.extend([1.0; 26]);
         assert_eq!(share_collapse_count(&weights), 0);
         assert_eq!(share_collapse_count(&[1.0; 25]), 0);
-        // Резко убывающий хвост: 0.45 меньше младшего показанного (1.0).
+        // A sharply decaying tail: 0.45 is lighter than the smallest kept
+        // item (1.0).
         assert_eq!(share_collapse_count(&[4.0, 1.0, 0.2, 0.15, 0.1]), 3);
     }
 
@@ -719,8 +724,8 @@ mod tests {
 
     #[test]
     fn wide_short_brick_fits_label_with_smaller_font() {
-        // Широкий, но невысокий кирпич: шрифт по ширине вышел бы 20 px и
-        // провалил бы проверку высоты (25 < 28) — шрифт ограничивает высота.
+        // A wide but short brick: the width-derived font would be 20 px and
+        // fail the height check (25 < 28) — the height bounds the font.
         assert_eq!(label_font_size(31, rect(400.0, 25.0)), Some(16.0));
     }
 
