@@ -6,6 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+[[ -n "$version" ]] || { echo "error: could not parse version from Cargo.toml" >&2; exit 1; }
 app=target/release/Filegram.app
 dmg=target/release/Filegram.dmg
 
