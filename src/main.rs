@@ -1,6 +1,7 @@
 mod diskmap;
 mod format;
 mod fs_tree;
+mod history;
 mod scanner;
 mod treemap;
 
@@ -14,8 +15,8 @@ use iced::widget::{
     text, text_input, tooltip,
 };
 use iced::{
-    Border, Center, Color, Element, Fill, Padding, Rectangle, Shadow, Size, Subscription, Task,
-    Theme, Vector,
+    Border, Center, Color, Element, Fill, Font, Padding, Rectangle, Shadow, Size, Subscription,
+    Task, Theme, Vector,
 };
 
 use diskmap::DiskMap;
@@ -61,6 +62,9 @@ struct App {
     pending_delete: Option<NodeId>,
     scan: ScanState,
     path_input: String,
+    history: history::History,
+    /// Where the history is persisted; `None` disables saving (tests).
+    history_file: Option<PathBuf>,
     cache: canvas::Cache,
     cancel: Arc<AtomicBool>,
     /// The system light/dark preference; the chrome theme follows it.
@@ -76,6 +80,7 @@ enum ScanState {
 #[derive(Debug, Clone)]
 enum Message {
     PathChanged(String),
+    HistoryPicked(String),
     StartScan,
     CancelScan,
     Scan(ScanEvent),
@@ -90,10 +95,22 @@ enum Message {
     SystemThemeChanged(Mode),
 }
 
+/// The default content of the path input: the most recent scanned path,
+/// or the home directory when the history is empty.
+fn initial_path(history: &history::History) -> String {
+    history.latest().map(str::to_string).unwrap_or_else(|| {
+        std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string())
+    })
+}
+
 fn boot() -> (App, Task<Message>) {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
+    let history_file = history::default_file();
+    let history = history_file
+        .as_deref()
+        .map(history::History::load)
+        .unwrap_or_default();
     (
         App {
             tree: None,
@@ -102,7 +119,9 @@ fn boot() -> (App, Task<Message>) {
             active: None,
             pending_delete: None,
             scan: ScanState::Idle,
-            path_input: home,
+            path_input: initial_path(&history),
+            history,
+            history_file,
             cache: canvas::Cache::new(),
             cancel: Arc::new(AtomicBool::new(false)),
             theme_mode: Mode::default(),
@@ -128,7 +147,17 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.path_input = path;
             Task::none()
         }
+        Message::HistoryPicked(path) => {
+            app.path_input = path;
+            update(app, Message::StartScan)
+        }
         Message::StartScan => {
+            app.history.push(&app.path_input);
+            if let Some(file) = &app.history_file
+                && let Err(error) = app.history.save(file)
+            {
+                eprintln!("filegram: failed to save the scan history: {error}");
+            }
             app.cancel = Arc::new(AtomicBool::new(false));
             app.scan = ScanState::Running {
                 current: app.path_input.clone(),
@@ -370,22 +399,54 @@ fn view(app: &App) -> Element<'_, Message> {
 }
 
 fn idle_view(app: &App) -> Element<'_, Message> {
-    center(
-        column![
-            text("Filegram — disk map").size(28),
-            row![
-                text_input("Directory path…", &app.path_input)
-                    .on_input(Message::PathChanged)
-                    .on_submit(Message::StartScan),
-                button(text("Scan"))
-                    .style(chrome_button)
-                    .on_press(Message::StartScan),
-            ]
-            .spacing(8),
+    let mut content = column![
+        text("Filegram — disk map").size(28),
+        row![
+            text_input("Directory path…", &app.path_input)
+                .on_input(Message::PathChanged)
+                .on_submit(Message::StartScan),
+            button(text("Scan"))
+                .style(chrome_button)
+                .on_press(Message::StartScan),
         ]
-        .spacing(16)
-        .max_width(600),
-    )
+        .spacing(8),
+    ]
+    .spacing(16)
+    .max_width(600);
+    if !app.history.entries().is_empty() {
+        content = content.push(recent_scans(app));
+    }
+    center(content).into()
+}
+
+/// The scan history under the path input: a click rescans the path.
+fn recent_scans(app: &App) -> Element<'_, Message> {
+    app.history
+        .entries()
+        .iter()
+        .fold(
+            column![text("Recent scans").size(14).style(muted_text)].spacing(2),
+            |list, path| {
+                list.push(
+                    button(text(format::shorten_path(path, PATH_BAR_MAX_CHARS)).size(14))
+                        .style(button::text)
+                        .padding(4)
+                        .on_press(Message::HistoryPicked(path.clone())),
+                )
+            },
+        )
+        .into()
+}
+
+/// The scan progress label. Monospace digits keep the width a function of the
+/// digit count alone, and the counter only grows — so the label can widen but
+/// never shrinks, and the path next to it does not jitter.
+fn scan_label<'a>(files: u64, size: f32) -> Element<'a, Message> {
+    row![
+        text("Scanning… files: ").size(size),
+        text(files.to_string()).size(size).font(Font::MONOSPACE),
+    ]
+    .align_y(Center)
     .into()
 }
 
@@ -395,7 +456,7 @@ fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Mess
     if app.tree.is_none() {
         return center(
             column![
-                text(format!("Scanning… files: {files}")).size(20),
+                scan_label(files, 20.0),
                 text(format::shorten_path(current, PATH_BAR_MAX_CHARS)).style(muted_text),
                 button(text("Cancel"))
                     .style(chrome_button)
@@ -407,7 +468,7 @@ fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Mess
     }
     let bar = container(
         row![
-            text(format!("Scanning… files: {files}")),
+            scan_label(files, 16.0),
             container(text(format::shorten_path(current, PATH_BAR_MAX_CHARS)).style(muted_text))
                 .width(Fill)
                 .padding(8),
@@ -713,8 +774,43 @@ mod tests {
     }
 
     #[test]
+    fn initial_path_prefers_latest_history_entry() {
+        let mut history = history::History::default();
+        history.push("/scans/latest");
+        assert_eq!(initial_path(&history), "/scans/latest");
+        // An empty history falls back to a usable default.
+        assert_ne!(initial_path(&history::History::default()), "/scans/latest");
+        assert!(!initial_path(&history::History::default()).is_empty());
+    }
+
+    #[test]
+    fn start_scan_records_history() {
+        let (mut app, _) = boot();
+        app.history_file = None;
+        app.history = history::History::default();
+        app.path_input = std::env::temp_dir().display().to_string();
+        let _ = update(&mut app, Message::StartScan);
+        assert_eq!(app.history.latest(), Some(app.path_input.as_str()));
+        app.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn history_pick_fills_input_and_starts_scan() {
+        let (mut app, _) = boot();
+        app.history_file = None;
+        app.history = history::History::default();
+        let dir = std::env::temp_dir().display().to_string();
+        let _ = update(&mut app, Message::HistoryPicked(dir.clone()));
+        assert_eq!(app.path_input, dir);
+        assert!(matches!(app.scan, ScanState::Running { .. }));
+        assert_eq!(app.history.latest(), Some(dir.as_str()));
+        app.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
     fn new_scan_drops_pending_delete() {
         let mut app = scanned_app();
+        app.history_file = None;
         app.path_input = std::env::temp_dir().display().to_string();
         let _ = update(&mut app, Message::DeleteRequested(NodeId(3)));
         let _ = update(&mut app, Message::StartScan);
