@@ -116,11 +116,19 @@ fn share_collapse_count(weights: &[f32]) -> usize {
     if total <= 0.0 {
         return 0;
     }
-    let count = weights
+    let mut count = weights
         .iter()
         .rev()
         .take_while(|&&w| w / total < REST_SHARE)
         .count();
+    // Хвост не должен перевешивать крупнейший элемент: иначе у папки
+    // с равномерной мелочью «…» поглотил бы всю площадь. Пока перевешивает —
+    // крупнейшие элементы хвоста достаются обратно.
+    let mut rest: f32 = weights[weights.len() - count..].iter().sum();
+    while count > 0 && rest > weights[0] {
+        rest -= weights[weights.len() - count];
+        count -= 1;
+    }
     if count >= 2 { count } else { 0 }
 }
 
@@ -157,26 +165,45 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
     let total: f32 = weights.iter().sum();
     let bounds = map_bounds(size);
 
-    // Схлопнутый хвост только растёт, поэтому цикл сходится за ≤ n шагов:
-    // после каждого расширения хвоста раскладка пересчитывается, и оставшиеся
+    // Фаза 1 — нечитаемые: хвост от первого кирпича, чья подпись не
+    // помещается. Хвост только расширяется, поэтому цикл сходится за ≤ n
+    // шагов; после каждого расширения раскладка пересчитывается, и оставшиеся
     // кирпичи проверяются заново уже в новых прямоугольниках.
     let mut collapsed = 0;
     loop {
-        let (bricks, rects) = arrange(tree, children, &weights, collapsed, bounds);
+        let (_, rects) = arrange(tree, children, &weights, collapsed, bounds);
         let kept = children.len() - collapsed;
-        let fails = |i: usize| {
-            weights[i] / total < REST_SHARE || !has_label(tree, children[i], rects[i])
-        };
-        let grown = match (0..kept).find(|&i| fails(i)) {
-            Some(first_failed) => children.len() - first_failed,
+        let grown = match (0..kept).find(|&i| !has_label(tree, children[i], rects[i])) {
+            Some(first_unlabeled) => children.len() - first_unlabeled,
             None => collapsed,
         }
         .max(collapsed);
-        if grown == collapsed || grown < 2 {
-            return bricks.into_iter().zip(rects).collect();
+        if grown == collapsed {
+            break;
         }
         collapsed = grown;
     }
+
+    // Фаза 2 — мелкие доли: хвост расширяется элементами с долей < 5%,
+    // но «…» не должен перевешивать крупнейший показанный кирпич — иначе
+    // у папки с равномерной мелочью (или в середине скана, пока размеры
+    // папок недосчитаны) он поглотил бы всю карту; перевешивающие элементы
+    // остаются обычными кирпичами.
+    let share_tail = weights
+        .iter()
+        .rev()
+        .take_while(|&&w| w / total < REST_SHARE)
+        .count();
+    let mut target = collapsed.max(share_tail);
+    let mut rest_sum: f32 = weights[children.len() - target..].iter().sum();
+    while target > collapsed && rest_sum > weights[0] {
+        rest_sum -= weights[children.len() - target];
+        target -= 1;
+    }
+
+    let collapsed = if target >= 2 { target } else { 0 };
+    let (bricks, rects) = arrange(tree, children, &weights, collapsed, bounds);
+    bricks.into_iter().zip(rects).collect()
 }
 
 /// Раскладка детей, у которых последние `collapsed` штук заменены
@@ -500,6 +527,41 @@ mod tests {
     }
 
     #[test]
+    fn uniform_children_are_not_swallowed_by_rest() {
+        // 25 равных файлов: доля каждого 4% < 5%, но прятать всю карту в один
+        // «…» нельзя — крупные элементы хвоста достаются обратно.
+        let tree = tree_with_children(&[(1_000_000, false); 25]);
+        let bricks = level1(&tree, tree.root, Size::new(800.0, 500.0));
+        assert_eq!(bricks.len(), 25, "{bricks:?}");
+        assert!(
+            bricks
+                .iter()
+                .all(|(brick, _)| matches!(brick, Brick::Node(_))),
+            "{bricks:?}"
+        );
+    }
+
+    #[test]
+    fn oversized_rest_releases_largest_tail_items() {
+        // Один крупный файл и 30 средних: хвост из всех средних перевесил бы
+        // крупнейший кирпич, поэтому средние достаются, пока «…» не станет
+        // не тяжелее него (вес √размера: 10 × 1000 == 10000).
+        let mut entries = vec![(100_000_000, false)];
+        entries.extend([(1_000_000, false); 30]);
+        let tree = tree_with_children(&entries);
+        let bricks = level1(&tree, tree.root, Size::new(800.0, 500.0));
+        assert_eq!(bricks.len(), 22, "{bricks:?}");
+        assert_eq!(
+            bricks.last().unwrap().0,
+            Brick::Rest {
+                files: 10,
+                dirs: 0,
+                size: 10_000_000,
+            }
+        );
+    }
+
+    #[test]
     fn rest_label_lists_size_and_counts() {
         assert_eq!(rest_label(4, 2, 408_192), "… 398.6 KB (4 files, 2 folders)");
         assert_eq!(rest_label(1, 0, 500), "… 500 B (1 file)");
@@ -514,6 +576,17 @@ mod tests {
         assert_eq!(share_collapse_count(&[10.0, 0.3]), 0);
         assert_eq!(share_collapse_count(&[1.0, 1.0, 1.0]), 0);
         assert_eq!(share_collapse_count(&[]), 0);
+    }
+
+    #[test]
+    fn share_collapse_keeps_rest_below_largest_item() {
+        // 26 элементов по 1.0 при лидере 4.0: каждый <5%, но хвост не должен
+        // перевешивать лидера — схлопываются только последние четыре.
+        let mut weights = vec![4.0];
+        weights.extend([1.0; 26]);
+        assert_eq!(share_collapse_count(&weights), 4);
+        // Равные элементы: хвост перевешивал бы любого — не схлопываем ничего.
+        assert_eq!(share_collapse_count(&[1.0; 25]), 0);
     }
 
     #[test]
