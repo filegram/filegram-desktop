@@ -484,7 +484,9 @@ fn idle_view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(16)
     .max_width(600);
-    content = content.push(quick_scans());
+    if let Some(quick) = quick_scans() {
+        content = content.push(quick);
+    }
     if !app.history.entries().is_empty() {
         content = content.push(recent_scans(app));
     }
@@ -493,29 +495,32 @@ fn idle_view(app: &App) -> Element<'_, Message> {
 
 /// Quick scans of the standard user folders, between the scan row and the
 /// history: a click scans the folder exactly like a history entry. A folder
-/// the OS cannot locate is omitted.
-fn quick_scans<'a>() -> Element<'a, Message> {
+/// the OS cannot locate is omitted; `None` when none can be, so the idle
+/// screen does not reserve a blank gap for an empty row.
+fn quick_scans<'a>() -> Option<Element<'a, Message>> {
     let folders: [(&[u8], &str, Option<PathBuf>); 4] = [
         (HOME_ICON, "Home", dirs::home_dir()),
         (DOWNLOADS_ICON, "Downloads", dirs::download_dir()),
         (DESKTOP_ICON, "Desktop", dirs::desktop_dir()),
         (DOCUMENTS_ICON, "Documents", dirs::document_dir()),
     ];
-    row(folders.into_iter().filter_map(|(icon, name, path)| {
-        Some(
-            button(
-                row![themed_icon(icon).width(16).height(16), text(name).size(14)]
-                    .spacing(6)
-                    .align_y(Center),
-            )
-            .style(button::text)
-            .padding(4)
-            .on_press(Message::HistoryPicked(path?.display().to_string()))
-            .into(),
-        )
-    }))
-    .spacing(8)
-    .into()
+    let buttons: Vec<Element<'a, Message>> = folders
+        .into_iter()
+        .filter_map(|(icon, name, path)| {
+            path.map(|path| {
+                button(
+                    row![themed_icon(icon).width(16).height(16), text(name).size(14)]
+                        .spacing(6)
+                        .align_y(Center),
+                )
+                .style(button::text)
+                .padding(4)
+                .on_press(Message::HistoryPicked(path.display().to_string()))
+                .into()
+            })
+        })
+        .collect();
+    (!buttons.is_empty()).then(|| row(buttons).spacing(8).into())
 }
 
 /// The scan history under the path input: a click rescans the path.
