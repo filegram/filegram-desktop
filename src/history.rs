@@ -66,8 +66,9 @@ impl History {
 /// Trims whitespace and trailing separators (`/tmp/` and `/tmp` are the same
 /// directory), keeping roots like `/` or `C:\` intact. Paths with line breaks
 /// normalize to blank: they cannot round-trip through the one-path-per-line
-/// file format.
-fn normalize(path: &str) -> &str {
+/// file format. [`History::push`] applies this internally; callers that
+/// display or scan the path normalize it themselves to stay in sync.
+pub fn normalize(path: &str) -> &str {
     let path = path.trim();
     if path.contains(['\n', '\r']) {
         return "";

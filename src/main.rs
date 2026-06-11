@@ -166,9 +166,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             update(app, Message::StartScan)
         }
         Message::StartScan => {
-            // Trim once so the scan, the progress header and the history all
-            // see the same path.
-            app.path_input = app.path_input.trim().to_string();
+            // Normalize once, with the same rules the history applies, so the
+            // input, the scan, the progress header and the history all see
+            // the same path ("/tmp/" scans and is recorded as "/tmp").
+            app.path_input = history::normalize(&app.path_input).to_string();
             // Only directories that exist enter the history: a typo'd path
             // must not become a clickable entry and the next-launch prefill.
             if std::path::Path::new(&app.path_input).is_dir() {
@@ -814,14 +815,15 @@ mod tests {
     }
 
     #[test]
-    fn start_scan_trims_input_and_records_existing_dir() {
+    fn start_scan_normalizes_input_and_records_existing_dir() {
         let mut app = test_app();
         // An (empty) existing directory: the scan threads exit immediately.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().display().to_string();
-        app.path_input = format!("  {path}  ");
+        app.path_input = format!("  {path}/  ");
         let _ = update(&mut app, Message::StartScan);
-        // The input is trimmed once; the scan and the history see the same path.
+        // The input is normalized once (trim + trailing separator); the
+        // input, the scan and the history see the same path.
         assert_eq!(app.path_input, path);
         assert_eq!(app.history.latest(), Some(path.as_str()));
         app.cancel.store(true, Ordering::Relaxed);
