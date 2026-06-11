@@ -99,9 +99,9 @@ enum Message {
 /// or the home directory when the history is empty.
 fn initial_path(history: &history::History) -> String {
     history.latest().map(str::to_string).unwrap_or_else(|| {
-        std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| ".".to_string())
+        dirs::home_dir()
+            .map(|home| home.display().to_string())
+            .unwrap_or_else(|| ".".to_string())
     })
 }
 
@@ -718,6 +718,15 @@ mod tests {
         initial_app(history::History::default(), None)
     }
 
+    /// A scan root that exits immediately: a missing child of a fresh temp
+    /// dir, so the threads spawned by `StartScan` find nothing to traverse.
+    /// The guard keeps the temp dir alive for the duration of the test.
+    fn missing_scan_root() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").display().to_string();
+        (dir, path)
+    }
+
     /// [`test_app`] with a finished scan and a loaded (root-only) tree —
     /// deletion is only legal in that state.
     fn scanned_app() -> App {
@@ -798,7 +807,8 @@ mod tests {
     #[test]
     fn start_scan_records_history() {
         let mut app = test_app();
-        app.path_input = std::env::temp_dir().display().to_string();
+        let (_guard, root) = missing_scan_root();
+        app.path_input = root;
         let _ = update(&mut app, Message::StartScan);
         assert_eq!(app.history.latest(), Some(app.path_input.as_str()));
         app.cancel.store(true, Ordering::Relaxed);
@@ -807,7 +817,7 @@ mod tests {
     #[test]
     fn history_pick_fills_input_and_starts_scan() {
         let mut app = test_app();
-        let dir = std::env::temp_dir().display().to_string();
+        let (_guard, dir) = missing_scan_root();
         let _ = update(&mut app, Message::HistoryPicked(dir.clone()));
         assert_eq!(app.path_input, dir);
         assert!(matches!(app.scan, ScanState::Running { .. }));
@@ -818,7 +828,8 @@ mod tests {
     #[test]
     fn new_scan_drops_pending_delete() {
         let mut app = scanned_app();
-        app.path_input = std::env::temp_dir().display().to_string();
+        let (_guard, root) = missing_scan_root();
+        app.path_input = root;
         let _ = update(&mut app, Message::DeleteRequested(NodeId(3)));
         let _ = update(&mut app, Message::StartScan);
         assert_eq!(app.pending_delete, None);
