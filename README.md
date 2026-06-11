@@ -40,7 +40,8 @@ Requires Rust 1.85 or newer.
 cargo build --release
 ```
 
-The binary is produced at `target/release/filegram`.
+The binary is produced at `target/release/filegram`
+(`target\release\filegram.exe` on Windows).
 
 On Linux you may need development packages for the windowing stack
 (X11/Wayland) — see [.github/workflows/build.yml](.github/workflows/build.yml)
