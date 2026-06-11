@@ -36,8 +36,8 @@ fn worst_row_score(first: f32, last: f32, sum: f32, area_width: f32, ratio: f32)
 /// inside rectangle `area`. Rows are stacked bottom-up, bricks within a row go
 /// left to right. Returns rectangles in input order.
 ///
-/// A row keeps accepting items while that improves its worst aspect score
-/// (strip treemap aiming at [`TARGET_RATIO`]).
+/// A row keeps accepting items while that does not worsen its worst aspect
+/// score (strip treemap aiming at [`TARGET_RATIO`]).
 pub fn layout(weights: &[f32], area: Rectangle) -> Vec<Rectangle> {
     let total: f32 = weights.iter().sum();
     if weights.is_empty() || total <= 0.0 || area.width <= 0.0 || area.height <= 0.0 {
