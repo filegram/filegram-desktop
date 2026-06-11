@@ -108,10 +108,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
 
-      - name: Install packaging tools
-        uses: taiki-e/install-action@v2
+      # Built from source: the prebuilt cargo-deb binaries target a glibc
+      # newer than ubuntu-22.04 ships. The compiled tools are cached.
+      - name: Cache packaging tools
+        id: tools-cache
+        uses: actions/cache@v4
         with:
-          tool: cargo-deb,cargo-generate-rpm
+          path: |
+            ~/.cargo/bin/cargo-deb
+            ~/.cargo/bin/cargo-generate-rpm
+          key: packaging-tools-ubuntu-22.04-cargo-deb-3.7.0-generate-rpm-0.21.0
+
+      - name: Install packaging tools
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-deb@3.7.0 cargo-generate-rpm@0.21.0
 
       - name: Build release
         run: cargo build --release
