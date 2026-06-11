@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "filegram"
-version = "0.1.28-dev"
+version = "0.1.28"
 dependencies = [
  "dirs",
  "fs4",
