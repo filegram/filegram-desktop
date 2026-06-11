@@ -872,12 +872,14 @@ fn main() -> iced::Result {
             // Raw 64x64 RGBA pixels pre-rendered from assets/icon/icon.svg:
             // `icon::from_rgba` needs no image decoder, unlike `from_file_data`
             // which would pull the whole `image` feature for one PNG.
-            icon: iced::window::icon::from_rgba(
-                include_bytes!("../assets/icon/icon-64.rgba").to_vec(),
-                64,
-                64,
-            )
-            .ok(),
+            icon: Some(
+                iced::window::icon::from_rgba(
+                    include_bytes!("../assets/icon/icon-64.rgba").to_vec(),
+                    64,
+                    64,
+                )
+                .expect("assets/icon/icon-64.rgba must hold exactly 64x64 RGBA pixels"),
+            ),
             ..Default::default()
         })
         .run()
