@@ -73,6 +73,9 @@ struct App {
     cancel: Arc<AtomicBool>,
     /// The system light/dark preference; the chrome theme follows it.
     theme_mode: Mode,
+    /// The deletion backend: `trash::delete` in production. Tests swap in
+    /// a tempdir-local delete so nothing ever reaches the OS trash.
+    delete: fn(&Path) -> std::io::Result<()>,
 }
 
 enum ScanState {
@@ -147,6 +150,7 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         cache: canvas::Cache::new(),
         cancel: Arc::new(AtomicBool::new(false)),
         theme_mode: Mode::default(),
+        delete: |path| trash::delete(path).map_err(std::io::Error::other),
     }
 }
 
@@ -334,7 +338,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let path = tree.node(id).path.clone();
-            if let Err(error) = trash::delete(path.as_ref()) {
+            if let Err(error) = (app.delete)(path.as_ref()) {
                 eprintln!(
                     "filegram: failed to move {} to trash: {error}",
                     path.display()
@@ -1039,20 +1043,25 @@ mod tests {
                 parent: 0,
             },
         ])));
+        // A tempdir-local delete keeps the test hermetic: the real backend
+        // would move the victim into the developer's OS trash.
+        app.delete = |path| std::fs::remove_file(path);
         app.disk_usage = Some(stale_usage());
         let _ = update(&mut app, Message::DeleteRequested(NodeId(1)));
         let _ = update(&mut app, Message::DeleteConfirmed);
-        assert!(!victim.exists(), "the victim went to the trash");
+        assert!(!victim.exists(), "the victim is gone");
         let usage = app.disk_usage.expect("the temp dir's volume is alive");
         assert!(usage.total > 2);
     }
 
     #[test]
     fn failed_delete_keeps_disk_usage() {
-        // The deletion fails (the path does not exist), so nothing on the
-        // volume changed and the reading must not move either.
-        let (_guard, root) = missing_scan_root();
-        let mut app = scanned_app_at(Path::new(&root));
+        // The deletion fails, so nothing on the volume changed and the
+        // reading must not move either — a real dir proves no re-query
+        // happened (one would replace the stale reading).
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = scanned_app_at(dir.path());
+        app.delete = |_| Err(std::io::Error::other("denied"));
         app.disk_usage = Some(stale_usage());
         let _ = update(&mut app, Message::DeleteRequested(NodeId(0)));
         let _ = update(&mut app, Message::DeleteConfirmed);
