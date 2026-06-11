@@ -41,6 +41,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history: the version patch component is the commit count.
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -55,6 +58,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
+
+      - name: Stamp build version
+        shell: bash
+        run: ./scripts/stamp-version.sh
 
       # On macOS the bundle script builds both architectures itself.
       - name: Build release
@@ -91,9 +98,14 @@ jobs:
     name: Package (Linux deb/rpm/AppImage)
     # Pinned (not ubuntu-latest) to keep the AppImage glibc baseline stable.
     runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.stamp.outputs.version }}
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history: the version patch component is the commit count.
+          fetch-depth: 0
 
       # The artifact names below hardcode x86_64.
       - name: Verify runner architecture matches artifact names
@@ -127,6 +139,10 @@ jobs:
       - name: Install packaging tools
         if: steps.tools-cache.outputs.cache-hit != 'true'
         run: cargo install --locked cargo-deb@3.7.0 cargo-generate-rpm@0.21.0
+
+      - name: Stamp build version
+        id: stamp
+        run: ./scripts/stamp-version.sh
 
       - name: Build release
         run: cargo build --release
@@ -198,13 +214,14 @@ jobs:
       - name: Recreate "latest" release with fresh binaries
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.package-linux.outputs.version }}
         run: |
           if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
           fi
           gh release create latest --repo "$GITHUB_REPOSITORY" \
-            --title "Latest" \
-            --notes "Automatic build from \`$GITHUB_SHA\`" \
+            --title "Filegram $VERSION" \
+            --notes "Automatic build of version $VERSION from \`$GITHUB_SHA\`" \
             --latest \
             --target "$GITHUB_SHA" \
             dist/*
