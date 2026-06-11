@@ -79,7 +79,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          fi
           gh release create latest --repo "$GITHUB_REPOSITORY" \
             --title "Latest" \
             --notes "Automatic build from \`$GITHUB_SHA\`" \
