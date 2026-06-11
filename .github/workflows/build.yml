@@ -110,7 +110,8 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
+          # dpkg-dev provides dpkg-shlibdeps for cargo-deb's $auto depends.
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config dpkg-dev
 
       # Built from source: the prebuilt cargo-deb binaries target a glibc
       # newer than ubuntu-22.04 ships. The compiled tools are cached.
