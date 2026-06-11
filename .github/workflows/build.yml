@@ -20,15 +20,18 @@ jobs:
           - os: ubuntu-latest
             artifact: filegram-linux-x86_64
             binary: target/release/filegram
+            asset: filegram-linux-x86_64
           - os: macos-latest
             artifact: filegram-macos-aarch64
             binary: target/release/filegram
+            asset: filegram-macos-aarch64
           - os: windows-latest
             artifact: filegram-windows-x86_64
             binary: target/release/filegram.exe
+            asset: filegram-windows-x86_64.exe
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -43,8 +46,45 @@ jobs:
       - name: Build release
         run: cargo build --release
 
+      - name: Rename binary to asset name
+        shell: bash
+        run: cp '${{ matrix.binary }}' '${{ matrix.asset }}'
+
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.binary }}
+          path: ${{ matrix.asset }}
+
+  release:
+    name: Update "latest" release
+    needs: build
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: latest-release
+      cancel-in-progress: true
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Recreate "latest" release with fresh binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          fi
+          gh release create latest --repo "$GITHUB_REPOSITORY" \
+            --title "Latest" \
+            --notes "Automatic build from \`$GITHUB_SHA\`" \
+            --latest \
+            --target "$GITHUB_SHA" \
+            dist/*
