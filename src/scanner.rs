@@ -6,6 +6,8 @@
 //! periodically builds [`FsTree`] snapshots — the map is drawn already during
 //! the scan.
 
+#[cfg(unix)]
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -65,7 +67,9 @@ pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = 
                 files: AtomicU64::new(0),
                 last_sent: Mutex::new(Instant::now()),
             };
-            scan_dir(&root, 0, &arena, &cancel, &progress);
+            let visited = VisitedDirs::new();
+            visited.first_visit(&root);
+            scan_dir(&root, 0, &arena, &cancel, &progress, &visited);
             *done.0.lock().unwrap() = true;
             done.1.notify_all();
             let tree = FsTree::from_arena(&arena.lock().unwrap());
@@ -104,6 +108,47 @@ pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = 
     rx
 }
 
+/// Deduplication of directories by (device, inode). APFS firmlinks (/Users,
+/// /Library etc., listed in /usr/share/firmlinks) are not symlinks — they look
+/// like plain directories but lead into the Data volume, which is itself
+/// mounted at /System/Volumes/Data, so a scan of "/" would count them twice.
+/// Comparing the parent's and child's devices is not enough: /Users legally
+/// lives on another volume and must still be scanned — only a second path to
+/// the same directory is skipped.
+struct VisitedDirs {
+    #[cfg(unix)]
+    seen: Mutex<HashSet<(u64, u64)>>,
+}
+
+impl VisitedDirs {
+    fn new() -> Self {
+        Self {
+            #[cfg(unix)]
+            seen: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// Records the directory; `false` means its (device, inode) was already
+    /// visited via another path. Deduplication is unix-only for now: other
+    /// platforms have their own directory aliases (Windows junctions, mount
+    /// points), but those are not handled yet — always `true`, no extra stat.
+    fn first_visit(&self, path: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let Ok(meta) = fs::metadata(path) else {
+                return true;
+            };
+            self.seen.lock().unwrap().insert((meta.dev(), meta.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            true
+        }
+    }
+}
+
 /// Progress: an atomic file counter; updates go to the UI no more often than
 /// [`PROGRESS_INTERVAL_MS`]; `try_lock` keeps workers from waiting on each other.
 struct Progress {
@@ -140,6 +185,7 @@ fn scan_dir(
     arena: &Mutex<Vec<ScanNode>>,
     cancel: &AtomicBool,
     progress: &Progress,
+    visited: &VisitedDirs,
 ) {
     if cancel.load(Ordering::Relaxed) {
         return;
@@ -170,6 +216,9 @@ fn scan_dir(
         let name: Arc<str> = entry.file_name().to_string_lossy().into_owned().into();
         let entry_path = entry.path();
         if file_type.is_dir() {
+            if !visited.first_visit(&entry_path) {
+                continue;
+            }
             dirs.push((name, entry_path));
         } else if file_type.is_file() {
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
@@ -204,7 +253,7 @@ fn scan_dir(
 
     subdirs
         .into_par_iter()
-        .for_each(|(id, dir_path)| scan_dir(&dir_path, id, arena, cancel, progress));
+        .for_each(|(id, dir_path)| scan_dir(&dir_path, id, arena, cancel, progress, visited));
 }
 
 #[cfg(test)]
@@ -262,6 +311,51 @@ mod tests {
             panic!("expected Finished");
         };
         assert_eq!(tree.node(tree.root).children.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn first_visit_is_false_when_inode_already_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let visited = VisitedDirs::new();
+        assert!(visited.first_visit(dir.path()));
+        assert!(!visited.first_visit(dir.path()));
+    }
+
+    /// A directory whose (device, inode) was already seen is skipped entirely.
+    /// A real firmlink cannot be created in a test, so the second path to the
+    /// same inode is simulated by pre-registering the directory in the set.
+    #[cfg(unix)]
+    #[test]
+    fn already_visited_directory_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/c.bin"), vec![0u8; 300]).unwrap();
+
+        let visited = VisitedDirs::new();
+        assert!(visited.first_visit(&dir.path().join("sub")));
+
+        let (tx, _rx) = mpsc::unbounded();
+        let progress = Progress {
+            tx,
+            files: AtomicU64::new(0),
+            last_sent: Mutex::new(Instant::now()),
+        };
+        let arena = Mutex::new(vec![ScanNode {
+            name: "root".into(),
+            path: dir.path().into(),
+            size: 0,
+            is_dir: true,
+            parent: 0,
+        }]);
+        let cancel = AtomicBool::new(false);
+        scan_dir(dir.path(), 0, &arena, &cancel, &progress, &visited);
+
+        let nodes = arena.lock().unwrap();
+        assert!(
+            nodes.iter().all(|n| n.name.as_ref() != "sub"),
+            "duplicate directory must not enter the arena: {nodes:?}"
+        );
     }
 
     /// Cancellation no longer wipes the result: `Finished` arrives with whatever
