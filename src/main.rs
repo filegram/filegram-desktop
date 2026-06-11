@@ -228,9 +228,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     }
                     // A long scan leaves the start-of-scan reading stale;
                     // re-query the volume so the bar matches the final map.
-                    if let Some(usage) = disk::usage(&tree.node(tree.root).path) {
-                        app.disk_usage = Some(usage);
-                    }
+                    // A failed query (volume gone, IO error) hides the bar
+                    // instead of keeping the stale number.
+                    app.disk_usage = disk::usage(&tree.node(tree.root).path);
                     app.tree = Some(tree);
                     app.scan = ScanState::Done;
                     app.cache.clear();
