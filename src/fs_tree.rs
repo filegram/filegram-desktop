@@ -29,7 +29,7 @@ pub struct ScanNode {
     pub parent: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FsNode {
     pub name: Arc<str>,
     pub path: Arc<Path>,
@@ -40,7 +40,7 @@ pub struct FsNode {
     pub children: Vec<NodeId>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FsTree {
     pub nodes: Vec<FsNode>,
     pub root: NodeId,
@@ -90,6 +90,34 @@ impl FsTree {
 
     pub fn node(&self, id: NodeId) -> &FsNode {
         &self.nodes[id.0]
+    }
+
+    /// Removes a direct child of `parent` (after a successful filesystem delete)
+    /// and subtracts its size from `parent` and every node in `ancestors` —
+    /// the navigation chain from the root down to `parent`, excluding `parent`
+    /// itself (its size is adjusted here already).
+    /// Returns `false` — and changes nothing — if `child` is not a direct child.
+    pub fn remove_child(&mut self, parent: NodeId, child: NodeId, ancestors: &[NodeId]) -> bool {
+        debug_assert!(
+            !ancestors.contains(&parent),
+            "ancestors must not include parent: its size would be subtracted twice"
+        );
+        let Some(position) = self.nodes[parent.0]
+            .children
+            .iter()
+            .position(|&id| id == child)
+        else {
+            return false;
+        };
+        let removed = self.nodes[child.0].size;
+        self.nodes[parent.0].children.remove(position);
+        // Saturating: a broken ancestor list must clamp at zero, not wrap
+        // around in release builds and corrupt every size above it.
+        self.nodes[parent.0].size = self.nodes[parent.0].size.saturating_sub(removed);
+        for &ancestor in ancestors {
+            self.nodes[ancestor.0].size = self.nodes[ancestor.0].size.saturating_sub(removed);
+        }
+        true
     }
 }
 
@@ -197,6 +225,49 @@ mod tests {
             .map(|&id| tree.node(id).name.as_ref())
             .collect();
         assert_eq!(names, vec!["sub2", "sub1", "top"]);
+    }
+
+    #[test]
+    fn remove_child_updates_parent_and_ancestors() {
+        // root → sub → file(500); root also holds top(50).
+        let mut tree = FsTree::from_arena(&[
+            dir(0, "root"),
+            dir(0, "sub"),
+            file(1, "a", 500),
+            file(0, "top", 50),
+        ]);
+        let sub = NodeId(1);
+        assert!(tree.remove_child(sub, NodeId(2), &[tree.root]));
+        assert!(tree.node(sub).children.is_empty());
+        assert_eq!(tree.node(sub).size, DIR_ENTRY_SIZE);
+        assert_eq!(tree.node(tree.root).size, DIR_ENTRY_SIZE * 2 + 50);
+        // The root still has both children: sub and top.
+        assert_eq!(tree.node(tree.root).children.len(), 2);
+    }
+
+    #[test]
+    fn remove_child_saturates_on_broken_ancestors() {
+        // A bogus ancestor smaller than the removed child must clamp at
+        // zero instead of wrapping around and corrupting the tree.
+        let mut tree = FsTree::from_arena(&[
+            dir(0, "root"),
+            dir(0, "sub"),
+            file(1, "big", 500),
+            file(0, "small", 10),
+        ]);
+        let small = NodeId(3);
+        assert!(tree.remove_child(NodeId(1), NodeId(2), &[small]));
+        assert_eq!(tree.node(small).size, 0);
+    }
+
+    #[test]
+    fn remove_child_rejects_non_direct_child() {
+        let mut tree = FsTree::from_arena(&[dir(0, "root"), dir(0, "sub"), file(1, "a", 500)]);
+        let before = tree.node(tree.root).size;
+        // The file is a child of sub, not of root — nothing changes.
+        assert!(!tree.remove_child(tree.root, NodeId(2), &[]));
+        assert_eq!(tree.node(tree.root).size, before);
+        assert_eq!(tree.node(NodeId(1)).children.len(), 1);
     }
 
     /// A mid-scan snapshot: the folder node is already in the arena, its children are not yet appended.
