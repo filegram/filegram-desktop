@@ -70,8 +70,13 @@ jobs:
     name: Build release tag
     needs: prepare
     uses: ./.github/workflows/build.yml
+    # Must cover everything any job in build.yml requests, or the run dies
+    # with startup_failure — GitHub validates the called workflow's job
+    # permissions up front, even for jobs that end up skipped (dev-release
+    # asks for contents: write but never runs under workflow_call).
     permissions:
-      contents: read
+      contents: write
+      actions: read
     with:
       ref: ${{ needs.prepare.outputs.tag }}
 
