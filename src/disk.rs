@@ -1,5 +1,5 @@
 //! Capacity of the volume that contains the scan root, for the mini
-//! disk-usage bar at the bottom of the window.
+//! disk-usage bar in the top bar of the finished map.
 
 use std::path::Path;
 
@@ -12,11 +12,12 @@ pub struct DiskUsage {
 
 impl DiskUsage {
     /// The used share of the volume in `0.0..=1.0` — the progress bar value.
+    /// Clamped: the fields are public, so `used > total` is constructible.
     pub fn fraction(&self) -> f32 {
         if self.total == 0 {
             0.0
         } else {
-            (self.used as f64 / self.total as f64) as f32
+            ((self.used as f64 / self.total as f64) as f32).min(1.0)
         }
     }
 }
@@ -49,6 +50,15 @@ mod tests {
     fn fraction_of_empty_volume_is_zero() {
         let usage = DiskUsage { used: 0, total: 0 };
         assert_eq!(usage.fraction(), 0.0);
+    }
+
+    #[test]
+    fn fraction_clamps_used_above_total() {
+        let usage = DiskUsage {
+            used: 2000,
+            total: 1000,
+        };
+        assert_eq!(usage.fraction(), 1.0);
     }
 
     #[test]
