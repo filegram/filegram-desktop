@@ -89,10 +89,15 @@ jobs:
 
   package-linux:
     name: Package (Linux deb/rpm/AppImage)
-    runs-on: ubuntu-latest
+    # Pinned (not ubuntu-latest) to keep the AppImage glibc baseline stable.
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v6
+
+      # The artifact names below hardcode x86_64.
+      - name: Verify runner architecture matches artifact names
+        run: test "$(uname -m)" = "x86_64"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -129,13 +134,22 @@ jobs:
           curl -fsSLO "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage"
           echo "${LINUXDEPLOY_SHA256}  linuxdeploy-x86_64.AppImage" | sha256sum -c -
           chmod +x linuxdeploy-x86_64.AppImage
-          # linuxdeploy looks the icon up by the Icon= name from the .desktop file.
-          cp assets/icon/icon-512.png filegram.png
+          # The full hicolor icon set, same as in the deb/rpm packages.
+          # linuxdeploy places each icon by its detected resolution; the files
+          # must be named after the Icon= entry, hence the size-keyed copies.
+          icon_args=()
+          for size in 16 32 48 64 128 256 512; do
+            mkdir -p "icons/$size"
+            cp "assets/icon/icon-$size.png" "icons/$size/filegram.png"
+            icon_args+=(--icon-file "icons/$size/filegram.png")
+          done
+          cp assets/icon/icon.svg icons/filegram.svg
+          icon_args+=(--icon-file icons/filegram.svg)
           APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT=filegram-linux-x86_64.AppImage \
             ./linuxdeploy-x86_64.AppImage --appdir AppDir \
               --executable target/release/filegram \
               --desktop-file packaging/linux/filegram.desktop \
-              --icon-file filegram.png \
+              "${icon_args[@]}" \
               --output appimage
 
       - name: Upload artifact
