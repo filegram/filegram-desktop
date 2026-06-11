@@ -25,12 +25,14 @@ Built with [Rust](https://www.rust-lang.org/) and [iced](https://iced.rs/).
 
 ## Installation
 
-Pre-built binaries for every platform are published to the rolling
+Pre-built binaries are published to the rolling
 [latest release](https://github.com/filegram/filegram-desktop/releases/tag/latest):
 
-- **Windows** — 64-bit and 32-bit (i686) executables.
-- **macOS** — universal (Intel + Apple Silicon) `.app` bundle.
-- **Linux** — `.deb`, `.rpm` and AppImage packages, plus a plain binary.
+- **Windows** — x86_64 and i686 (32-bit) executables.
+- **macOS** — universal (Intel + Apple Silicon) `.app` bundle in a `.dmg`.
+- **Linux (x86_64)** — `.deb`, `.rpm` and AppImage packages, plus a plain binary.
+
+For other platforms, build from source below.
 
 ## Building from source
 
