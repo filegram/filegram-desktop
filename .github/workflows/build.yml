@@ -122,8 +122,12 @@ jobs:
           cp target/generate-rpm/*.rpm filegram-linux-x86_64.rpm
 
       - name: Build AppImage
+        env:
+          LINUXDEPLOY_VERSION: 1-alpha-20251107-1
+          LINUXDEPLOY_SHA256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
         run: |
-          curl -fsSLO https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSLO "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage"
+          echo "${LINUXDEPLOY_SHA256}  linuxdeploy-x86_64.AppImage" | sha256sum -c -
           chmod +x linuxdeploy-x86_64.AppImage
           # linuxdeploy looks the icon up by the Icon= name from the .desktop file.
           cp assets/icon/icon-512.png filegram.png
