@@ -129,8 +129,9 @@ impl VisitedDirs {
     }
 
     /// Records the directory; `false` means its (device, inode) was already
-    /// visited via another path. On non-unix there are no firmlinks/bind
-    /// mounts to worry about — always `true`, no extra stat.
+    /// visited via another path. Deduplication is unix-only for now: other
+    /// platforms have their own directory aliases (Windows junctions, mount
+    /// points), but those are not handled yet — always `true`, no extra stat.
     fn first_visit(&self, path: &Path) -> bool {
         #[cfg(unix)]
         {
