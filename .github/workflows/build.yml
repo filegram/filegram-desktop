@@ -23,8 +23,8 @@ jobs:
             asset: filegram-linux-x86_64
           - os: macos-latest
             artifact: filegram-macos-universal
-            binary: target/release/Filegram.app.zip
-            asset: filegram-macos-universal.app.zip
+            binary: target/release/Filegram.dmg
+            asset: filegram-macos-universal.dmg
           - os: windows-latest
             artifact: filegram-windows-x86_64
             binary: target/release/filegram.exe
