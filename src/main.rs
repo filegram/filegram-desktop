@@ -223,8 +223,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::DeleteRequested(id) => {
             // The UI disables deletion mid-scan; the same invariant is
             // enforced here so no other path can desync the tree from the
-            // scanner's arena.
-            if matches!(app.scan, ScanState::Done) {
+            // scanner's arena. A loaded tree is required for the same
+            // reason: the modal renders the target node from it.
+            if matches!(app.scan, ScanState::Done) && app.tree.is_some() {
                 app.pending_delete = Some(id);
             }
             Task::none()
@@ -248,7 +249,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             if !matches!(app.scan, ScanState::Done) {
                 return Task::none();
             }
-            let Some(tree) = &app.tree else {
+            let Some(tree) = app.tree.as_mut() else {
                 return Task::none();
             };
             let path = tree.node(id).path.clone();
@@ -261,11 +262,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             // The hit-test only yields direct children of `current`, so the
             // deleted node is removed from `current` and the sizes of the
-            // ancestors on the navigation stack are adjusted.
-            let mut updated = FsTree::clone(tree);
-            if updated.remove_child(app.current, id, &app.nav_stack) {
-                app.tree = Some(Arc::new(updated));
-            }
+            // ancestors on the navigation stack are adjusted. The Arc is
+            // mutated in place when uniquely owned (the scanner is done and
+            // its snapshots are dropped); make_mut clones only if shared.
+            Arc::make_mut(tree).remove_child(app.current, id, &app.nav_stack);
             app.active = None;
             app.cache.clear();
             Task::none()
@@ -645,10 +645,18 @@ fn main() -> iced::Result {
 mod tests {
     use super::*;
 
-    /// `boot()` with the scan already finished — deletion is only legal then.
+    /// `boot()` with a finished scan and a loaded (root-only) tree —
+    /// deletion is only legal in that state.
     fn scanned_app() -> App {
         let (mut app, _) = boot();
         app.scan = ScanState::Done;
+        app.tree = Some(Arc::new(FsTree::from_arena(&[fs_tree::ScanNode {
+            name: "root".into(),
+            path: std::path::Path::new("/root").into(),
+            size: 0,
+            is_dir: true,
+            parent: 0,
+        }])));
         app
     }
 
@@ -679,9 +687,18 @@ mod tests {
     }
 
     #[test]
+    fn delete_request_ignored_without_tree() {
+        let mut app = scanned_app();
+        app.tree = None;
+        let _ = update(&mut app, Message::DeleteRequested(NodeId(3)));
+        assert_eq!(app.pending_delete, None);
+    }
+
+    #[test]
     fn confirm_without_tree_clears_pending() {
         let mut app = scanned_app();
         let _ = update(&mut app, Message::DeleteRequested(NodeId(3)));
+        app.tree = None;
         let _ = update(&mut app, Message::DeleteConfirmed);
         assert_eq!(app.pending_delete, None);
     }
