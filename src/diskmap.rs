@@ -212,7 +212,8 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
     // the smallest displayed brick — otherwise a folder of near-equal items
     // (or a mid-scan snapshot, while folder aggregates are still counting
     // up) would be swallowed whole; heavier items stay regular bricks.
-    // The unreadable tail from phase 1 is exempt: it must stay hidden.
+    // The unreadable tail from phase 1 is exempt from this cap, but not
+    // from the under-two rule below.
     let share_tail = weights
         .iter()
         .rev()
@@ -226,6 +227,9 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
         target -= 1;
     }
 
+    // A single-item tail is not worth a rest brick: it would occupy the
+    // exact same rectangle, equally unlabeled, while a regular brick at
+    // least stays clickable — so anything under two items is shown as is.
     let collapsed = if target >= 2 { target } else { 0 };
     let rects = rects_for(collapsed);
     let kept = children.len() - collapsed;
