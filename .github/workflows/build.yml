@@ -147,9 +147,12 @@ jobs:
           cargo deb --no-build
           cp target/debian/*.deb filegram-linux-x86_64.deb
 
+      # RPM forbids '-' in versions; '~' is its pre-release marker
+      # (0.1.0~dev sorts below 0.1.0), so dev builds map -dev to ~dev.
       - name: Build .rpm package
         run: |
-          cargo generate-rpm
+          rpm_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2 | tr - '~')
+          cargo generate-rpm --set-metadata "version = \"$rpm_version\""
           cp target/generate-rpm/*.rpm filegram-linux-x86_64.rpm
 
       - name: Build AppImage
