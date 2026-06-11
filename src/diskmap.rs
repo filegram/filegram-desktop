@@ -3,6 +3,8 @@
 //! Map geometry is cached in a `canvas::Cache` (analog of the original's offscreen Bitmap),
 //! the highlight is drawn as a separate layer on top.
 
+use std::cell::Cell;
+
 use iced::widget::canvas::{self, Action, Event, Frame, Path, Stroke, Text};
 use iced::{Color, Pixels, Point, Rectangle, Size, mouse};
 
@@ -10,15 +12,60 @@ use crate::Message;
 use crate::fs_tree::{FsTree, NodeId};
 use crate::treemap::{NESTED_DIVISOR, TOP_LEVEL_DIVISOR, layout, normalize_weight};
 
-const FOLDER_FILL: Color = Color::from_rgb8(0xF9, 0xA8, 0x25);
-const FOLDER_STROKE: Color = Color::from_rgb8(0x58, 0x2B, 0x04);
-const FILE_FILL: Color = Color::from_rgb8(0x4D, 0xB6, 0xAC);
-const FILE_STROKE: Color = Color::from_rgb8(0x00, 0x4D, 0x40);
-const NESTED_FOLDER_FILL: Color = Color::from_rgb8(0xFB, 0xC0, 0x2D);
-// ARGB #4080CBC4 from the original: alpha 0x40 ≈ 0.25.
-const NESTED_FILE_FILL: Color = Color::from_rgba8(0x80, 0xCB, 0xC4, 0.25);
-const HIGHLIGHT: Color = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.5);
+/// Brick colors for one theme mode; the variant is picked per frame from
+/// the application theme (the chrome follows the system light/dark scheme).
+struct BrickPalette {
+    map_background: Color,
+    folder_fill: Color,
+    folder_stroke: Color,
+    folder_text: Color,
+    file_fill: Color,
+    file_stroke: Color,
+    file_text: Color,
+    nested_folder_fill: Color,
+    nested_file_fill: Color,
+    highlight: Color,
+}
 
+/// The palette of the original Android Disk Map: saturated fills, white labels.
+const DARK_PALETTE: BrickPalette = BrickPalette {
+    map_background: Color::from_rgb8(0x1C, 0x1C, 0x1C),
+    folder_fill: Color::from_rgb8(0xF9, 0xA8, 0x25),
+    folder_stroke: Color::from_rgb8(0x58, 0x2B, 0x04),
+    folder_text: Color::WHITE,
+    file_fill: Color::from_rgb8(0x4D, 0xB6, 0xAC),
+    file_stroke: Color::from_rgb8(0x00, 0x4D, 0x40),
+    file_text: Color::WHITE,
+    nested_folder_fill: Color::from_rgb8(0xFB, 0xC0, 0x2D),
+    // ARGB #4080CBC4 from the original: alpha 0x40 ≈ 0.25.
+    nested_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.25),
+    highlight: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.5),
+};
+
+/// Muted fills with dark labels for the light system theme.
+const LIGHT_PALETTE: BrickPalette = BrickPalette {
+    map_background: Color::from_rgb8(0xD8, 0xD8, 0xD8),
+    folder_fill: Color::from_rgb8(0xFF, 0xE0, 0x82),
+    folder_stroke: Color::from_rgb8(0xBA, 0x75, 0x17),
+    folder_text: Color::from_rgb8(0x63, 0x38, 0x06),
+    file_fill: Color::from_rgb8(0xB2, 0xDF, 0xDB),
+    file_stroke: Color::from_rgb8(0x0F, 0x6E, 0x56),
+    file_text: Color::from_rgb8(0x04, 0x34, 0x2C),
+    nested_folder_fill: Color::from_rgb8(0xFF, 0xEC, 0xB3),
+    nested_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.4),
+    highlight: Color::from_rgba8(0x00, 0x00, 0x00, 0.25),
+};
+
+fn palette(theme: &iced::Theme) -> &'static BrickPalette {
+    if theme.extended_palette().is_dark {
+        &DARK_PALETTE
+    } else {
+        &LIGHT_PALETTE
+    }
+}
+
+/// Margin between the canvas edges and the brick area.
+const MAP_MARGIN: f32 = 4.0;
 const CORNER_RADIUS: f32 = 8.0;
 const MAX_FONT: f32 = 28.0;
 const MIN_FONT: f32 = 12.0;
@@ -37,69 +84,92 @@ pub struct DiskMap<'a> {
     pub cache: &'a canvas::Cache,
 }
 
-impl DiskMap<'_> {
-    /// First-level layout: children of the current node (already sorted
-    /// by size, descending) in local canvas coordinates.
-    fn level1(&self, size: Size) -> Vec<(NodeId, Rectangle)> {
-        let node = self.tree.node(self.current);
-        let weights: Vec<f32> = node
-            .children
-            .iter()
-            .map(|&id| normalize_weight(self.tree.node(id).size))
-            .collect();
-        let rects = layout(&weights, Rectangle::with_size(size), TOP_LEVEL_DIVISOR);
-        node.children.iter().copied().zip(rects).collect()
-    }
+/// First-level layout: children of `current` (already sorted by size,
+/// descending) in local canvas coordinates. Public so the application can
+/// anchor overlays (the hover actions panel) to a brick's rectangle.
+pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(NodeId, Rectangle)> {
+    let node = tree.node(current);
+    let weights: Vec<f32> = node
+        .children
+        .iter()
+        .map(|&id| normalize_weight(tree.node(id).size))
+        .collect();
+    let rects = layout(&weights, map_bounds(size), TOP_LEVEL_DIVISOR);
+    node.children.iter().copied().zip(rects).collect()
+}
 
+/// The brick caption: name and size, plus the entry count for folders.
+fn brick_label(tree: &FsTree, id: NodeId) -> String {
+    let node = tree.node(id);
+    if node.is_dir {
+        format!(
+            "{} {} ({})",
+            node.name,
+            crate::format::human_size(node.size),
+            node.children.len()
+        )
+    } else {
+        format!("{} {}", node.name, crate::format::human_size(node.size))
+    }
+}
+
+/// Whether the brick is large enough to fit its caption. Tiny slivers get
+/// no label, and the hover actions panel is suppressed for them too.
+pub fn has_label(tree: &FsTree, id: NodeId, rect: Rectangle) -> bool {
+    label_font_size(brick_label(tree, id).chars().count(), rect).is_some()
+}
+
+/// The brick area: the canvas inset by [`MAP_MARGIN`] on every side.
+fn map_bounds(size: Size) -> Rectangle {
+    Rectangle {
+        x: MAP_MARGIN,
+        y: MAP_MARGIN,
+        width: (size.width - 2.0 * MAP_MARGIN).max(0.0),
+        height: (size.height - 2.0 * MAP_MARGIN).max(0.0),
+    }
+}
+
+impl DiskMap<'_> {
     fn hit_test(&self, size: Size, point: Point) -> Option<NodeId> {
-        self.level1(size)
+        level1(self.tree, self.current, size)
             .into_iter()
             .find(|(_, rect)| rect.contains(point))
             .map(|(id, _)| id)
     }
 
-    fn draw_map(&self, frame: &mut Frame) {
-        for (id, rect) in self.level1(frame.size()) {
-            self.draw_brick(frame, id, rect);
+    fn draw_map(&self, frame: &mut Frame, palette: &BrickPalette) {
+        frame.fill_rectangle(Point::ORIGIN, frame.size(), palette.map_background);
+        for (id, rect) in level1(self.tree, self.current, frame.size()) {
+            self.draw_brick(frame, palette, id, rect);
         }
     }
 
-    fn draw_brick(&self, frame: &mut Frame, id: NodeId, rect: Rectangle) {
+    fn draw_brick(&self, frame: &mut Frame, palette: &BrickPalette, id: NodeId, rect: Rectangle) {
         let node = self.tree.node(id);
-        let (fill, stroke) = if node.is_dir {
-            (FOLDER_FILL, FOLDER_STROKE)
+        let (fill, stroke, text_color) = if node.is_dir {
+            (
+                palette.folder_fill,
+                palette.folder_stroke,
+                palette.folder_text,
+            )
         } else {
-            (FILE_FILL, FILE_STROKE)
+            (palette.file_fill, palette.file_stroke, palette.file_text)
         };
-        // A folder is a rounded rect, a file a plain one, as in the original.
-        let path = if node.is_dir {
-            Path::rounded_rectangle(rect.position(), rect.size(), CORNER_RADIUS.into())
-        } else {
-            Path::rectangle(rect.position(), rect.size())
-        };
+        let path = Path::rounded_rectangle(rect.position(), rect.size(), CORNER_RADIUS.into());
         frame.fill(&path, fill);
         frame.stroke(&path, Stroke::default().with_color(stroke).with_width(1.0));
 
-        let label = if node.is_dir {
-            format!(
-                "{} {} ({})",
-                node.name,
-                crate::format::human_size(node.size),
-                node.children.len()
-            )
-        } else {
-            format!("{} {}", node.name, crate::format::human_size(node.size))
-        };
-        let font_size = self.draw_label(frame, &label, rect);
+        let label = brick_label(self.tree, id);
+        let font_size = self.draw_label(frame, &label, text_color, rect);
 
         if node.is_dir {
-            self.draw_nested(frame, node.children.as_slice(), rect, font_size);
+            self.draw_nested(frame, palette, node.children.as_slice(), rect, font_size);
         }
     }
 
     /// Brick label; the font size is fitted per brick rather than globally
     /// (fixes a bug of the original). Returns the font size used.
-    fn draw_label(&self, frame: &mut Frame, label: &str, rect: Rectangle) -> f32 {
+    fn draw_label(&self, frame: &mut Frame, label: &str, color: Color, rect: Rectangle) -> f32 {
         // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
         let char_count = label.chars().count().max(1);
         let Some(font_size) = label_font_size(char_count, rect) else {
@@ -111,7 +181,7 @@ impl DiskMap<'_> {
         frame.fill_text(Text {
             content,
             position: label_origin(rect),
-            color: Color::WHITE,
+            color,
             size: Pixels(font_size),
             shaping: iced::widget::text::Shaping::Advanced,
             ..Text::default()
@@ -123,6 +193,7 @@ impl DiskMap<'_> {
     fn draw_nested(
         &self,
         frame: &mut Frame,
+        palette: &BrickPalette,
         children: &[NodeId],
         rect: Rectangle,
         font_size: f32,
@@ -152,9 +223,9 @@ impl DiskMap<'_> {
                 height: (r.height - SILHOUETTE_MARGIN).max(0.0),
             };
             let fill = if self.tree.node(id).is_dir {
-                NESTED_FOLDER_FILL
+                palette.nested_folder_fill
             } else {
-                NESTED_FILE_FILL
+                palette.nested_file_fill
             };
             frame.fill_rectangle(silhouette.position(), silhouette.size(), fill);
         }
@@ -218,6 +289,60 @@ mod tests {
     }
 
     #[test]
+    fn label_decides_actions_panel_visibility() {
+        use crate::fs_tree::ScanNode;
+        let tree = FsTree::from_arena(&[
+            ScanNode {
+                name: "root".into(),
+                path: std::path::Path::new("/root").into(),
+                size: 0,
+                is_dir: true,
+                parent: 0,
+            },
+            ScanNode {
+                name: "data.bin".into(),
+                path: std::path::Path::new("/root/data.bin").into(),
+                size: 100,
+                is_dir: false,
+                parent: 0,
+            },
+        ]);
+        let brick = NodeId(1);
+        assert!(has_label(&tree, brick, rect(300.0, 100.0)));
+        // A sliver brick: no caption fits — the hover actions are suppressed.
+        assert!(!has_label(&tree, brick, rect(24.0, 10.0)));
+    }
+
+    #[test]
+    fn map_bounds_inset_by_margin() {
+        let bounds = map_bounds(Size::new(100.0, 60.0));
+        assert_eq!(
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            (
+                MAP_MARGIN,
+                MAP_MARGIN,
+                100.0 - 2.0 * MAP_MARGIN,
+                60.0 - 2.0 * MAP_MARGIN
+            )
+        );
+        // A canvas smaller than the margins must not produce negative sizes.
+        let tiny = map_bounds(Size::new(MAP_MARGIN, MAP_MARGIN));
+        assert_eq!((tiny.width, tiny.height), (0.0, 0.0));
+    }
+
+    #[test]
+    fn palette_follows_theme_mode() {
+        assert_eq!(
+            palette(&iced::Theme::Dark).folder_text,
+            DARK_PALETTE.folder_text
+        );
+        assert_eq!(
+            palette(&iced::Theme::Light).folder_text,
+            LIGHT_PALETTE.folder_text
+        );
+    }
+
+    #[test]
     fn label_skipped_when_brick_too_small() {
         // Height under font size + 8 or width under two font sizes — no label.
         assert_eq!(label_font_size(10, rect(200.0, 15.0)), None);
@@ -226,7 +351,9 @@ mod tests {
 }
 
 impl canvas::Program<Message> for DiskMap<'_> {
-    type State = ();
+    /// The dark-mode flag of the last drawn frame: the cache keeps geometry
+    /// with baked-in colors, so a system theme switch must invalidate it.
+    type State = Cell<Option<bool>>;
 
     fn update(
         &self,
@@ -241,7 +368,10 @@ impl canvas::Program<Message> for DiskMap<'_> {
                 .and_then(|p| self.hit_test(bounds.size(), p))
         };
         match event {
-            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+            // A levitating cursor hovers the actions panel stacked above the
+            // map: keep the active brick, otherwise the panel would vanish
+            // right as the cursor reaches its buttons.
+            Event::Mouse(mouse::Event::CursorMoved { .. }) if !cursor.is_levitating() => {
                 let hovered = hit();
                 (hovered != self.active).then(|| Action::publish(Message::SetActive(hovered)))
             }
@@ -261,27 +391,33 @@ impl canvas::Program<Message> for DiskMap<'_> {
 
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         renderer: &iced::Renderer,
-        _theme: &iced::Theme,
+        theme: &iced::Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
+        let palette = palette(theme);
+        let is_dark = theme.extended_palette().is_dark;
+        if state.replace(Some(is_dark)) != Some(is_dark) {
+            self.cache.clear();
+        }
         let map = self
             .cache
-            .draw(renderer, bounds.size(), |frame| self.draw_map(frame));
+            .draw(renderer, bounds.size(), |frame| {
+                self.draw_map(frame, palette)
+            });
         let mut layers = vec![map];
 
         if let Some(active) = self.active
-            && let Some((_, rect)) = self
-                .level1(bounds.size())
+            && let Some((_, rect)) = level1(self.tree, self.current, bounds.size())
                 .into_iter()
                 .find(|&(id, _)| id == active)
         {
             let mut frame = Frame::new(renderer, bounds.size());
             let path =
                 Path::rounded_rectangle(rect.position(), rect.size(), CORNER_RADIUS.into());
-            frame.fill(&path, HIGHLIGHT);
+            frame.fill(&path, palette.highlight);
             layers.push(frame.into_geometry());
         }
         layers
