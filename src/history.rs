@@ -13,10 +13,12 @@ pub struct History {
 }
 
 impl History {
-    /// Records a scan start: the path moves to the front, duplicates are
-    /// removed, the list is capped at [`MAX_ENTRIES`]. Blank paths are ignored.
+    /// Records a scan start: the path is trimmed and moves to the front,
+    /// duplicates are removed, the list is capped at [`MAX_ENTRIES`].
+    /// Blank paths are ignored.
     pub fn push(&mut self, path: &str) {
-        if path.trim().is_empty() {
+        let path = path.trim();
+        if path.is_empty() {
             return;
         }
         self.entries.retain(|entry| entry != path);
@@ -101,6 +103,16 @@ mod tests {
         history.push("");
         history.push("   ");
         assert_eq!(history.latest(), None);
+    }
+
+    #[test]
+    fn push_trims_and_dedupes_whitespace_variants() {
+        let mut history = History::default();
+        history.push("/tmp");
+        history.push("/tmp ");
+        assert_eq!(history.entries(), ["/tmp"]);
+        history.push(" /var ");
+        assert_eq!(history.latest(), Some("/var"));
     }
 
     #[test]
