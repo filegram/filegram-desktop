@@ -16,6 +16,12 @@ on:
 
 permissions: {}
 
+# One release at a time: concurrent runs would race on pushing to the
+# default branch and creating tags. Never cancel a release mid-way.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   prepare:
     name: Tag release ${{ inputs.version }}
