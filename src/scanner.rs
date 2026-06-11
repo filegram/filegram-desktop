@@ -315,7 +315,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn first_visit_is_false_on_second_path_to_same_inode() {
+    fn first_visit_is_false_when_inode_already_seen() {
         let dir = tempfile::tempdir().unwrap();
         let visited = VisitedDirs::new();
         assert!(visited.first_visit(dir.path()));
@@ -348,14 +348,8 @@ mod tests {
             is_dir: true,
             parent: 0,
         }]);
-        scan_dir(
-            dir.path(),
-            0,
-            &arena,
-            &AtomicBool::new(false),
-            &progress,
-            &visited,
-        );
+        let cancel = AtomicBool::new(false);
+        scan_dir(dir.path(), 0, &arena, &cancel, &progress, &visited);
 
         let nodes = arena.lock().unwrap();
         assert!(
