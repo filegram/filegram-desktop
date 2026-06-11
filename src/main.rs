@@ -106,11 +106,18 @@ fn initial_path(history: &history::History) -> String {
 }
 
 fn boot() -> (App, Task<Message>) {
-    let history_file = history::default_file();
-    let history = history_file
-        .as_deref()
-        .map(history::History::load)
-        .unwrap_or_default();
+    let (history, history_file) = match history::default_file() {
+        Some(file) => match history::History::load(&file) {
+            Ok(history) => (history, Some(file)),
+            // Never save over a file we could not read: persistence is
+            // disabled until the next launch.
+            Err(error) => {
+                eprintln!("filegram: failed to read the scan history: {error}");
+                (history::History::default(), None)
+            }
+        },
+        None => (history::History::default(), None),
+    };
     (
         initial_app(history, history_file),
         iced::system::theme().map(Message::SystemThemeChanged),
@@ -159,11 +166,18 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             update(app, Message::StartScan)
         }
         Message::StartScan => {
-            app.history.push(&app.path_input);
-            if let Some(file) = &app.history_file
-                && let Err(error) = app.history.save(file)
-            {
-                eprintln!("filegram: failed to save the scan history: {error}");
+            // Trim once so the scan, the progress header and the history all
+            // see the same path.
+            app.path_input = app.path_input.trim().to_string();
+            // Only directories that exist enter the history: a typo'd path
+            // must not become a clickable entry and the next-launch prefill.
+            if std::path::Path::new(&app.path_input).is_dir() {
+                app.history.push(&app.path_input);
+                if let Some(file) = &app.history_file
+                    && let Err(error) = app.history.save(file)
+                {
+                    eprintln!("filegram: failed to save the scan history: {error}");
+                }
             }
             app.cancel = Arc::new(AtomicBool::new(false));
             app.scan = ScanState::Running {
@@ -428,20 +442,15 @@ fn idle_view(app: &App) -> Element<'_, Message> {
 
 /// The scan history under the path input: a click rescans the path.
 fn recent_scans(app: &App) -> Element<'_, Message> {
-    app.history
-        .entries()
-        .iter()
-        .fold(
-            column![text("Recent scans").size(14).style(muted_text)].spacing(2),
-            |list, path| {
-                list.push(
-                    button(text(format::shorten_path(path, PATH_BAR_MAX_CHARS)).size(14))
-                        .style(button::text)
-                        .padding(4)
-                        .on_press(Message::HistoryPicked(path.clone())),
-                )
-            },
-        )
+    column![text("Recent scans").size(14).style(muted_text)]
+        .spacing(2)
+        .extend(app.history.entries().iter().map(|path| {
+            button(text(format::shorten_path(path, PATH_BAR_MAX_CHARS)).size(14))
+                .style(button::text)
+                .padding(4)
+                .on_press(Message::HistoryPicked(path.clone()))
+                .into()
+        }))
         .into()
 }
 
@@ -805,23 +814,39 @@ mod tests {
     }
 
     #[test]
-    fn start_scan_records_history() {
+    fn start_scan_trims_input_and_records_existing_dir() {
+        let mut app = test_app();
+        // An (empty) existing directory: the scan threads exit immediately.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().display().to_string();
+        app.path_input = format!("  {path}  ");
+        let _ = update(&mut app, Message::StartScan);
+        // The input is trimmed once; the scan and the history see the same path.
+        assert_eq!(app.path_input, path);
+        assert_eq!(app.history.latest(), Some(path.as_str()));
+        app.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn start_scan_skips_history_for_missing_path() {
         let mut app = test_app();
         let (_guard, root) = missing_scan_root();
         app.path_input = root;
         let _ = update(&mut app, Message::StartScan);
-        assert_eq!(app.history.latest(), Some(app.path_input.as_str()));
+        // A path that does not exist must not become a history entry.
+        assert_eq!(app.history.latest(), None);
         app.cancel.store(true, Ordering::Relaxed);
     }
 
     #[test]
     fn history_pick_fills_input_and_starts_scan() {
         let mut app = test_app();
-        let (_guard, dir) = missing_scan_root();
-        let _ = update(&mut app, Message::HistoryPicked(dir.clone()));
-        assert_eq!(app.path_input, dir);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().display().to_string();
+        let _ = update(&mut app, Message::HistoryPicked(path.clone()));
+        assert_eq!(app.path_input, path);
         assert!(matches!(app.scan, ScanState::Running { .. }));
-        assert_eq!(app.history.latest(), Some(dir.as_str()));
+        assert_eq!(app.history.latest(), Some(path.as_str()));
         app.cancel.store(true, Ordering::Relaxed);
     }
 

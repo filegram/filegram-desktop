@@ -13,11 +13,11 @@ pub struct History {
 }
 
 impl History {
-    /// Records a scan start: the path is trimmed and moves to the front,
-    /// duplicates are removed, the list is capped at [`MAX_ENTRIES`].
-    /// Blank paths are ignored.
+    /// Records a scan start: the path is normalized (see [`normalize`]) and
+    /// moves to the front, duplicates are removed, the list is capped at
+    /// [`MAX_ENTRIES`]. Blank paths and paths with line breaks are ignored.
     pub fn push(&mut self, path: &str) {
-        let path = path.trim();
+        let path = normalize(path);
         if path.is_empty() {
             return;
         }
@@ -36,17 +36,22 @@ impl History {
         &self.entries
     }
 
-    /// Reads the history file; a missing or unreadable file yields an empty
-    /// history.
-    pub fn load(path: &Path) -> Self {
-        let text = std::fs::read_to_string(path).unwrap_or_default();
+    /// Reads the history file; a missing file yields an empty history.
+    /// Any other read error is returned so the caller can avoid saving
+    /// over a file it could not read.
+    pub fn load(path: &Path) -> io::Result<Self> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error),
+        };
         let mut history = Self::default();
         // Pushing in reverse order keeps the file's first line most recent
         // and reapplies the dedupe/cap invariants to hand-edited files.
         for line in text.lines().rev() {
             history.push(line);
         }
-        history
+        Ok(history)
     }
 
     /// Writes the history file, creating parent directories as needed.
@@ -55,6 +60,23 @@ impl History {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, self.entries.join("\n"))
+    }
+}
+
+/// Trims whitespace and trailing separators (`/tmp/` and `/tmp` are the same
+/// directory), keeping roots like `/` or `C:\` intact. Paths with line breaks
+/// normalize to blank: they cannot round-trip through the one-path-per-line
+/// file format.
+fn normalize(path: &str) -> &str {
+    let path = path.trim();
+    if path.contains(['\n', '\r']) {
+        return "";
+    }
+    let stripped = path.trim_end_matches(['/', '\\']);
+    if stripped.is_empty() || stripped.ends_with(':') {
+        path
+    } else {
+        stripped
     }
 }
 
@@ -116,6 +138,31 @@ mod tests {
     }
 
     #[test]
+    fn push_dedupes_trailing_separator_variants() {
+        let mut history = History::default();
+        history.push("/tmp");
+        history.push("/tmp/");
+        history.push("/tmp//");
+        assert_eq!(history.entries(), ["/tmp"]);
+    }
+
+    #[test]
+    fn push_keeps_root_paths_intact() {
+        let mut history = History::default();
+        history.push("/");
+        history.push(r"C:\");
+        assert_eq!(history.entries(), [r"C:\", "/"]);
+    }
+
+    #[test]
+    fn push_rejects_paths_with_line_breaks() {
+        let mut history = History::default();
+        history.push("/tmp/a\nb");
+        history.push("/tmp/a\rb");
+        assert_eq!(history.latest(), None);
+    }
+
+    #[test]
     fn empty_history_has_no_latest() {
         assert_eq!(History::default().latest(), None);
     }
@@ -131,14 +178,22 @@ mod tests {
         history.push("/b");
         history.save(&file).unwrap();
 
-        assert_eq!(History::load(&file), history);
+        assert_eq!(History::load(&file).unwrap(), history);
     }
 
     #[test]
     fn load_missing_file_yields_empty_history() {
         let dir = tempfile::tempdir().unwrap();
-        let history = History::load(&dir.path().join("absent.txt"));
+        let history = History::load(&dir.path().join("absent.txt")).unwrap();
         assert_eq!(history, History::default());
+    }
+
+    #[test]
+    fn load_unreadable_file_errors() {
+        // A directory cannot be read as a file — the error must surface
+        // instead of being swallowed into an empty (clobber-prone) history.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(History::load(dir.path()).is_err());
     }
 
     #[test]
@@ -150,7 +205,7 @@ mod tests {
             .collect();
         std::fs::write(&file, format!("{}\n\n  \n", lines.join("\n"))).unwrap();
 
-        let history = History::load(&file);
+        let history = History::load(&file).unwrap();
         assert_eq!(history.entries().len(), MAX_ENTRIES);
         assert_eq!(history.latest(), Some("/dir0"));
     }
