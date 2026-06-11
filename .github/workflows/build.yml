@@ -87,9 +87,98 @@ jobs:
             ${{ matrix.asset }}
             ${{ matrix.zip }}
 
+  package-linux:
+    name: Package (Linux deb/rpm/AppImage)
+    # Pinned (not ubuntu-latest) to keep the AppImage glibc baseline stable.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # The artifact names below hardcode x86_64.
+      - name: Verify runner architecture matches artifact names
+        run: test "$(uname -m)" = "x86_64"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The image version is not part of the default cache key; a target/
+          # built on another image restores as corrupt (E0463 on deps).
+          key: ubuntu-22.04
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          # dpkg-dev provides dpkg-shlibdeps for cargo-deb's $auto depends.
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config dpkg-dev
+
+      # Built from source: the prebuilt cargo-deb binaries target a glibc
+      # newer than ubuntu-22.04 ships. The compiled tools are cached.
+      - name: Cache packaging tools
+        id: tools-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-deb
+            ~/.cargo/bin/cargo-generate-rpm
+          key: packaging-tools-ubuntu-22.04-cargo-deb-3.7.0-generate-rpm-0.21.0
+
+      - name: Install packaging tools
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-deb@3.7.0 cargo-generate-rpm@0.21.0
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Build .deb package
+        run: |
+          cargo deb --no-build
+          cp target/debian/*.deb filegram-linux-x86_64.deb
+
+      - name: Build .rpm package
+        run: |
+          cargo generate-rpm
+          cp target/generate-rpm/*.rpm filegram-linux-x86_64.rpm
+
+      - name: Build AppImage
+        env:
+          LINUXDEPLOY_VERSION: 1-alpha-20251107-1
+          LINUXDEPLOY_SHA256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+        run: |
+          curl -fsSLO "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage"
+          echo "${LINUXDEPLOY_SHA256}  linuxdeploy-x86_64.AppImage" | sha256sum -c -
+          chmod +x linuxdeploy-x86_64.AppImage
+          # The full hicolor icon set, same as in the deb/rpm packages.
+          # linuxdeploy places each icon by its detected resolution; the files
+          # must be named after the Icon= entry, hence the size-keyed copies.
+          icon_args=()
+          for size in 16 32 48 64 128 256 512; do
+            mkdir -p "icons/$size"
+            cp "assets/icon/icon-$size.png" "icons/$size/filegram.png"
+            icon_args+=(--icon-file "icons/$size/filegram.png")
+          done
+          cp assets/icon/icon.svg icons/filegram.svg
+          icon_args+=(--icon-file icons/filegram.svg)
+          APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT=filegram-linux-x86_64.AppImage \
+            ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+              --executable target/release/filegram \
+              --desktop-file packaging/linux/filegram.desktop \
+              "${icon_args[@]}" \
+              --output appimage
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: filegram-linux-packages
+          path: |
+            filegram-linux-x86_64.deb
+            filegram-linux-x86_64.rpm
+            filegram-linux-x86_64.AppImage
+
   release:
     name: Update "latest" release
-    needs: build
+    needs: [build, package-linux]
     if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     permissions:

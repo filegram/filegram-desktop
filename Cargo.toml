@@ -3,6 +3,43 @@ name = "filegram"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+description = "Disk space analyzer with an interactive treemap"
+license = "MIT"
+repository = "https://github.com/filegram/filegram-desktop"
+
+# Linux packages (deb/rpm) built in CI; see .github/workflows/build.yml.
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+extended-description = """\
+Filegram scans a directory tree and visualizes disk usage as an \
+interactive treemap, helping to find what takes up space."""
+assets = [
+    ["target/release/filegram", "usr/bin/", "755"],
+    ["packaging/linux/filegram.desktop", "usr/share/applications/", "644"],
+    ["assets/icon/icon.svg", "usr/share/icons/hicolor/scalable/apps/filegram.svg", "644"],
+    ["assets/icon/icon-16.png", "usr/share/icons/hicolor/16x16/apps/filegram.png", "644"],
+    ["assets/icon/icon-32.png", "usr/share/icons/hicolor/32x32/apps/filegram.png", "644"],
+    ["assets/icon/icon-48.png", "usr/share/icons/hicolor/48x48/apps/filegram.png", "644"],
+    ["assets/icon/icon-64.png", "usr/share/icons/hicolor/64x64/apps/filegram.png", "644"],
+    ["assets/icon/icon-128.png", "usr/share/icons/hicolor/128x128/apps/filegram.png", "644"],
+    ["assets/icon/icon-256.png", "usr/share/icons/hicolor/256x256/apps/filegram.png", "644"],
+    ["assets/icon/icon-512.png", "usr/share/icons/hicolor/512x512/apps/filegram.png", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/filegram", dest = "/usr/bin/filegram", mode = "755" },
+    { source = "packaging/linux/filegram.desktop", dest = "/usr/share/applications/filegram.desktop", mode = "644" },
+    { source = "assets/icon/icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/filegram.svg", mode = "644" },
+    { source = "assets/icon/icon-16.png", dest = "/usr/share/icons/hicolor/16x16/apps/filegram.png", mode = "644" },
+    { source = "assets/icon/icon-32.png", dest = "/usr/share/icons/hicolor/32x32/apps/filegram.png", mode = "644" },
+    { source = "assets/icon/icon-48.png", dest = "/usr/share/icons/hicolor/48x48/apps/filegram.png", mode = "644" },
+    { source = "assets/icon/icon-64.png", dest = "/usr/share/icons/hicolor/64x64/apps/filegram.png", mode = "644" },
+    { source = "assets/icon/icon-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/filegram.png", mode = "644" },
+    { source = "assets/icon/icon-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/filegram.png", mode = "644" },
+    { source = "assets/icon/icon-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/filegram.png", mode = "644" },
+]
 
 [dependencies]
 iced = { version = "0.14", features = ["canvas", "svg"] }
