@@ -4,6 +4,7 @@ mod format;
 mod fs_tree;
 mod history;
 mod scanner;
+mod settings;
 mod treemap;
 
 use std::path::{Path, PathBuf};
@@ -42,6 +43,10 @@ const HOME_ICON: &[u8] = include_bytes!("../assets/home.svg");
 const DOWNLOADS_ICON: &[u8] = include_bytes!("../assets/downloads.svg");
 const DESKTOP_ICON: &[u8] = include_bytes!("../assets/desktop.svg");
 const DOCUMENTS_ICON: &[u8] = include_bytes!("../assets/documents.svg");
+/// The theme toggle in the bottom-left corner: the icon shows the mode a
+/// click switches to (the moon in light mode, the sun in dark).
+const SUN_ICON: &[u8] = include_bytes!("../assets/sun.svg");
+const MOON_ICON: &[u8] = include_bytes!("../assets/moon.svg");
 
 /// Approximate outer size of the hover actions panel (two icon buttons),
 /// used to clamp its position inside the canvas.
@@ -82,6 +87,11 @@ struct App {
     cancel: Arc<AtomicBool>,
     /// The system light/dark preference; the chrome theme follows it.
     theme_mode: Mode,
+    /// The user's manual choice from the theme toggle; overrides the
+    /// system preference and persists across launches.
+    theme_override: Option<Mode>,
+    /// Where the theme choice is persisted; `None` disables saving (tests).
+    theme_file: Option<PathBuf>,
     /// The deletion backend: `trash::delete` in production. Tests swap in
     /// a tempdir-local delete so nothing ever reaches the OS trash.
     delete: fn(&Path) -> std::io::Result<()>,
@@ -110,6 +120,7 @@ enum Message {
     DeleteConfirmed,
     DeleteCancelled,
     SystemThemeChanged(Mode),
+    ToggleTheme,
     WindowFocused,
 }
 
@@ -136,10 +147,17 @@ fn boot() -> (App, Task<Message>) {
         },
         None => (history::History::default(), None),
     };
-    (
-        initial_app(history, history_file),
-        iced::system::theme().map(Message::SystemThemeChanged),
-    )
+    let mut app = initial_app(history, history_file);
+    app.theme_file = settings::default_file();
+    // Unlike the history, an unreadable theme file is safe to save over:
+    // the next toggle rewrites the whole one-word file anyway.
+    app.theme_override = app.theme_file.as_deref().and_then(|file| {
+        settings::load(file).unwrap_or_else(|error| {
+            eprintln!("filegram: failed to read the theme choice: {error}");
+            None
+        })
+    });
+    (app, iced::system::theme().map(Message::SystemThemeChanged))
 }
 
 /// The initial application state. `boot` feeds it the persisted history;
@@ -160,15 +178,24 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         cache: canvas::Cache::new(),
         cancel: Arc::new(AtomicBool::new(false)),
         theme_mode: Mode::default(),
+        theme_override: None,
+        theme_file: None,
         delete: |path| trash::delete(path).map_err(std::io::Error::other),
     }
 }
 
 fn theme(app: &App) -> Theme {
-    match app.theme_mode {
-        Mode::Dark => Theme::Dark,
-        Mode::Light | Mode::None => LIGHT_THEME.clone(),
+    if is_dark(app) {
+        Theme::Dark
+    } else {
+        LIGHT_THEME.clone()
     }
+}
+
+/// The effective mode: the manual choice when there is one, the system
+/// preference otherwise (`Mode::None` renders light).
+fn is_dark(app: &App) -> bool {
+    matches!(app.theme_override.unwrap_or(app.theme_mode), Mode::Dark)
 }
 
 fn subscription(_app: &App) -> Subscription<Message> {
@@ -344,6 +371,16 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.theme_mode = mode;
             Task::none()
         }
+        Message::ToggleTheme => {
+            let mode = if is_dark(app) { Mode::Light } else { Mode::Dark };
+            app.theme_override = Some(mode);
+            if let Some(file) = &app.theme_file
+                && let Err(error) = settings::save(file, mode)
+            {
+                eprintln!("filegram: failed to save the theme choice: {error}");
+            }
+            Task::none()
+        }
         Message::DeleteConfirmed => {
             let Some(id) = app.pending_delete.take() else {
                 return Task::none();
@@ -504,7 +541,7 @@ fn idle_view(app: &App) -> Element<'_, Message> {
     if !app.history.entries().is_empty() {
         content = content.push(recent_scans(app));
     }
-    center(content).into()
+    column![center(content), corner_footer(app)].into()
 }
 
 /// Quick scans of the standard user folders, between the scan row and the
@@ -717,6 +754,36 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     )
     .padding(8)
     .style(bar_style)
+    .into()
+}
+
+/// The theme toggle: an icon button showing the mode a click switches to.
+fn theme_toggle(app: &App) -> Element<'_, Message> {
+    let (icon, tip) = if is_dark(app) {
+        (SUN_ICON, "Light theme")
+    } else {
+        (MOON_ICON, "Dark theme")
+    };
+    action_button(icon, tip, Some(Message::ToggleTheme))
+}
+
+/// The application version in the bottom-right corner.
+fn version_label<'a>() -> Element<'a, Message> {
+    text(concat!("v", env!("CARGO_PKG_VERSION")))
+        .size(14)
+        .style(muted_text)
+        .into()
+}
+
+/// The bottom corners of the start screen: the theme toggle on the left,
+/// the version on the right. The map screens stay free of chrome.
+fn corner_footer(app: &App) -> Element<'_, Message> {
+    row![
+        theme_toggle(app),
+        container(version_label()).width(Fill).align_x(iced::Right),
+    ]
+    .padding(8)
+    .align_y(Center)
     .into()
 }
 
@@ -1022,6 +1089,40 @@ mod tests {
         assert_eq!(theme(&app), Theme::Dark);
         let _ = update(&mut app, Message::SystemThemeChanged(Mode::Light));
         assert_eq!(theme(&app), *LIGHT_THEME);
+    }
+
+    #[test]
+    fn toggle_flips_theme() {
+        // The default mode is Mode::None — rendered light, so the first
+        // toggle lands on dark.
+        let mut app = test_app();
+        let _ = update(&mut app, Message::ToggleTheme);
+        assert_eq!(theme(&app), Theme::Dark);
+        let _ = update(&mut app, Message::ToggleTheme);
+        assert_eq!(theme(&app), *LIGHT_THEME);
+    }
+
+    #[test]
+    fn toggle_persists_theme_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.cfg");
+        let mut app = test_app();
+        app.theme_file = Some(file.clone());
+        let _ = update(&mut app, Message::ToggleTheme);
+        assert_eq!(settings::load(&file).unwrap(), Some(Mode::Dark));
+        let _ = update(&mut app, Message::ToggleTheme);
+        assert_eq!(settings::load(&file).unwrap(), Some(Mode::Light));
+    }
+
+    #[test]
+    fn manual_theme_survives_system_change() {
+        let mut app = test_app();
+        let _ = update(&mut app, Message::SystemThemeChanged(Mode::Light));
+        let _ = update(&mut app, Message::ToggleTheme);
+        assert_eq!(theme(&app), Theme::Dark);
+        // The OS flipping its preference must not undo the user's choice.
+        let _ = update(&mut app, Message::SystemThemeChanged(Mode::Light));
+        assert_eq!(theme(&app), Theme::Dark);
     }
 
     #[test]
