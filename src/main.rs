@@ -73,6 +73,9 @@ struct App {
     cancel: Arc<AtomicBool>,
     /// The system light/dark preference; the chrome theme follows it.
     theme_mode: Mode,
+    /// The deletion backend: `trash::delete` in production. Tests swap in
+    /// a tempdir-local delete so nothing ever reaches the OS trash.
+    delete: fn(&Path) -> std::io::Result<()>,
 }
 
 enum ScanState {
@@ -97,6 +100,7 @@ enum Message {
     DeleteConfirmed,
     DeleteCancelled,
     SystemThemeChanged(Mode),
+    WindowFocused,
 }
 
 /// The default content of the path input: the most recent scanned path,
@@ -146,6 +150,7 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         cache: canvas::Cache::new(),
         cancel: Arc::new(AtomicBool::new(false)),
         theme_mode: Mode::default(),
+        delete: |path| trash::delete(path).map_err(std::io::Error::other),
     }
 }
 
@@ -157,7 +162,15 @@ fn theme(app: &App) -> Theme {
 }
 
 fn subscription(_app: &App) -> Subscription<Message> {
-    iced::system::theme_changes().map(Message::SystemThemeChanged)
+    Subscription::batch([
+        iced::system::theme_changes().map(Message::SystemThemeChanged),
+        // There is no ready-made focus subscription, only the unfiltered
+        // window::events(); listen the same way it does, for Focused alone.
+        iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
+            _ => None,
+        }),
+    ])
 }
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
@@ -228,9 +241,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     }
                     // A long scan leaves the start-of-scan reading stale;
                     // re-query the volume so the bar matches the final map.
-                    // A failed query (volume gone, IO error) hides the bar
-                    // instead of keeping the stale number.
-                    app.disk_usage = disk::usage(&tree.node(tree.root).path);
+                    app.disk_usage = root_usage(&tree);
                     app.tree = Some(tree);
                     app.scan = ScanState::Done;
                     app.cache.clear();
@@ -296,6 +307,18 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.pending_delete = None;
             Task::none()
         }
+        Message::WindowFocused => {
+            // The volume drifts while the app is in the background (other
+            // programs write and delete); refresh the bar when the user
+            // comes back to a finished map. Mid-scan readings stay owned
+            // by StartScan/Finished — the bar is hidden until then anyway.
+            if matches!(app.scan, ScanState::Done)
+                && let Some(tree) = &app.tree
+            {
+                app.disk_usage = root_usage(tree);
+            }
+            Task::none()
+        }
         Message::SystemThemeChanged(mode) => {
             // The map cache invalidates itself: the canvas state tracks the
             // dark-mode flag of the last drawn frame.
@@ -315,7 +338,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let path = tree.node(id).path.clone();
-            if let Err(error) = trash::delete(path.as_ref()) {
+            if let Err(error) = (app.delete)(path.as_ref()) {
                 eprintln!(
                     "filegram: failed to move {} to trash: {error}",
                     path.display()
@@ -328,11 +351,21 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             // mutated in place when uniquely owned (the scanner is done and
             // its snapshots are dropped); make_mut clones only if shared.
             Arc::make_mut(tree).remove_child(app.current, id, &app.nav_stack);
+            // The reading on the bar went stale the moment the entry left
+            // the volume; re-query like Finished does.
+            app.disk_usage = root_usage(tree);
             app.active = None;
             app.cache.clear();
             Task::none()
         }
     }
+}
+
+/// A fresh reading of the volume the scanned tree lives on. `None` (the
+/// volume is gone, an IO error) hides the bar instead of keeping a stale
+/// number.
+fn root_usage(tree: &FsTree) -> Option<disk::DiskUsage> {
+    disk::usage(&tree.node(tree.root).path)
 }
 
 /// An outline chrome button from the light-minimal mockup: transparent fill,
@@ -789,16 +822,28 @@ mod tests {
     /// [`test_app`] with a finished scan and a loaded (root-only) tree —
     /// deletion is only legal in that state.
     fn scanned_app() -> App {
+        scanned_app_at(Path::new("/root"))
+    }
+
+    /// [`scanned_app`] rooted at `path`, for tests that need the root
+    /// volume query to succeed (a real dir) or fail (a missing one).
+    fn scanned_app_at(path: &Path) -> App {
         let mut app = test_app();
         app.scan = ScanState::Done;
         app.tree = Some(Arc::new(FsTree::from_arena(&[fs_tree::ScanNode {
             name: "root".into(),
-            path: std::path::Path::new("/root").into(),
+            path: path.into(),
             size: 0,
             is_dir: true,
             parent: 0,
         }])));
         app
+    }
+
+    /// A reading no real volume can produce: any re-query replaces it
+    /// with `total` far above 2, and a failed one with `None`.
+    fn stale_usage() -> disk::DiskUsage {
+        disk::DiskUsage { used: 1, total: 2 }
     }
 
     #[test]
@@ -926,6 +971,101 @@ mod tests {
         assert!(matches!(app.scan, ScanState::Running { .. }));
         assert_eq!(app.history.latest(), Some(path.as_str()));
         app.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn window_focus_refreshes_disk_usage_on_finished_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = scanned_app_at(dir.path());
+        app.disk_usage = Some(stale_usage());
+        let _ = update(&mut app, Message::WindowFocused);
+        let usage = app.disk_usage.expect("a temp dir lives on a real volume");
+        assert!(usage.total > 2);
+    }
+
+    #[test]
+    fn window_focus_hides_bar_when_volume_query_fails() {
+        let (_guard, root) = missing_scan_root();
+        let mut app = scanned_app_at(Path::new(&root));
+        app.disk_usage = Some(stale_usage());
+        let _ = update(&mut app, Message::WindowFocused);
+        // The volume is gone: hiding the bar beats showing a stale number,
+        // exactly like `ScanEvent::Finished`.
+        assert_eq!(app.disk_usage, None);
+    }
+
+    #[test]
+    fn window_focus_ignored_before_map_is_finished() {
+        let mut app = test_app();
+        for scan in [
+            ScanState::Idle,
+            ScanState::Running {
+                current: String::new(),
+                files: 0,
+            },
+        ] {
+            app.scan = scan;
+            app.disk_usage = Some(stale_usage());
+            let _ = update(&mut app, Message::WindowFocused);
+            assert_eq!(app.disk_usage, Some(stale_usage()));
+        }
+    }
+
+    #[test]
+    fn window_focus_ignored_without_tree() {
+        let mut app = scanned_app();
+        app.tree = None;
+        app.disk_usage = Some(stale_usage());
+        let _ = update(&mut app, Message::WindowFocused);
+        assert_eq!(app.disk_usage, Some(stale_usage()));
+    }
+
+    #[test]
+    fn confirmed_delete_refreshes_disk_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"junk").unwrap();
+        let mut app = test_app();
+        app.scan = ScanState::Done;
+        app.tree = Some(Arc::new(FsTree::from_arena(&[
+            fs_tree::ScanNode {
+                name: "root".into(),
+                path: dir.path().into(),
+                size: 4,
+                is_dir: true,
+                parent: 0,
+            },
+            fs_tree::ScanNode {
+                name: "victim".into(),
+                path: victim.as_path().into(),
+                size: 4,
+                is_dir: false,
+                parent: 0,
+            },
+        ])));
+        // A tempdir-local delete keeps the test hermetic: the real backend
+        // would move the victim into the developer's OS trash.
+        app.delete = |path| std::fs::remove_file(path);
+        app.disk_usage = Some(stale_usage());
+        let _ = update(&mut app, Message::DeleteRequested(NodeId(1)));
+        let _ = update(&mut app, Message::DeleteConfirmed);
+        assert!(!victim.exists(), "the victim is gone");
+        let usage = app.disk_usage.expect("the temp dir's volume is alive");
+        assert!(usage.total > 2);
+    }
+
+    #[test]
+    fn failed_delete_keeps_disk_usage() {
+        // The deletion fails, so nothing on the volume changed and the
+        // reading must not move either — a real dir proves no re-query
+        // happened (one would replace the stale reading).
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = scanned_app_at(dir.path());
+        app.delete = |_| Err(std::io::Error::other("denied"));
+        app.disk_usage = Some(stale_usage());
+        let _ = update(&mut app, Message::DeleteRequested(NodeId(0)));
+        let _ = update(&mut app, Message::DeleteConfirmed);
+        assert_eq!(app.disk_usage, Some(stale_usage()));
     }
 
     #[test]
