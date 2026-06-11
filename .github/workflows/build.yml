@@ -22,9 +22,9 @@ jobs:
             binary: target/release/filegram
             asset: filegram-linux-x86_64
           - os: macos-latest
-            artifact: filegram-macos-aarch64
-            binary: target/release/filegram
-            asset: filegram-macos-aarch64
+            artifact: filegram-macos-universal
+            binary: target/release/Filegram.app.zip
+            asset: filegram-macos-universal.app.zip
           - os: windows-latest
             artifact: filegram-windows-x86_64
             binary: target/release/filegram.exe
@@ -43,8 +43,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
 
+      # On macOS the bundle script builds both architectures itself.
       - name: Build release
+        if: runner.os != 'macOS'
         run: cargo build --release
+
+      - name: Bundle macOS app (universal)
+        if: runner.os == 'macOS'
+        run: ./scripts/bundle-macos.sh
 
       - name: Rename binary to asset name
         shell: bash
