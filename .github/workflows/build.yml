@@ -87,9 +87,65 @@ jobs:
             ${{ matrix.asset }}
             ${{ matrix.zip }}
 
+  package-linux:
+    name: Package (Linux deb/rpm/AppImage)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
+
+      - name: Install packaging tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Build .deb package
+        run: |
+          cargo deb --no-build
+          cp target/debian/*.deb filegram-linux-x86_64.deb
+
+      - name: Build .rpm package
+        run: |
+          cargo generate-rpm
+          cp target/generate-rpm/*.rpm filegram-linux-x86_64.rpm
+
+      - name: Build AppImage
+        run: |
+          curl -fsSLO https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+          # linuxdeploy looks the icon up by the Icon= name from the .desktop file.
+          cp assets/icon/icon-512.png filegram.png
+          APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT=filegram-linux-x86_64.AppImage \
+            ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+              --executable target/release/filegram \
+              --desktop-file packaging/linux/filegram.desktop \
+              --icon-file filegram.png \
+              --output appimage
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: filegram-linux-packages
+          path: |
+            filegram-linux-x86_64.deb
+            filegram-linux-x86_64.rpm
+            filegram-linux-x86_64.AppImage
+
   release:
     name: Update "latest" release
-    needs: build
+    needs: [build, package-linux]
     if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     permissions:
