@@ -224,7 +224,7 @@ jobs:
             *-dev) ;;
             *) echo "error: version '$version' in Cargo.toml is not a -dev version" >&2; exit 1 ;;
           esac
-          gh release list --repo "$GITHUB_REPOSITORY" --json tagName --jq '.[].tagName' \
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' \
             | { grep -e '-dev$' -e '^latest$' || true; } \
             | while read -r stale; do
                 gh release delete "$stale" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
