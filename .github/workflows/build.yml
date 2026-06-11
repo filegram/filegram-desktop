@@ -151,7 +151,7 @@ jobs:
       # (0.1.0~dev sorts below 0.1.0), so dev builds map -dev to ~dev.
       - name: Build .rpm package
         run: |
-          rpm_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2 | tr - '~')
+          rpm_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2 | tr -- '-' '~')
           cargo generate-rpm --set-metadata "version = \"$rpm_version\""
           cp target/generate-rpm/*.rpm filegram-linux-x86_64.rpm
 

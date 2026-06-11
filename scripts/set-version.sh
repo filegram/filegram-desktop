@@ -12,7 +12,7 @@ version=${1:?usage: set-version.sh <version>}
 # perl instead of sed: "replace first match only" works the same on
 # Linux and macOS (GNU sed's 0,/re/ address is not portable).
 perl -pi -e "\$done ||= s/^version = \".*\"/version = \"$version\"/" Cargo.toml
-grep -q "^version = \"$version\"" Cargo.toml \
+grep -qxF "version = \"$version\"" Cargo.toml \
     || { echo "error: failed to set version in Cargo.toml" >&2; exit 1; }
 cargo update --workspace --quiet
 
