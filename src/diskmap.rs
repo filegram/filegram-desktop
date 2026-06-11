@@ -22,8 +22,12 @@ struct BrickPalette {
     file_fill: Color,
     file_stroke: Color,
     file_text: Color,
+    rest_fill: Color,
+    rest_stroke: Color,
+    rest_text: Color,
     nested_folder_fill: Color,
     nested_file_fill: Color,
+    nested_rest_fill: Color,
     highlight: Color,
 }
 
@@ -36,9 +40,13 @@ const DARK_PALETTE: BrickPalette = BrickPalette {
     file_fill: Color::from_rgb8(0x4D, 0xB6, 0xAC),
     file_stroke: Color::from_rgb8(0x00, 0x4D, 0x40),
     file_text: Color::WHITE,
+    rest_fill: Color::from_rgb8(0x3C, 0x3C, 0x3C),
+    rest_stroke: Color::from_rgb8(0x75, 0x75, 0x75),
+    rest_text: Color::from_rgb8(0xB0, 0xB0, 0xB0),
     nested_folder_fill: Color::from_rgb8(0xFB, 0xC0, 0x2D),
     // ARGB #4080CBC4 from the original: alpha 0x40 ≈ 0.25.
     nested_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.25),
+    nested_rest_fill: Color::from_rgba8(0x9E, 0x9E, 0x9E, 0.25),
     highlight: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.5),
 };
 
@@ -51,8 +59,12 @@ const LIGHT_PALETTE: BrickPalette = BrickPalette {
     file_fill: Color::from_rgb8(0xB2, 0xDF, 0xDB),
     file_stroke: Color::from_rgb8(0x0F, 0x6E, 0x56),
     file_text: Color::from_rgb8(0x04, 0x34, 0x2C),
+    rest_fill: Color::from_rgb8(0xBD, 0xBD, 0xBD),
+    rest_stroke: Color::from_rgb8(0x61, 0x61, 0x61),
+    rest_text: Color::from_rgb8(0x42, 0x42, 0x42),
     nested_folder_fill: Color::from_rgb8(0xFF, 0xEC, 0xB3),
     nested_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.4),
+    nested_rest_fill: Color::from_rgba8(0x75, 0x75, 0x75, 0.3),
     highlight: Color::from_rgba8(0x00, 0x00, 0x00, 0.25),
 };
 
@@ -84,18 +96,116 @@ pub struct DiskMap<'a> {
     pub cache: &'a canvas::Cache,
 }
 
+/// Кирпич первого уровня карты: реальный узел дерева либо агрегатный
+/// «…»-кирпич, в который схлопнут хвост мелких элементов.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Brick {
+    Node(NodeId),
+    Rest { files: usize, dirs: usize, size: u64 },
+}
+
+/// Порог схлопывания: кирпич с долей веса (= долей площади карты)
+/// меньше этой уходит в «…»-хвост.
+const REST_SHARE: f32 = 0.05;
+
+/// Сколько последних элементов схлопнуть по критерию доли веса.
+/// Схлопывать единственный элемент бессмысленно: «…»-кирпич займёт
+/// ровно ту же площадь, — меньше двух не схлопываем.
+fn share_collapse_count(weights: &[f32]) -> usize {
+    let total: f32 = weights.iter().sum();
+    if total <= 0.0 {
+        return 0;
+    }
+    let count = weights
+        .iter()
+        .rev()
+        .take_while(|&&w| w / total < REST_SHARE)
+        .count();
+    if count >= 2 { count } else { 0 }
+}
+
+/// Подпись «…»-кирпича: суммарный размер и количество схлопнутых элементов.
+fn rest_label(files: usize, dirs: usize, size: u64) -> String {
+    let plural = |n: usize, word: &str| {
+        format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+    };
+    let mut parts = Vec::new();
+    if files > 0 {
+        parts.push(plural(files, "file"));
+    }
+    if dirs > 0 {
+        parts.push(plural(dirs, "folder"));
+    }
+    format!(
+        "… {} ({})",
+        crate::format::human_size(size),
+        parts.join(", ")
+    )
+}
+
 /// First-level layout: children of `current` (already sorted by size,
-/// descending) in local canvas coordinates. Public so the application can
+/// descending) in local canvas coordinates; the tail of items that are
+/// tiny (share < [`REST_SHARE`]) or can't fit their caption is collapsed
+/// into a single trailing [`Brick::Rest`]. Public so the application can
 /// anchor overlays (the hover actions panel) to a brick's rectangle.
-pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(NodeId, Rectangle)> {
-    let node = tree.node(current);
-    let weights: Vec<f32> = node
-        .children
+pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectangle)> {
+    let children = tree.node(current).children.as_slice();
+    let weights: Vec<f32> = children
         .iter()
         .map(|&id| normalize_weight(tree.node(id).size))
         .collect();
-    let rects = layout(&weights, map_bounds(size));
-    node.children.iter().copied().zip(rects).collect()
+    let total: f32 = weights.iter().sum();
+    let bounds = map_bounds(size);
+
+    // Схлопнутый хвост только растёт, поэтому цикл сходится за ≤ n шагов:
+    // после каждого расширения хвоста раскладка пересчитывается, и оставшиеся
+    // кирпичи проверяются заново уже в новых прямоугольниках.
+    let mut collapsed = 0;
+    loop {
+        let (bricks, rects) = arrange(tree, children, &weights, collapsed, bounds);
+        let kept = children.len() - collapsed;
+        let fails = |i: usize| {
+            weights[i] / total < REST_SHARE || !has_label(tree, children[i], rects[i])
+        };
+        let grown = match (0..kept).find(|&i| fails(i)) {
+            Some(first_failed) => children.len() - first_failed,
+            None => collapsed,
+        }
+        .max(collapsed);
+        if grown == collapsed || grown < 2 {
+            return bricks.into_iter().zip(rects).collect();
+        }
+        collapsed = grown;
+    }
+}
+
+/// Раскладка детей, у которых последние `collapsed` штук заменены
+/// одним «…»-элементом с суммарным весом хвоста.
+fn arrange(
+    tree: &FsTree,
+    children: &[NodeId],
+    weights: &[f32],
+    collapsed: usize,
+    bounds: Rectangle,
+) -> (Vec<Brick>, Vec<Rectangle>) {
+    let kept = children.len() - collapsed;
+    let mut shown = weights[..kept].to_vec();
+    let mut bricks: Vec<Brick> = children[..kept].iter().map(|&id| Brick::Node(id)).collect();
+    if collapsed > 0 {
+        shown.push(weights[kept..].iter().sum());
+        let (mut files, mut dirs, mut size) = (0, 0, 0u64);
+        for &id in &children[kept..] {
+            let node = tree.node(id);
+            if node.is_dir {
+                dirs += 1;
+            } else {
+                files += 1;
+            }
+            size += node.size;
+        }
+        bricks.push(Brick::Rest { files, dirs, size });
+    }
+    (bricks, layout(&shown, bounds))
 }
 
 /// The brick caption: name and size, plus the entry count for folders.
@@ -130,18 +240,46 @@ fn map_bounds(size: Size) -> Rectangle {
 }
 
 impl DiskMap<'_> {
+    /// «…»-кирпич инертен: курсор над ним не «попадает» никуда.
     fn hit_test(&self, size: Size, point: Point) -> Option<NodeId> {
         level1(self.tree, self.current, size)
             .into_iter()
             .find(|(_, rect)| rect.contains(point))
-            .map(|(id, _)| id)
+            .and_then(|(brick, _)| match brick {
+                Brick::Node(id) => Some(id),
+                Brick::Rest { .. } => None,
+            })
     }
 
     fn draw_map(&self, frame: &mut Frame, palette: &BrickPalette) {
         frame.fill_rectangle(Point::ORIGIN, frame.size(), palette.map_background);
-        for (id, rect) in level1(self.tree, self.current, frame.size()) {
-            self.draw_brick(frame, palette, id, rect);
+        for (brick, rect) in level1(self.tree, self.current, frame.size()) {
+            match brick {
+                Brick::Node(id) => self.draw_brick(frame, palette, id, rect),
+                Brick::Rest { files, dirs, size } => {
+                    self.draw_rest(frame, palette, files, dirs, size, rect);
+                }
+            }
         }
+    }
+
+    /// Агрегатный «…»-кирпич: нейтральные серые тона, без вложенных силуэтов.
+    fn draw_rest(
+        &self,
+        frame: &mut Frame,
+        palette: &BrickPalette,
+        files: usize,
+        dirs: usize,
+        size: u64,
+        rect: Rectangle,
+    ) {
+        let path = Path::rounded_rectangle(rect.position(), rect.size(), CORNER_RADIUS.into());
+        frame.fill(&path, palette.rest_fill);
+        frame.stroke(
+            &path,
+            Stroke::default().with_color(palette.rest_stroke).with_width(1.0),
+        );
+        self.draw_label(frame, &rest_label(files, dirs, size), palette.rest_text, rect);
     }
 
     fn draw_brick(&self, frame: &mut Frame, palette: &BrickPalette, id: NodeId, rect: Rectangle) {
@@ -212,14 +350,22 @@ impl DiskMap<'_> {
             .iter()
             .map(|&id| normalize_weight(self.tree.node(id).size))
             .collect();
-        for (&id, r) in children.iter().zip(layout(&weights, content)) {
+        // Хвост мелких силуэтов тоже схлопывается в один прямоугольник.
+        let kept = children.len() - share_collapse_count(&weights);
+        let mut shown = weights[..kept].to_vec();
+        if kept < children.len() {
+            shown.push(weights[kept..].iter().sum());
+        }
+        for (i, r) in layout(&shown, content).into_iter().enumerate() {
             let silhouette = Rectangle {
                 x: r.x + SILHOUETTE_MARGIN,
                 y: r.y,
                 width: (r.width - SILHOUETTE_MARGIN).max(0.0),
                 height: (r.height - SILHOUETTE_MARGIN).max(0.0),
             };
-            let fill = if self.tree.node(id).is_dir {
+            let fill = if i >= kept {
+                palette.nested_rest_fill
+            } else if self.tree.node(children[i]).is_dir {
                 palette.nested_folder_fill
             } else {
                 palette.nested_file_fill
@@ -257,6 +403,117 @@ mod tests {
 
     fn rect(width: f32, height: f32) -> Rectangle {
         Rectangle::new(Point::ORIGIN, Size::new(width, height))
+    }
+
+    /// Дерево: корень и его дети с заданными (size, is_dir).
+    fn tree_with_children(entries: &[(u64, bool)]) -> FsTree {
+        use crate::fs_tree::ScanNode;
+        let mut arena = vec![ScanNode {
+            name: "root".into(),
+            path: std::path::Path::new("/root").into(),
+            size: 0,
+            is_dir: true,
+            parent: 0,
+        }];
+        for (i, &(size, is_dir)) in entries.iter().enumerate() {
+            arena.push(ScanNode {
+                name: format!("e{i}").into(),
+                path: std::path::Path::new("/root/e").into(),
+                size,
+                is_dir,
+                parent: 0,
+            });
+        }
+        FsTree::from_arena(&arena)
+    }
+
+    #[test]
+    fn tail_of_tiny_items_collapses_into_rest() {
+        use crate::fs_tree::DIR_ENTRY_SIZE;
+        // Три крупных файла и хвост мелочи: 4 файла по 100 КБ и 2 пустые папки —
+        // у каждого элемента хвоста доля веса ≈1% < 5%.
+        let mut entries = vec![(100_000_000, false); 3];
+        entries.extend([(100_000, false); 4]);
+        entries.extend([(0, true); 2]);
+        let tree = tree_with_children(&entries);
+        let bricks = level1(&tree, tree.root, Size::new(800.0, 500.0));
+        assert_eq!(bricks.len(), 4, "{bricks:?}");
+        for (brick, _) in &bricks[..3] {
+            assert!(matches!(brick, Brick::Node(_)), "{brick:?}");
+        }
+        let (rest, rect) = bricks[3];
+        assert_eq!(
+            rest,
+            Brick::Rest {
+                files: 4,
+                dirs: 2,
+                size: 4 * 100_000 + 2 * DIR_ENTRY_SIZE,
+            }
+        );
+        assert!(rect.width > 0.0 && rect.height > 0.0, "{rect:?}");
+    }
+
+    #[test]
+    fn single_tiny_item_stays_a_node() {
+        // Один кандидат на схлопывание: «…»-кирпич занял бы ту же площадь,
+        // поэтому элемент остаётся обычным кирпичом.
+        let tree = tree_with_children(&[
+            (100_000_000, false),
+            (100_000_000, false),
+            (100_000_000, false),
+            (100_000, false),
+        ]);
+        let bricks = level1(&tree, tree.root, Size::new(800.0, 500.0));
+        assert_eq!(bricks.len(), 4, "{bricks:?}");
+        assert!(
+            bricks
+                .iter()
+                .all(|(brick, _)| matches!(brick, Brick::Node(_))),
+            "{bricks:?}"
+        );
+    }
+
+    #[test]
+    fn all_large_items_stay_nodes() {
+        let tree = tree_with_children(&[(100_000_000, false); 4]);
+        let bricks = level1(&tree, tree.root, Size::new(800.0, 500.0));
+        assert_eq!(bricks.len(), 4, "{bricks:?}");
+        assert!(
+            bricks
+                .iter()
+                .all(|(brick, _)| matches!(brick, Brick::Node(_))),
+            "{bricks:?}"
+        );
+    }
+
+    #[test]
+    fn label_unfit_tail_collapses_even_with_large_shares() {
+        // Канвас-«напёрсток»: доли по 25%, но кирпичи 31×16 ниже минимума
+        // для подписи (высота < шрифт + 8) — схлопывается всё в один «…».
+        let tree = tree_with_children(&[(100_000, false); 4]);
+        let bricks = level1(&tree, tree.root, Size::new(70.0, 40.0));
+        assert_eq!(bricks.len(), 1, "{bricks:?}");
+        assert!(
+            matches!(bricks[0].0, Brick::Rest { files: 4, dirs: 0, .. }),
+            "{bricks:?}"
+        );
+    }
+
+    #[test]
+    fn rest_label_lists_size_and_counts() {
+        assert_eq!(rest_label(4, 2, 408_192), "… 398.6 KB (4 files, 2 folders)");
+        assert_eq!(rest_label(1, 0, 500), "… 500 B (1 file)");
+        assert_eq!(rest_label(0, 3, 12_288), "… 12.0 KB (3 folders)");
+    }
+
+    #[test]
+    fn share_collapse_needs_two_small_items() {
+        // Хвост из трёх элементов с долями <5% схлопывается…
+        assert_eq!(share_collapse_count(&[10.0, 0.3, 0.2, 0.1]), 3);
+        // …а единственный мелкий элемент — нет.
+        assert_eq!(share_collapse_count(&[10.0, 0.3]), 0);
+        assert_eq!(share_collapse_count(&[1.0, 1.0, 1.0]), 0);
+        assert_eq!(share_collapse_count(&[]), 0);
     }
 
     #[test]
@@ -409,7 +666,7 @@ impl canvas::Program<Message> for DiskMap<'_> {
         if let Some(active) = self.active
             && let Some((_, rect)) = level1(self.tree, self.current, bounds.size())
                 .into_iter()
-                .find(|&(id, _)| id == active)
+                .find(|&(brick, _)| brick == Brick::Node(active))
         {
             let mut frame = Frame::new(renderer, bounds.size());
             let path =

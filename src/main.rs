@@ -849,9 +849,9 @@ fn map_canvas(app: &App) -> Element<'_, Message> {
         let actions = app.active.and_then(|active| {
             diskmap::level1(tree, app.current, size)
                 .into_iter()
-                .find(|&(id, _)| id == active)
+                .find(|&(brick, _)| brick == diskmap::Brick::Node(active))
                 // A brick too small for a caption gets no actions panel either.
-                .filter(|&(id, rect)| diskmap::has_label(tree, id, rect))
+                .filter(|&(_, rect)| diskmap::has_label(tree, active, rect))
                 .map(|(_, rect)| brick_actions(app, active, rect, size))
         });
         match actions {
