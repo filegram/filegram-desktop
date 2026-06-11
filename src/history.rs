@@ -73,11 +73,23 @@ fn normalize(path: &str) -> &str {
         return "";
     }
     let stripped = path.trim_end_matches(['/', '\\']);
-    if stripped.is_empty() || stripped.ends_with(':') {
+    if stripped.is_empty() || is_drive_letter(stripped) {
         path
     } else {
         stripped
     }
+}
+
+/// `C:` — a bare Windows drive letter. `C:\` must keep its separator:
+/// without it the path is drive-relative, a different location. On Unix
+/// `:` is an ordinary filename character, so only the exact two-character
+/// ASCII-letter form counts.
+fn is_drive_letter(path: &str) -> bool {
+    let mut chars = path.chars();
+    matches!(
+        (chars.next(), chars.next(), chars.next()),
+        (Some(letter), Some(':'), None) if letter.is_ascii_alphabetic()
+    )
 }
 
 /// The platform config-dir location of the history file.
@@ -152,6 +164,16 @@ mod tests {
         history.push("/");
         history.push(r"C:\");
         assert_eq!(history.entries(), [r"C:\", "/"]);
+    }
+
+    #[test]
+    fn push_strips_separators_after_non_drive_colons() {
+        // On Unix `:` is an ordinary filename character — only a bare
+        // Windows drive letter keeps its trailing separator.
+        let mut history = History::default();
+        history.push("/tmp:");
+        history.push("/tmp:/");
+        assert_eq!(history.entries(), ["/tmp:"]);
     }
 
     #[test]
