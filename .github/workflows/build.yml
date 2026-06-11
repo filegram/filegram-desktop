@@ -5,6 +5,13 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
+  # Reused by release.yml, which builds from the release tag.
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to build (defaults to the triggering commit)
+        type: string
+        required: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,6 +48,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -94,6 +103,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       # The artifact names below hardcode x86_64.
       - name: Verify runner architecture matches artifact names
@@ -136,9 +147,12 @@ jobs:
           cargo deb --no-build
           cp target/debian/*.deb filegram-linux-x86_64.deb
 
+      # RPM forbids '-' in versions; '~' is its pre-release marker
+      # (0.1.0~dev sorts below 0.1.0), so dev builds map -dev to ~dev.
       - name: Build .rpm package
         run: |
-          cargo generate-rpm
+          rpm_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2 | tr -- '-' '~')
+          cargo generate-rpm --set-metadata "version = \"$rpm_version\""
           cp target/generate-rpm/*.rpm filegram-linux-x86_64.rpm
 
       - name: Build AppImage
@@ -176,8 +190,8 @@ jobs:
             filegram-linux-x86_64.rpm
             filegram-linux-x86_64.AppImage
 
-  release:
-    name: Update "latest" release
+  dev-release:
+    name: Update dev pre-release
     needs: [build, package-linux]
     if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
@@ -185,26 +199,39 @@ jobs:
       contents: write
       actions: read
     concurrency:
-      group: latest-release
+      group: dev-release
       cancel-in-progress: true
 
     steps:
+      - uses: actions/checkout@v6
+
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
-      - name: Recreate "latest" release with fresh binaries
+      # The rolling dev pre-release is tagged with the dev version from
+      # Cargo.toml (e.g. v0.2.1-dev) and replaced on every push to master.
+      # Stale dev releases left behind by a version bump are removed too,
+      # as is the legacy "latest" release from the previous scheme.
+      - name: Recreate dev pre-release with fresh binaries
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
-          fi
-          gh release create latest --repo "$GITHUB_REPOSITORY" \
-            --title "Latest" \
-            --notes "Automatic build from \`$GITHUB_SHA\`" \
-            --latest \
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          case "$version" in
+            *-dev) ;;
+            *) echo "error: version '$version' in Cargo.toml is not a -dev version" >&2; exit 1 ;;
+          esac
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' \
+            | { grep -e '-dev$' -e '^latest$' || true; } \
+            | while read -r stale; do
+                gh release delete "$stale" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+              done
+          gh release create "v$version" --repo "$GITHUB_REPOSITORY" \
+            --title "Filegram $version" \
+            --notes "Automatic dev build from \`$GITHUB_SHA\`" \
+            --prerelease \
             --target "$GITHUB_SHA" \
             dist/*
