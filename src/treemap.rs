@@ -12,6 +12,10 @@ pub fn normalize_weight(size_bytes: u64) -> f32 {
 /// Target brick aspect ratio (width:height) — the golden ratio.
 const TARGET_RATIO: f32 = 1.618;
 
+/// Минимальная высота ряда: тоньше не помещается даже минимальная подпись
+/// (`MIN_FONT + 8` в diskmap) — такой последний ряд сливается с предыдущим.
+const MIN_ROW_HEIGHT: f32 = 20.0;
+
 /// How far the brick shape is from the golden ratio (1.0 = ideal).
 fn aspect_score(width: f32, height: f32) -> f32 {
     let r = width / height;
@@ -42,10 +46,9 @@ pub fn layout(weights: &[f32], area: Rectangle) -> Vec<Rectangle> {
     // Pixels² per unit of normalized weight.
     let ratio = area.width * area.height / total;
 
-    let mut rects = Vec::with_capacity(weights.len());
-    let mut bottom = area.y + area.height;
+    // Границы рядов: (индекс первого элемента, суммарный вес ряда).
+    let mut rows: Vec<(usize, f32)> = Vec::new();
     let mut row_start = 0;
-
     while row_start < weights.len() {
         let first = weights[row_start];
         let mut sum = first;
@@ -60,11 +63,27 @@ pub fn layout(weights: &[f32], area: Rectangle) -> Vec<Rectangle> {
             sum += next;
             row_end += 1;
         }
+        rows.push((row_start, sum));
+        row_start = row_end;
+    }
 
+    // Последний ряд тоньше минимальной подписи нечитаем — сливается
+    // с предыдущим (повторяется, пока слитый ряд не станет достаточно толст).
+    while rows.len() > 1 && rows.last().unwrap().1 * ratio / area.width < MIN_ROW_HEIGHT {
+        let (_, thin_sum) = rows.pop().unwrap();
+        rows.last_mut().unwrap().1 += thin_sum;
+    }
+
+    let mut rects = Vec::with_capacity(weights.len());
+    let mut bottom = area.y + area.height;
+    for (i, &(start, sum)) in rows.iter().enumerate() {
+        let end = rows
+            .get(i + 1)
+            .map_or(weights.len(), |&(next_start, _)| next_start);
         let row_height = sum * ratio / area.width;
         let top = (bottom - row_height).max(area.y);
         let mut x = area.x;
-        for &w in &weights[row_start..row_end] {
+        for &w in &weights[start..end] {
             let width = (w * ratio / row_height).min(area.x + area.width - x);
             rects.push(Rectangle::new(
                 iced::Point::new(x, top),
@@ -73,7 +92,6 @@ pub fn layout(weights: &[f32], area: Rectangle) -> Vec<Rectangle> {
             x += width;
         }
         bottom = top;
-        row_start = row_end;
     }
 
     rects
@@ -133,6 +151,17 @@ mod tests {
         let worst = rects.iter().map(elongation).fold(0.0, f32::max);
         // Со старой эвристикой row_limit здесь выходило ≈19:1.
         assert!(worst <= 5.0, "worst elongation {worst}");
+    }
+
+    #[test]
+    fn thin_last_row_merges_into_previous() {
+        // Хвост [0.5, 0.4] лёг бы верхним рядом толщиной ~8 px — нечитаемая
+        // полоса сливается с нижним рядом, и все кирпичи занимают полную
+        // высоту области.
+        let rects = layout(&[10.0, 0.5, 0.4], area_100x100());
+        for r in &rects {
+            assert!((r.height - 100.0).abs() < EPS, "{r:?}");
+        }
     }
 
     #[test]

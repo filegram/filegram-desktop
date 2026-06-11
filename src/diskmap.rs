@@ -413,7 +413,9 @@ impl DiskMap<'_> {
 /// every brick and every progressive-scan snapshot — overflow iced's glyph
 /// atlas (`PrepareError::AtlasFull` is silently ignored, text breaks).
 fn label_font_size(char_count: usize, rect: Rectangle) -> Option<f32> {
-    let fit = rect.width / (CHAR_WIDTH * char_count.max(1) as f32);
+    // Шрифт ограничивают обе стороны: ширина — по числу символов,
+    // высота — по вертикальным отступам подписи (8 px).
+    let fit = (rect.width / (CHAR_WIDTH * char_count.max(1) as f32)).min(rect.height - 8.0);
     // Down to an even integer: fewer distinct font sizes — a more stable atlas.
     let font_size = (fit.clamp(MIN_FONT, MAX_FONT) / 2.0).floor() * 2.0;
     (rect.height >= font_size + 8.0 && rect.width >= 2.0 * font_size).then_some(font_size)
@@ -703,6 +705,13 @@ mod tests {
             palette(&iced::Theme::Light).folder_text,
             LIGHT_PALETTE.folder_text
         );
+    }
+
+    #[test]
+    fn wide_short_brick_fits_label_with_smaller_font() {
+        // Широкий, но невысокий кирпич: шрифт по ширине вышел бы 20 px и
+        // провалил бы проверку высоты (25 < 28) — шрифт ограничивает высота.
+        assert_eq!(label_font_size(31, rect(400.0, 25.0)), Some(16.0));
     }
 
     #[test]
