@@ -11,7 +11,7 @@ env:
 
 jobs:
   build:
-    name: Build (${{ matrix.os }})
+    name: Build (${{ matrix.artifact }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -21,6 +21,8 @@ jobs:
             artifact: filegram-linux-x86_64
             binary: target/release/filegram
             asset: filegram-linux-x86_64
+            zip: filegram-linux-x86_64.zip
+          # The .dmg is already a compressed container — no extra zip.
           - os: macos-latest
             artifact: filegram-macos-universal
             binary: target/release/Filegram.dmg
@@ -29,13 +31,24 @@ jobs:
             artifact: filegram-windows-x86_64
             binary: target/release/filegram.exe
             asset: filegram-windows-x86_64.exe
+            zip: filegram-windows-x86_64.zip
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            artifact: filegram-windows-i686
+            binary: target/i686-pc-windows-msvc/release/filegram.exe
+            asset: filegram-windows-i686.exe
+            zip: filegram-windows-i686.zip
 
     steps:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -46,7 +59,7 @@ jobs:
       # On macOS the bundle script builds both architectures itself.
       - name: Build release
         if: runner.os != 'macOS'
-        run: cargo build --release
+        run: cargo build --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
 
       - name: Bundle macOS app (universal)
         if: runner.os == 'macOS'
@@ -56,11 +69,23 @@ jobs:
         shell: bash
         run: cp '${{ matrix.binary }}' '${{ matrix.asset }}'
 
+      - name: Create zip archive
+        if: matrix.zip
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            7z a '${{ matrix.zip }}' '${{ matrix.asset }}'
+          else
+            zip '${{ matrix.zip }}' '${{ matrix.asset }}'
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.zip }}
 
   release:
     name: Update "latest" release
