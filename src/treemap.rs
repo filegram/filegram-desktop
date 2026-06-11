@@ -12,8 +12,9 @@ pub fn normalize_weight(size_bytes: u64) -> f32 {
 /// Target brick aspect ratio (width:height) — the golden ratio.
 const TARGET_RATIO: f32 = 1.618;
 
-/// Минимальная высота ряда: тоньше не помещается даже минимальная подпись
-/// (`MIN_FONT + 8` в diskmap) — такой последний ряд сливается с предыдущим.
+/// Minimum row height: anything thinner cannot fit even the smallest brick
+/// caption — the value is coupled to `MIN_FONT + 8` in `diskmap` (12 + 8 px).
+/// A last row thinner than this is merged into the previous one.
 const MIN_ROW_HEIGHT: f32 = 20.0;
 
 /// How far the brick shape is from the golden ratio (1.0 = ideal).
@@ -46,7 +47,7 @@ pub fn layout(weights: &[f32], area: Rectangle) -> Vec<Rectangle> {
     // Pixels² per unit of normalized weight.
     let ratio = area.width * area.height / total;
 
-    // Границы рядов: (индекс первого элемента, суммарный вес ряда).
+    // Row boundaries: (index of the first item, total row weight).
     let mut rows: Vec<(usize, f32)> = Vec::new();
     let mut row_start = 0;
     while row_start < weights.len() {
@@ -67,8 +68,9 @@ pub fn layout(weights: &[f32], area: Rectangle) -> Vec<Rectangle> {
         row_start = row_end;
     }
 
-    // Последний ряд тоньше минимальной подписи нечитаем — сливается
-    // с предыдущим (повторяется, пока слитый ряд не станет достаточно толст).
+    // A last row thinner than the minimum caption height is unreadable —
+    // merge it into the previous row (repeat until the merged row is thick
+    // enough).
     while rows.len() > 1 && rows.last().unwrap().1 * ratio / area.width < MIN_ROW_HEIGHT {
         let (_, thin_sum) = rows.pop().unwrap();
         rows.last_mut().unwrap().1 += thin_sum;

@@ -96,21 +96,21 @@ pub struct DiskMap<'a> {
     pub cache: &'a canvas::Cache,
 }
 
-/// Кирпич первого уровня карты: реальный узел дерева либо агрегатный
-/// «…»-кирпич, в который схлопнут хвост мелких элементов.
+/// A first-level map tile: either a real tree node or the aggregate
+/// rest brick that collapses the tail of small items.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Brick {
     Node(NodeId),
     Rest { files: usize, dirs: usize, size: u64 },
 }
 
-/// Порог схлопывания: кирпич с долей веса (= долей площади карты)
-/// меньше этой уходит в «…»-хвост.
+/// Collapse threshold: a brick whose weight share (== map area share)
+/// is below this fraction goes into the rest tail.
 const REST_SHARE: f32 = 0.05;
 
-/// Сколько последних элементов схлопнуть по критерию доли веса.
-/// Схлопывать единственный элемент бессмысленно: «…»-кирпич займёт
-/// ровно ту же площадь, — меньше двух не схлопываем.
+/// How many trailing items to collapse by the weight-share criterion.
+/// Collapsing a single item is pointless — the rest brick would occupy
+/// exactly the same area — so anything under two items stays as is.
 fn share_collapse_count(weights: &[f32]) -> usize {
     let total: f32 = weights.iter().sum();
     if total <= 0.0 {
@@ -121,9 +121,10 @@ fn share_collapse_count(weights: &[f32]) -> usize {
         .rev()
         .take_while(|&&w| w / total < REST_SHARE)
         .count();
-    // Хвост обязан быть строго меньше младшего из показанных элементов:
-    // иначе у папки с равномерной мелочью «…» поглотил бы всю площадь.
-    // Пока перевешивает — крупнейшие элементы хвоста достаются обратно.
+    // The tail must stay strictly lighter than the smallest displayed item:
+    // otherwise a folder of uniform small entries would hide the whole area
+    // behind the rest. While it outweighs one, the heaviest tail items are
+    // released back.
     let mut rest: f32 = weights[weights.len() - count..].iter().sum();
     while count > 0
         && (count == weights.len() || rest >= weights[weights.len() - count - 1])
@@ -134,7 +135,7 @@ fn share_collapse_count(weights: &[f32]) -> usize {
     if count >= 2 { count } else { 0 }
 }
 
-/// Подпись «…»-кирпича: суммарный размер и количество схлопнутых элементов.
+/// The rest brick caption: combined size and the collapsed entry counts.
 fn rest_label(files: usize, dirs: usize, size: u64) -> String {
     let plural = |n: usize, word: &str| {
         format!("{n} {word}{}", if n == 1 { "" } else { "s" })
@@ -167,13 +168,33 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
     let total: f32 = weights.iter().sum();
     let bounds = map_bounds(size);
 
-    // Фаза 1 — нечитаемые: хвост от первого кирпича, чья подпись не
-    // помещается. Хвост только расширяется, поэтому цикл сходится за ≤ n
-    // шагов; после каждого расширения раскладка пересчитывается, и оставшиеся
-    // кирпичи проверяются заново уже в новых прямоугольниках.
+    // suffix[k] is the combined weight of items k.. — the would-be rest.
+    let mut suffix = vec![0.0f32; weights.len() + 1];
+    for k in (0..weights.len()).rev() {
+        suffix[k] = suffix[k + 1] + weights[k];
+    }
+
+    // Displayed weights for a given tail size; the buffer is reused
+    // across iterations to avoid re-allocating per snapshot.
+    let mut shown: Vec<f32> = Vec::with_capacity(weights.len());
+    let mut rects_for = |collapsed: usize| {
+        let kept = weights.len() - collapsed;
+        shown.clear();
+        shown.extend_from_slice(&weights[..kept]);
+        if collapsed > 0 {
+            shown.push(suffix[kept]);
+        }
+        layout(&shown, bounds)
+    };
+
+    // Phase 1 — unreadable bricks: collapse the tail from the first brick
+    // whose caption cannot fit. The tail only grows, so the loop converges
+    // in ≤ n steps (2–3 in practice: each step jumps straight to the first
+    // unlabeled brick); after every extension the layout is recomputed and
+    // the remaining bricks are re-checked in their new rectangles.
     let mut collapsed = 0;
     loop {
-        let (_, rects) = arrange(tree, children, &weights, collapsed, bounds);
+        let rects = rects_for(collapsed);
         let kept = children.len() - collapsed;
         let grown = match (0..kept).find(|&i| !has_label(tree, children[i], rects[i])) {
             Some(first_unlabeled) => children.len() - first_unlabeled,
@@ -186,45 +207,30 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
         collapsed = grown;
     }
 
-    // Фаза 2 — мелкие доли: хвост расширяется элементами с долей < 5%,
-    // но «…» обязан быть строго меньше младшего показанного кирпича — иначе
-    // у папки с равномерной мелочью (или в середине скана, пока размеры
-    // папок недосчитаны) он поглотил бы всю карту; перевешивающие элементы
-    // остаются обычными кирпичами. К нечитаемому хвосту фазы 1 потолок
-    // не применяется: прятать его обязательно.
+    // Phase 2 — small shares: the tail extends with items whose share is
+    // below [`REST_SHARE`], but the rest must stay strictly smaller than
+    // the smallest displayed brick — otherwise a folder of near-equal items
+    // (or a mid-scan snapshot, while folder aggregates are still counting
+    // up) would be swallowed whole; heavier items stay regular bricks.
+    // The unreadable tail from phase 1 is exempt: it must stay hidden.
     let share_tail = weights
         .iter()
         .rev()
         .take_while(|&&w| w / total < REST_SHARE)
         .count();
     let mut target = collapsed.max(share_tail);
-    let mut rest_sum: f32 = weights[children.len() - target..].iter().sum();
     while target > collapsed
-        && (target == children.len() || rest_sum >= weights[children.len() - target - 1])
+        && (target == children.len()
+            || suffix[children.len() - target] >= weights[children.len() - target - 1])
     {
-        rest_sum -= weights[children.len() - target];
         target -= 1;
     }
 
     let collapsed = if target >= 2 { target } else { 0 };
-    let (bricks, rects) = arrange(tree, children, &weights, collapsed, bounds);
-    bricks.into_iter().zip(rects).collect()
-}
-
-/// Раскладка детей, у которых последние `collapsed` штук заменены
-/// одним «…»-элементом с суммарным весом хвоста.
-fn arrange(
-    tree: &FsTree,
-    children: &[NodeId],
-    weights: &[f32],
-    collapsed: usize,
-    bounds: Rectangle,
-) -> (Vec<Brick>, Vec<Rectangle>) {
+    let rects = rects_for(collapsed);
     let kept = children.len() - collapsed;
-    let mut shown = weights[..kept].to_vec();
     let mut bricks: Vec<Brick> = children[..kept].iter().map(|&id| Brick::Node(id)).collect();
     if collapsed > 0 {
-        shown.push(weights[kept..].iter().sum());
         let (mut files, mut dirs, mut size) = (0, 0, 0u64);
         for &id in &children[kept..] {
             let node = tree.node(id);
@@ -237,7 +243,7 @@ fn arrange(
         }
         bricks.push(Brick::Rest { files, dirs, size });
     }
-    (bricks, layout(&shown, bounds))
+    bricks.into_iter().zip(rects).collect()
 }
 
 /// The brick caption: name and size, plus the entry count for folders.
@@ -272,7 +278,7 @@ fn map_bounds(size: Size) -> Rectangle {
 }
 
 impl DiskMap<'_> {
-    /// «…»-кирпич инертен: курсор над ним не «попадает» никуда.
+    /// The rest brick is inert: the cursor over it hits nothing.
     fn hit_test(&self, size: Size, point: Point) -> Option<NodeId> {
         level1(self.tree, self.current, size)
             .into_iter()
@@ -295,7 +301,7 @@ impl DiskMap<'_> {
         }
     }
 
-    /// Агрегатный «…»-кирпич: нейтральные серые тона, без вложенных силуэтов.
+    /// The aggregate rest brick: neutral gray tones, no nested silhouettes.
     fn draw_rest(
         &self,
         frame: &mut Frame,
@@ -382,7 +388,7 @@ impl DiskMap<'_> {
             .iter()
             .map(|&id| normalize_weight(self.tree.node(id).size))
             .collect();
-        // Хвост мелких силуэтов тоже схлопывается в один прямоугольник.
+        // The tail of small silhouettes collapses into one rectangle too.
         let kept = children.len() - share_collapse_count(&weights);
         let mut shown = weights[..kept].to_vec();
         if kept < children.len() {
@@ -413,8 +419,8 @@ impl DiskMap<'_> {
 /// every brick and every progressive-scan snapshot — overflow iced's glyph
 /// atlas (`PrepareError::AtlasFull` is silently ignored, text breaks).
 fn label_font_size(char_count: usize, rect: Rectangle) -> Option<f32> {
-    // Шрифт ограничивают обе стороны: ширина — по числу символов,
-    // высота — по вертикальным отступам подписи (8 px).
+    // Both sides bound the font: the width per character count and
+    // the height minus the caption's vertical padding (8 px).
     let fit = (rect.width / (CHAR_WIDTH * char_count.max(1) as f32)).min(rect.height - 8.0);
     // Down to an even integer: fewer distinct font sizes — a more stable atlas.
     let font_size = (fit.clamp(MIN_FONT, MAX_FONT) / 2.0).floor() * 2.0;
