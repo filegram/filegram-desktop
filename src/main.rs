@@ -1,3 +1,4 @@
+mod disk;
 mod diskmap;
 mod format;
 mod fs_tree;
@@ -5,14 +6,14 @@ mod history;
 mod scanner;
 mod treemap;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use iced::theme::{Mode, Palette};
 use iced::widget::{
-    button, canvas, center, column, container, mouse_area, opaque, responsive, row, stack, svg,
-    text, text_input, tooltip,
+    button, canvas, center, column, container, mouse_area, opaque, progress_bar, responsive, row,
+    stack, svg, text, text_input, tooltip,
 };
 use iced::{
     Border, Center, Color, Element, Fill, Font, Padding, Rectangle, Shadow, Size, Subscription,
@@ -61,6 +62,9 @@ struct App {
     /// The node awaiting trash confirmation in the modal dialog.
     pending_delete: Option<NodeId>,
     scan: ScanState,
+    /// The volume of the scan root, for the mini disk-usage bar; `None`
+    /// hides the bar (no scan yet, or the OS query failed).
+    disk_usage: Option<disk::DiskUsage>,
     path_input: String,
     history: history::History,
     /// Where the history is persisted; `None` disables saving (tests).
@@ -135,6 +139,7 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         active: None,
         pending_delete: None,
         scan: ScanState::Idle,
+        disk_usage: None,
         path_input: initial_path(&history),
         history,
         history_file,
@@ -180,6 +185,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     eprintln!("filegram: failed to save the scan history: {error}");
                 }
             }
+            app.disk_usage = disk::usage(Path::new(&app.path_input));
             app.cancel = Arc::new(AtomicBool::new(false));
             app.scan = ScanState::Running {
                 current: app.path_input.clone(),
@@ -219,6 +225,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     // made during the scan.
                     if app.tree.is_none() {
                         app.current = tree.root;
+                    }
+                    // A long scan leaves the start-of-scan reading stale;
+                    // re-query the volume so the bar matches the final map.
+                    if let Some(usage) = disk::usage(&tree.node(tree.root).path) {
+                        app.disk_usage = Some(usage);
                     }
                     app.tree = Some(tree);
                     app.scan = ScanState::Done;
@@ -506,7 +517,10 @@ fn map_view(app: &App) -> Element<'_, Message> {
         return idle_view(app);
     };
     let current_path = tree.node(app.current).path.display().to_string();
-    let bar = container(
+    // Equal-width side zones keep the disk-usage bar dead center between
+    // the navigation controls. The bar only appears with the final map:
+    // mid-scan readings would drift while the map is still growing.
+    let mut top = row![
         row![
             button(text("← Back"))
                 .style(chrome_button)
@@ -514,14 +528,27 @@ fn map_view(app: &App) -> Element<'_, Message> {
             container(
                 text(format::shorten_path(&current_path, PATH_BAR_MAX_CHARS)).style(muted_text)
             )
-            .width(Fill)
             .padding(8),
-            button(text("New scan"))
-                .style(chrome_button)
-                .on_press(Message::NewScan),
         ]
         .spacing(8)
-        .align_y(Center),
+        .align_y(Center)
+        .width(Fill),
+    ]
+    .spacing(8)
+    .align_y(Center);
+    if let Some(usage_bar) = disk_usage_bar(app) {
+        top = top.push(usage_bar);
+    }
+    let bar = container(
+        top.push(
+            container(
+                button(text("New scan"))
+                    .style(chrome_button)
+                    .on_press(Message::NewScan),
+            )
+            .width(Fill)
+            .align_x(iced::Right),
+        ),
     )
     .padding(8)
     .style(bar_style);
@@ -604,6 +631,28 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     .padding(8)
     .style(bar_style)
     .into()
+}
+
+/// The mini disk-usage bar: how full the scan root's volume is.
+/// `None` when no volume has been queried yet — the bar is omitted.
+fn disk_usage_bar(app: &App) -> Option<Element<'_, Message>> {
+    let usage = app.disk_usage?;
+    let label = format!(
+        "Disk: {} / {}",
+        format::human_size(usage.used),
+        format::human_size(usage.total)
+    );
+    Some(
+        row![
+            text(label).size(14).style(muted_text),
+            progress_bar(0.0..=1.0, usage.fraction())
+                .length(140)
+                .girth(6),
+        ]
+        .spacing(8)
+        .align_y(Center)
+        .into(),
+    )
 }
 
 /// The hover actions panel pinned to the active brick's top-right corner,
@@ -837,6 +886,33 @@ mod tests {
         let _ = update(&mut app, Message::StartScan);
         // A path that does not exist must not become a history entry.
         assert_eq!(app.history.latest(), None);
+        app.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn start_scan_queries_disk_usage_for_existing_dir() {
+        let mut app = test_app();
+        let dir = tempfile::tempdir().unwrap();
+        app.path_input = dir.path().display().to_string();
+        let _ = update(&mut app, Message::StartScan);
+        let usage = app.disk_usage.expect("an existing dir has a volume");
+        assert!(usage.total > 0);
+        app.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn start_scan_drops_disk_usage_for_missing_path() {
+        let mut app = test_app();
+        // A stale reading from a previous scan must not survive a scan of
+        // a path whose volume cannot be queried.
+        app.disk_usage = Some(disk::DiskUsage {
+            used: 1,
+            total: 2,
+        });
+        let (_guard, root) = missing_scan_root();
+        app.path_input = root;
+        let _ = update(&mut app, Message::StartScan);
+        assert_eq!(app.disk_usage, None);
         app.cancel.store(true, Ordering::Relaxed);
     }
 
