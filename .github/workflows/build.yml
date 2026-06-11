@@ -63,6 +63,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
+    concurrency:
+      group: latest-release
+      cancel-in-progress: true
 
     steps:
       - name: Download all artifacts
