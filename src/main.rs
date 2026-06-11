@@ -1,6 +1,7 @@
 mod diskmap;
 mod format;
 mod fs_tree;
+mod history;
 mod scanner;
 mod treemap;
 
@@ -14,8 +15,8 @@ use iced::widget::{
     text, text_input, tooltip,
 };
 use iced::{
-    Border, Center, Color, Element, Fill, Padding, Rectangle, Shadow, Size, Subscription, Task,
-    Theme, Vector,
+    Border, Center, Color, Element, Fill, Font, Padding, Rectangle, Shadow, Size, Subscription,
+    Task, Theme, Vector,
 };
 
 use diskmap::DiskMap;
@@ -61,6 +62,9 @@ struct App {
     pending_delete: Option<NodeId>,
     scan: ScanState,
     path_input: String,
+    history: history::History,
+    /// Where the history is persisted; `None` disables saving (tests).
+    history_file: Option<PathBuf>,
     cache: canvas::Cache,
     cancel: Arc<AtomicBool>,
     /// The system light/dark preference; the chrome theme follows it.
@@ -76,6 +80,7 @@ enum ScanState {
 #[derive(Debug, Clone)]
 enum Message {
     PathChanged(String),
+    HistoryPicked(String),
     StartScan,
     CancelScan,
     Scan(ScanEvent),
@@ -90,25 +95,53 @@ enum Message {
     SystemThemeChanged(Mode),
 }
 
+/// The default content of the path input: the most recent scanned path,
+/// or the home directory when the history is empty.
+fn initial_path(history: &history::History) -> String {
+    history.latest().map(str::to_string).unwrap_or_else(|| {
+        dirs::home_dir()
+            .map(|home| home.display().to_string())
+            .unwrap_or_else(|| ".".to_string())
+    })
+}
+
 fn boot() -> (App, Task<Message>) {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
-    (
-        App {
-            tree: None,
-            current: NodeId(0),
-            nav_stack: Vec::new(),
-            active: None,
-            pending_delete: None,
-            scan: ScanState::Idle,
-            path_input: home,
-            cache: canvas::Cache::new(),
-            cancel: Arc::new(AtomicBool::new(false)),
-            theme_mode: Mode::default(),
+    let (history, history_file) = match history::default_file() {
+        Some(file) => match history::History::load(&file) {
+            Ok(history) => (history, Some(file)),
+            // Never save over a file we could not read: persistence is
+            // disabled until the next launch.
+            Err(error) => {
+                eprintln!("filegram: failed to read the scan history: {error}");
+                (history::History::default(), None)
+            }
         },
+        None => (history::History::default(), None),
+    };
+    (
+        initial_app(history, history_file),
         iced::system::theme().map(Message::SystemThemeChanged),
     )
+}
+
+/// The initial application state. `boot` feeds it the persisted history;
+/// tests pass an in-memory one with `history_file: None` so they never
+/// touch the developer's real config directory.
+fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App {
+    App {
+        tree: None,
+        current: NodeId(0),
+        nav_stack: Vec::new(),
+        active: None,
+        pending_delete: None,
+        scan: ScanState::Idle,
+        path_input: initial_path(&history),
+        history,
+        history_file,
+        cache: canvas::Cache::new(),
+        cancel: Arc::new(AtomicBool::new(false)),
+        theme_mode: Mode::default(),
+    }
 }
 
 fn theme(app: &App) -> Theme {
@@ -128,7 +161,25 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.path_input = path;
             Task::none()
         }
+        Message::HistoryPicked(path) => {
+            app.path_input = path;
+            update(app, Message::StartScan)
+        }
         Message::StartScan => {
+            // Normalize once, with the same rules the history applies, so the
+            // input, the scan, the progress header and the history all see
+            // the same path ("/tmp/" scans and is recorded as "/tmp").
+            app.path_input = history::normalize(&app.path_input).to_string();
+            // Only directories that exist enter the history: a typo'd path
+            // must not become a clickable entry and the next-launch prefill.
+            if std::path::Path::new(&app.path_input).is_dir() {
+                app.history.push(&app.path_input);
+                if let Some(file) = &app.history_file
+                    && let Err(error) = app.history.save(file)
+                {
+                    eprintln!("filegram: failed to save the scan history: {error}");
+                }
+            }
             app.cancel = Arc::new(AtomicBool::new(false));
             app.scan = ScanState::Running {
                 current: app.path_input.clone(),
@@ -370,22 +421,49 @@ fn view(app: &App) -> Element<'_, Message> {
 }
 
 fn idle_view(app: &App) -> Element<'_, Message> {
-    center(
-        column![
-            text("Filegram — disk map").size(28),
-            row![
-                text_input("Directory path…", &app.path_input)
-                    .on_input(Message::PathChanged)
-                    .on_submit(Message::StartScan),
-                button(text("Scan"))
-                    .style(chrome_button)
-                    .on_press(Message::StartScan),
-            ]
-            .spacing(8),
+    let mut content = column![
+        text("Filegram — disk map").size(28),
+        row![
+            text_input("Directory path…", &app.path_input)
+                .on_input(Message::PathChanged)
+                .on_submit(Message::StartScan),
+            button(text("Scan"))
+                .style(chrome_button)
+                .on_press(Message::StartScan),
         ]
-        .spacing(16)
-        .max_width(600),
-    )
+        .spacing(8),
+    ]
+    .spacing(16)
+    .max_width(600);
+    if !app.history.entries().is_empty() {
+        content = content.push(recent_scans(app));
+    }
+    center(content).into()
+}
+
+/// The scan history under the path input: a click rescans the path.
+fn recent_scans(app: &App) -> Element<'_, Message> {
+    column![text("Recent scans").size(14).style(muted_text)]
+        .spacing(2)
+        .extend(app.history.entries().iter().map(|path| {
+            button(text(format::shorten_path(path, PATH_BAR_MAX_CHARS)).size(14))
+                .style(button::text)
+                .padding(4)
+                .on_press(Message::HistoryPicked(path.clone()))
+                .into()
+        }))
+        .into()
+}
+
+/// The scan progress label. Monospace digits keep the width a function of the
+/// digit count alone, and the counter only grows — so the label can widen but
+/// never shrinks, and the path next to it does not jitter.
+fn scan_label<'a>(files: u64, size: f32) -> Element<'a, Message> {
+    row![
+        text("Scanning… files: ").size(size),
+        text(files.to_string()).size(size).font(Font::MONOSPACE),
+    ]
+    .align_y(Center)
     .into()
 }
 
@@ -395,7 +473,7 @@ fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Mess
     if app.tree.is_none() {
         return center(
             column![
-                text(format!("Scanning… files: {files}")).size(20),
+                scan_label(files, 20.0),
                 text(format::shorten_path(current, PATH_BAR_MAX_CHARS)).style(muted_text),
                 button(text("Cancel"))
                     .style(chrome_button)
@@ -407,7 +485,7 @@ fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Mess
     }
     let bar = container(
         row![
-            text(format!("Scanning… files: {files}")),
+            scan_label(files, 16.0),
             container(text(format::shorten_path(current, PATH_BAR_MAX_CHARS)).style(muted_text))
                 .width(Fill)
                 .padding(8),
@@ -645,10 +723,24 @@ fn main() -> iced::Result {
 mod tests {
     use super::*;
 
-    /// `boot()` with a finished scan and a loaded (root-only) tree —
+    /// A disk-isolated `App`: an empty in-memory history, no history file.
+    fn test_app() -> App {
+        initial_app(history::History::default(), None)
+    }
+
+    /// A scan root that exits immediately: a missing child of a fresh temp
+    /// dir, so the threads spawned by `StartScan` find nothing to traverse.
+    /// The guard keeps the temp dir alive for the duration of the test.
+    fn missing_scan_root() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").display().to_string();
+        (dir, path)
+    }
+
+    /// [`test_app`] with a finished scan and a loaded (root-only) tree —
     /// deletion is only legal in that state.
     fn scanned_app() -> App {
-        let (mut app, _) = boot();
+        let mut app = test_app();
         app.scan = ScanState::Done;
         app.tree = Some(Arc::new(FsTree::from_arena(&[fs_tree::ScanNode {
             name: "root".into(),
@@ -672,7 +764,7 @@ mod tests {
 
     #[test]
     fn delete_request_ignored_until_scan_finishes() {
-        let (mut app, _) = boot();
+        let mut app = test_app();
         for scan in [
             ScanState::Idle,
             ScanState::Running {
@@ -705,7 +797,7 @@ mod tests {
 
     #[test]
     fn theme_follows_system_mode() {
-        let (mut app, _) = boot();
+        let mut app = test_app();
         let _ = update(&mut app, Message::SystemThemeChanged(Mode::Dark));
         assert_eq!(theme(&app), Theme::Dark);
         let _ = update(&mut app, Message::SystemThemeChanged(Mode::Light));
@@ -713,9 +805,58 @@ mod tests {
     }
 
     #[test]
+    fn initial_path_prefers_latest_history_entry() {
+        let mut history = history::History::default();
+        history.push("/scans/latest");
+        assert_eq!(initial_path(&history), "/scans/latest");
+        // An empty history falls back to a usable default.
+        assert_ne!(initial_path(&history::History::default()), "/scans/latest");
+        assert!(!initial_path(&history::History::default()).is_empty());
+    }
+
+    #[test]
+    fn start_scan_normalizes_input_and_records_existing_dir() {
+        let mut app = test_app();
+        // An (empty) existing directory: the scan threads exit immediately.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().display().to_string();
+        app.path_input = format!("  {path}/  ");
+        let _ = update(&mut app, Message::StartScan);
+        // The input is normalized once (trim + trailing separator); the
+        // input, the scan and the history see the same path.
+        assert_eq!(app.path_input, path);
+        assert_eq!(app.history.latest(), Some(path.as_str()));
+        app.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn start_scan_skips_history_for_missing_path() {
+        let mut app = test_app();
+        let (_guard, root) = missing_scan_root();
+        app.path_input = root;
+        let _ = update(&mut app, Message::StartScan);
+        // A path that does not exist must not become a history entry.
+        assert_eq!(app.history.latest(), None);
+        app.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn history_pick_fills_input_and_starts_scan() {
+        let mut app = test_app();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().display().to_string();
+        let _ = update(&mut app, Message::HistoryPicked(path.clone()));
+        assert_eq!(app.path_input, path);
+        assert!(matches!(app.scan, ScanState::Running { .. }));
+        assert_eq!(app.history.latest(), Some(path.as_str()));
+        app.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
     fn new_scan_drops_pending_delete() {
         let mut app = scanned_app();
-        app.path_input = std::env::temp_dir().display().to_string();
+        let (_guard, root) = missing_scan_root();
+        app.path_input = root;
         let _ = update(&mut app, Message::DeleteRequested(NodeId(3)));
         let _ = update(&mut app, Message::StartScan);
         assert_eq!(app.pending_delete, None);
