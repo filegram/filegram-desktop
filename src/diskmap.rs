@@ -10,7 +10,7 @@ use iced::{Color, Pixels, Point, Rectangle, Size, mouse};
 
 use crate::Message;
 use crate::fs_tree::{FsTree, NodeId};
-use crate::treemap::{NESTED_DIVISOR, TOP_LEVEL_DIVISOR, layout, normalize_weight};
+use crate::treemap::{layout, normalize_weight};
 
 /// Brick colors for one theme mode; the variant is picked per frame from
 /// the application theme (the chrome follows the system light/dark scheme).
@@ -94,7 +94,7 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(NodeId, Rectan
         .iter()
         .map(|&id| normalize_weight(tree.node(id).size))
         .collect();
-    let rects = layout(&weights, map_bounds(size), TOP_LEVEL_DIVISOR);
+    let rects = layout(&weights, map_bounds(size));
     node.children.iter().copied().zip(rects).collect()
 }
 
@@ -212,10 +212,7 @@ impl DiskMap<'_> {
             .iter()
             .map(|&id| normalize_weight(self.tree.node(id).size))
             .collect();
-        for (&id, r) in children
-            .iter()
-            .zip(layout(&weights, content, NESTED_DIVISOR))
-        {
+        for (&id, r) in children.iter().zip(layout(&weights, content)) {
             let silhouette = Rectangle {
                 x: r.x + SILHOUETTE_MARGIN,
                 y: r.y,
