@@ -102,6 +102,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # The image version is not part of the default cache key; a target/
+          # built on another image restores as corrupt (E0463 on deps).
+          key: ubuntu-22.04
 
       - name: Install Linux dependencies
         run: |
