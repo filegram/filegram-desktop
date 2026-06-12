@@ -473,10 +473,10 @@ enum Zoom {
 
 /// The navigation direction between the displayed level and the new one.
 /// A rescan replaces the tree wholesale and may leave an id from the
-/// previous arena behind — an out-of-bounds id snaps instead of panicking.
+/// previous arena behind — out-of-bounds ids snap instead of panicking.
 fn zoom_direction(tree: &FsTree, old: Option<NodeId>, new: NodeId) -> Zoom {
     let Some(old) = old else { return Zoom::Snap };
-    if old == new || old.0 >= tree.nodes.len() {
+    if old == new || old.0 >= tree.nodes.len() || new.0 >= tree.nodes.len() {
         return Zoom::Snap;
     }
     if tree.node(old).children.contains(&new) {
@@ -1324,6 +1324,7 @@ mod tests {
         assert_eq!(zoom_direction(&tree, Some(root), root), Zoom::Snap);
         assert_eq!(zoom_direction(&tree, Some(file), NodeId(4)), Zoom::Snap);
         assert_eq!(zoom_direction(&tree, Some(NodeId(99)), root), Zoom::Snap);
+        assert_eq!(zoom_direction(&tree, Some(root), NodeId(99)), Zoom::Snap);
     }
 
     #[test]
