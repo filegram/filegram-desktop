@@ -6,6 +6,7 @@ mod format;
 mod fs_tree;
 mod history;
 mod i18n;
+mod release;
 mod scanner;
 mod settings;
 mod treemap;
@@ -122,6 +123,10 @@ struct App {
     /// Where the theme and language choices are persisted; `None` disables
     /// saving (tests).
     settings_file: Option<PathBuf>,
+    /// The latest GitHub release tag, when it differs from the running
+    /// version; shown in the footer as a link to the release page. `None`
+    /// until the background check returns (or forever, if it fails).
+    latest_release: Option<String>,
     /// The deletion backend: `trash::delete` in production. Tests swap in
     /// a tempdir-local delete so nothing ever reaches the OS trash.
     delete: fn(&Path) -> std::io::Result<()>,
@@ -155,6 +160,8 @@ enum Message {
     LanguageMenuExpanded,
     LanguagePicked(Lang),
     WindowFocused,
+    LatestReleaseLoaded(Option<String>),
+    LatestReleasePressed,
 }
 
 /// The default content of the path input: the most recent scanned path,
@@ -196,7 +203,15 @@ fn boot() -> (App, Task<Message>) {
         .unwrap_or_default();
     app.theme_override = saved.theme;
     app.lang_override = saved.lang;
-    (app, iced::system::theme().map(Message::SystemThemeChanged))
+    (
+        app,
+        Task::batch([
+            iced::system::theme().map(Message::SystemThemeChanged),
+            // The release check starts immediately but runs entirely in the
+            // background: the window opens without waiting for the network.
+            Task::perform(release::fetch_latest_tag(), Message::LatestReleaseLoaded),
+        ]),
+    )
 }
 
 /// The initial application state. `boot` feeds it the persisted history;
@@ -224,6 +239,7 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         lang_menu_open: false,
         lang_menu_expanded: false,
         settings_file: None,
+        latest_release: None,
         delete: |path| trash::delete(path).map_err(std::io::Error::other),
     }
 }
@@ -422,6 +438,21 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             // The map cache invalidates itself: the canvas state tracks the
             // dark-mode flag of the last drawn frame.
             app.theme_mode = mode;
+            Task::none()
+        }
+        Message::LatestReleaseLoaded(tag) => {
+            // Only a tag that differs from the running build is worth
+            // showing: "v0.2.2 (v0.2.2)" tells the user nothing.
+            app.latest_release =
+                tag.filter(|tag| tag.trim_start_matches('v') != env!("CARGO_PKG_VERSION"));
+            Task::none()
+        }
+        Message::LatestReleasePressed => {
+            // The page of the tag the footer shows; the message only ever
+            // arrives from the link, which exists when the tag is known.
+            if let Some(tag) = &app.latest_release {
+                let _ = open::that_detached(release::release_url(tag));
+            }
             Task::none()
         }
         Message::ToggleTheme => {
@@ -1039,12 +1070,31 @@ fn language_button(app: &App) -> Element<'_, Message> {
     )
 }
 
-/// The application version in the bottom-right corner.
-fn version_label<'a>() -> Element<'a, Message> {
-    text(concat!("v", env!("CARGO_PKG_VERSION")))
+/// The application version in the bottom-right corner. Once the background
+/// GitHub check finds a release different from the running build (e.g. the
+/// stable release under a dev build), its tag follows in parentheses as a
+/// link to the release page.
+fn version_label(app: &App) -> Element<'_, Message> {
+    let current = text(concat!("v", env!("CARGO_PKG_VERSION")))
         .size(14)
-        .style(muted_text)
-        .into()
+        .style(muted_text);
+    let Some(tag) = &app.latest_release else {
+        return current.into();
+    };
+    row![
+        current,
+        mouse_area(
+            text(format!("({tag})"))
+                .size(14)
+                .style(|theme: &Theme| text::Style {
+                    color: Some(theme.palette().primary),
+                })
+        )
+        .interaction(iced::mouse::Interaction::Pointer)
+        .on_press(Message::LatestReleasePressed),
+    ]
+    .spacing(4)
+    .into()
 }
 
 /// The bottom corners of the start screen: the theme toggle and the
@@ -1054,7 +1104,7 @@ fn corner_footer(app: &App) -> Element<'_, Message> {
     row![
         theme_toggle(app),
         language_button(app),
-        container(version_label()).width(Fill).align_x(iced::Right),
+        container(version_label(app)).width(Fill).align_x(iced::Right),
     ]
     .spacing(2)
     .padding(8)
@@ -1357,6 +1407,23 @@ mod tests {
     /// with `total` far above 2, and a failed one with `None`.
     fn stale_usage() -> disk::DiskUsage {
         disk::DiskUsage { used: 1, total: 2 }
+    }
+
+    #[test]
+    fn latest_release_shown_only_when_it_differs() {
+        let mut app = test_app();
+        let _ = update(&mut app, Message::LatestReleaseLoaded(None));
+        assert_eq!(app.latest_release, None);
+
+        let same = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let _ = update(&mut app, Message::LatestReleaseLoaded(Some(same)));
+        assert_eq!(app.latest_release, None);
+
+        let _ = update(
+            &mut app,
+            Message::LatestReleaseLoaded(Some("v99.0.0".to_string())),
+        );
+        assert_eq!(app.latest_release, Some("v99.0.0".to_string()));
     }
 
     #[test]
