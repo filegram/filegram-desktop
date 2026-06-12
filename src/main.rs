@@ -233,6 +233,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             // input, the scan, the progress header and the history all see
             // the same path ("/tmp/" scans and is recorded as "/tmp").
             app.path_input = history::normalize(&app.path_input).to_string();
+            // Blank — empty input or a path with line breaks, which
+            // normalize to blank — has nothing to scan.
+            if app.path_input.is_empty() {
+                return Task::none();
+            }
             // Only directories that exist enter the history: a typo'd path
             // must not become a clickable entry and the next-launch prefill.
             if std::path::Path::new(&app.path_input).is_dir() {
@@ -604,6 +609,10 @@ fn quick_scans<'a>() -> Option<Element<'a, Message>> {
 /// One entry of the quick rows: an icon with a short name; a click scans
 /// the path exactly like a history entry.
 fn quick_scan_button<'a>(icon: &'static [u8], name: String, path: &Path) -> Element<'a, Message> {
+    // Normalized the way StartScan will see it: a path that normalizes to
+    // blank (a mount point with a line break) gets no on_press, so the
+    // button cannot fire a scan of "".
+    let path = history::normalize(&path.display().to_string()).to_string();
     button(
         row![themed_icon(icon).width(16).height(16), text(name).size(14)]
             .spacing(6)
@@ -611,7 +620,7 @@ fn quick_scan_button<'a>(icon: &'static [u8], name: String, path: &Path) -> Elem
     )
     .style(button::text)
     .padding(4)
-    .on_press(Message::HistoryPicked(path.display().to_string()))
+    .on_press_maybe((!path.is_empty()).then(|| Message::HistoryPicked(path)))
     .into()
 }
 
@@ -1281,19 +1290,33 @@ mod tests {
 
     #[test]
     fn initial_app_lists_disk_roots() {
-        // Every supported OS has at least one mounted volume.
-        assert!(!test_app().disk_roots.is_empty());
+        // Whatever set of volumes the OS reports (empty is legal on
+        // Windows), the start screen must mirror it exactly.
+        assert_eq!(test_app().disk_roots, disk::mounted_roots());
     }
 
     #[test]
     fn window_focus_refreshes_disk_roots() {
         // A volume mounted while the app was in the background must appear
         // in the quick disk row when the user comes back — on any screen,
-        // unlike the usage bar, which only lives on the finished map.
+        // unlike the usage bar, which only lives on the finished map. The
+        // sentinel no OS reports proves the focus handler replaced the list.
         let mut app = test_app();
-        app.disk_roots.clear();
+        app.disk_roots = vec![PathBuf::from("/filegram-test-unmounted")];
         let _ = update(&mut app, Message::WindowFocused);
-        assert!(!app.disk_roots.is_empty());
+        assert_eq!(app.disk_roots, disk::mounted_roots());
+    }
+
+    #[test]
+    fn start_scan_ignores_a_path_that_normalizes_to_blank() {
+        // A mount point can carry a line break (`\012` in /proc/mounts);
+        // such a path normalizes to blank and must not start a scan of ""
+        // or enter the history.
+        let mut app = test_app();
+        app.path_input = "/media/user/bad\nname".to_string();
+        let _ = update(&mut app, Message::StartScan);
+        assert!(matches!(app.scan, ScanState::Idle));
+        assert!(app.history.entries().is_empty());
     }
 
     #[test]
