@@ -568,7 +568,16 @@ fn disk_scans(app: &App) -> Option<Element<'_, Message>> {
         .iter()
         .map(|path| quick_scan_button(DRIVE_ICON, disk::root_label(path), path))
         .collect();
-    (!buttons.is_empty()).then(|| row(buttons).spacing(8).wrap().into())
+    (!buttons.is_empty()).then(|| {
+        // The same muted header the history row wears, so the two sections
+        // under the folder shortcuts read alike.
+        column![
+            text("Disks").size(14).style(muted_text),
+            row(buttons).spacing(8).wrap(),
+        ]
+        .spacing(2)
+        .into()
+    })
 }
 
 /// Quick scans of the standard user folders, between the scan row and the
