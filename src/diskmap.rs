@@ -459,6 +459,48 @@ fn spring(pos: f32, velocity: f32, target: f32, t: f32) -> (f32, f32) {
     )
 }
 
+/// How a level change enters the screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Zoom {
+    /// No parent↔child relation (first layout, rescan, resize): instant.
+    Snap,
+    /// Into a child folder: the new level grows out of the clicked brick.
+    In,
+    /// Back to the parent: the map shrinks into the brick of the folder
+    /// being left.
+    Out,
+}
+
+/// The navigation direction between the displayed level and the new one.
+/// A rescan replaces the tree wholesale and may leave an id from the
+/// previous arena behind — an out-of-bounds id snaps instead of panicking.
+fn zoom_direction(tree: &FsTree, old: Option<NodeId>, new: NodeId) -> Zoom {
+    let Some(old) = old else { return Zoom::Snap };
+    if old == new || old.0 >= tree.nodes.len() {
+        return Zoom::Snap;
+    }
+    if tree.node(old).children.contains(&new) {
+        Zoom::In
+    } else if tree.node(new).children.contains(&old) {
+        Zoom::Out
+    } else {
+        Zoom::Snap
+    }
+}
+
+/// Affine remap: where `rect` lands when the `from` frame is mapped onto
+/// the `to` frame. The caller guarantees `from` is non-degenerate.
+fn map_rect(rect: Rectangle, from: Rectangle, to: Rectangle) -> Rectangle {
+    let sx = to.width / from.width;
+    let sy = to.height / from.height;
+    Rectangle {
+        x: to.x + (rect.x - from.x) * sx,
+        y: to.y + (rect.y - from.y) * sy,
+        width: rect.width * sx,
+        height: rect.height * sy,
+    }
+}
+
 /// The identity of a brick across snapshots: nodes match by id, while the
 /// collapsed tail — whose counts and size change every snapshot — is always
 /// the single trailing rest brick.
@@ -592,19 +634,79 @@ impl MapState {
         self.level == Some(level) && self.size == size
     }
 
+    /// The rectangle pair (`from`, `to`) of a zoom transition: every spring
+    /// starts at its target remapped from `from` onto `to`. `None` — the
+    /// transition cannot be built (no zoom requested, the clicked brick is
+    /// not on screen, the folder being left is collapsed into the rest
+    /// tail, or the source frame is degenerate) — the caller snaps instead.
+    fn zoom_frames(
+        &self,
+        level: NodeId,
+        layout: &[(Brick, Rectangle)],
+        zoom: Zoom,
+        now: Instant,
+    ) -> Option<(Rectangle, Rectangle)> {
+        let bounds = map_bounds(self.size);
+        let (from, to) = match zoom {
+            Zoom::Snap => return None,
+            // Entering a folder: the new level grows out of the clicked
+            // brick, wherever it is drawn right now (possibly mid-flight).
+            Zoom::In => {
+                let brick = self
+                    .springs
+                    .iter()
+                    .find(|s| s.brick == Brick::Node(level))?
+                    .rect_at(self.elapsed(now));
+                (bounds, brick)
+            }
+            // Leaving a folder: the map shrinks back into that folder's
+            // brick on the parent level.
+            Zoom::Out => {
+                let old = self.level?;
+                let &(_, target) = layout
+                    .iter()
+                    .find(|&&(brick, _)| brick == Brick::Node(old))?;
+                (target, bounds)
+            }
+        };
+        // The remap divides by `from`: a degenerate source frame (a sliver
+        // brick) cannot anchor a transition.
+        (from.width >= 1.0 && from.height >= 1.0).then_some((from, to))
+    }
+
     /// Accepts a fresh layout. Scan snapshots and deletions (same level,
-    /// same canvas) animate; navigation and resize snap. Returns whether
-    /// the on-screen picture changed — i.e. the geometry cache is stale.
+    /// same canvas) animate; navigation into a child or back to the parent
+    /// zooms; other navigation and resize snap. Returns whether the
+    /// on-screen picture changed — i.e. the geometry cache is stale.
     fn retarget(
         &mut self,
         level: NodeId,
         size: Size,
         layout: Vec<(Brick, Rectangle)>,
+        zoom: Zoom,
         now: Instant,
     ) -> bool {
         if self.level != Some(level) || self.size != size {
+            // A zoom transition only makes sense on the same canvas: a
+            // simultaneous resize would anchor it to stale geometry.
+            let frames = (self.size == size)
+                .then(|| self.zoom_frames(level, &layout, zoom, now))
+                .flatten();
             self.level = Some(level);
             self.size = size;
+            if let Some((from, to)) = frames {
+                self.springs = layout
+                    .into_iter()
+                    .map(|(brick, target)| BrickSpring {
+                        brick,
+                        motion: Motion::resting(map_rect(target, from, to)),
+                        target,
+                    })
+                    .collect();
+                self.started = now;
+                self.animating = self.springs.iter().any(|s| !s.settled(0.0));
+                return true;
+            }
             let stale = self.animating || !self.targets_match(&layout);
             self.springs = layout
                 .into_iter()
@@ -698,6 +800,19 @@ mod tests {
 
     fn rect(width: f32, height: f32) -> Rectangle {
         Rectangle::new(Point::ORIGIN, Size::new(width, height))
+    }
+
+    impl MapState {
+        /// Shorthand for tests: a retarget with no zoom transition requested.
+        fn retarget_snap(
+            &mut self,
+            level: NodeId,
+            size: Size,
+            layout: Vec<(Brick, Rectangle)>,
+            now: Instant,
+        ) -> bool {
+            self.retarget(level, size, layout, Zoom::Snap, now)
+        }
     }
 
     /// A tree: the root and its children with the given (size, is_dir).
@@ -940,7 +1055,7 @@ mod tests {
         let (l1, _) = spring_layouts();
         let mut state = MapState::default();
         let now = Instant::now();
-        assert!(state.retarget(NodeId(0), CANVAS, l1.clone(), now));
+        assert!(state.retarget_snap(NodeId(0), CANVAS, l1.clone(), now));
         assert!(!state.is_animating());
         assert_eq!(state.bricks(now), l1);
     }
@@ -950,9 +1065,9 @@ mod tests {
         let (l1, l2) = spring_layouts();
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget(NodeId(0), CANVAS, l1.clone(), t0);
+        state.retarget_snap(NodeId(0), CANVAS, l1.clone(), t0);
         let t1 = t0 + Duration::from_secs(1);
-        assert!(state.retarget(NodeId(0), CANVAS, l2.clone(), t1));
+        assert!(state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1));
         assert!(state.is_animating());
         // The motion starts where the bricks were…
         assert_rects_close(&state.bricks(t1), &l1);
@@ -979,9 +1094,9 @@ mod tests {
         let (l1, l2) = spring_layouts();
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget(NodeId(0), CANVAS, l1.clone(), t0);
+        state.retarget_snap(NodeId(0), CANVAS, l1.clone(), t0);
         let t1 = t0 + Duration::from_secs(1);
-        state.retarget(NodeId(0), CANVAS, l2.clone(), t1);
+        state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1);
         let next_frame = state.bricks(t1 + Duration::from_micros(16_700));
         assert_ne!(next_frame, l1, "the spring has not moved at all");
         assert_ne!(next_frame, l2, "the spring skipped to the end in one frame");
@@ -992,15 +1107,15 @@ mod tests {
         let (l1, l2) = spring_layouts();
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget(NodeId(0), CANVAS, l1, t0);
-        state.retarget(NodeId(0), CANVAS, l2.clone(), t0 + Duration::from_secs(1));
+        state.retarget_snap(NodeId(0), CANVAS, l1, t0);
+        state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t0 + Duration::from_secs(1));
         // The frame the spring settles on still redraws (the cache holds
         // the last in-flight frame), the next one is clean.
         let done = t0 + Duration::from_secs(2);
-        assert!(state.retarget(NodeId(0), CANVAS, l2.clone(), done));
+        assert!(state.retarget_snap(NodeId(0), CANVAS, l2.clone(), done));
         assert!(!state.is_animating());
         assert_eq!(state.bricks(done), l2);
-        assert!(!state.retarget(NodeId(0), CANVAS, l2, done + Duration::from_secs(1)));
+        assert!(!state.retarget_snap(NodeId(0), CANVAS, l2, done + Duration::from_secs(1)));
     }
 
     #[test]
@@ -1008,9 +1123,9 @@ mod tests {
         let (l1, l2) = spring_layouts();
         let mut state = MapState::default();
         let now = Instant::now();
-        state.retarget(NodeId(0), CANVAS, l1, now);
+        state.retarget_snap(NodeId(0), CANVAS, l1, now);
         // Navigation: a different node is displayed — no animation.
-        assert!(state.retarget(NodeId(7), CANVAS, l2.clone(), now));
+        assert!(state.retarget_snap(NodeId(7), CANVAS, l2.clone(), now));
         assert!(!state.is_animating());
         assert_eq!(state.bricks(now), l2);
     }
@@ -1020,8 +1135,8 @@ mod tests {
         let (l1, l2) = spring_layouts();
         let mut state = MapState::default();
         let now = Instant::now();
-        state.retarget(NodeId(0), CANVAS, l1, now);
-        assert!(state.retarget(NodeId(0), Size::new(400.0, 300.0), l2.clone(), now));
+        state.retarget_snap(NodeId(0), CANVAS, l1, now);
+        assert!(state.retarget_snap(NodeId(0), Size::new(400.0, 300.0), l2.clone(), now));
         assert!(!state.is_animating());
         assert_eq!(state.bricks(now), l2);
     }
@@ -1032,16 +1147,16 @@ mod tests {
         let l3 = vec![(Brick::Node(NodeId(1)), rect(300.0, 200.0))];
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget(NodeId(0), CANVAS, l1.clone(), t0);
+        state.retarget_snap(NodeId(0), CANVAS, l1.clone(), t0);
         let t1 = t0 + Duration::from_secs(1);
-        state.retarget(NodeId(0), CANVAS, l2.clone(), t1);
+        state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1);
         // A new snapshot lands mid-flight: the bricks continue from where
         // they are drawn, not from the previous snapshot's layout.
         let mid = t1 + Duration::from_millis(100);
         let displayed = state.bricks(mid);
         assert_ne!(displayed, l1);
         assert_ne!(displayed, l2);
-        assert!(state.retarget(NodeId(0), CANVAS, l3.clone(), mid));
+        assert!(state.retarget_snap(NodeId(0), CANVAS, l3.clone(), mid));
         assert_rects_close(&state.bricks(mid), &displayed);
         // …and the springs converge on the newest target.
         assert_rects_close(&state.bricks(mid + Duration::from_secs(1)), &l3);
@@ -1061,9 +1176,9 @@ mod tests {
         ];
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget(NodeId(0), CANVAS, l1, t0);
+        state.retarget_snap(NodeId(0), CANVAS, l1, t0);
         let t1 = t0 + Duration::from_secs(1);
-        state.retarget(NodeId(0), CANVAS, l2.clone(), t1);
+        state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1);
         // The just-discovered brick starts as a point at the center of its
         // destination (30, 50) and inflates from there.
         assert_rects_close(
@@ -1081,9 +1196,9 @@ mod tests {
         let l2 = vec![(kept, rect(100.0, 100.0))];
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget(NodeId(0), CANVAS, l1, t0);
+        state.retarget_snap(NodeId(0), CANVAS, l1, t0);
         let t1 = t0 + Duration::from_secs(1);
-        state.retarget(NodeId(0), CANVAS, l2, t1);
+        state.retarget_snap(NodeId(0), CANVAS, l2, t1);
         let bricks = state.bricks(t1);
         assert_eq!(bricks.len(), 1, "{bricks:?}");
         assert_eq!(bricks[0].0, kept);
@@ -1105,9 +1220,9 @@ mod tests {
         )];
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget(NodeId(0), CANVAS, l1, t0);
+        state.retarget_snap(NodeId(0), CANVAS, l1, t0);
         let t1 = t0 + Duration::from_secs(1);
-        state.retarget(NodeId(0), CANVAS, l2, t1);
+        state.retarget_snap(NodeId(0), CANVAS, l2, t1);
         assert_rects_close(&state.bricks(t1), &[(rest, rect(100.0, 50.0))]);
     }
 
@@ -1121,9 +1236,9 @@ mod tests {
         let l2 = vec![(Brick::Rest { files: 2, dirs: 0, size: 20 }, rect_a)];
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget(NodeId(0), CANVAS, l1, t0);
+        state.retarget_snap(NodeId(0), CANVAS, l1, t0);
         let t1 = t0 + Duration::from_secs(1);
-        assert!(state.retarget(NodeId(0), CANVAS, l2.clone(), t1));
+        assert!(state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1));
         assert!(!state.is_animating());
         assert_eq!(state.bricks(t1), l2);
     }
@@ -1154,8 +1269,8 @@ mod tests {
             .collect();
         let mut state = MapState::default();
         let now = Instant::now();
-        state.retarget(tree.root, CANVAS, parked.clone(), now);
-        state.retarget(tree.root, CANVAS, target.clone(), now);
+        state.retarget_snap(tree.root, CANVAS, parked.clone(), now);
+        state.retarget_snap(tree.root, CANVAS, target.clone(), now);
         assert!(state.is_animating());
         // The probe sits inside the *drawn* rectangle of the first brick
         // (parked at x 0..10); make sure the final layout disagrees there,
@@ -1172,9 +1287,200 @@ mod tests {
         let (l1, _) = spring_layouts();
         let mut state = MapState::default();
         let now = Instant::now();
-        state.retarget(NodeId(0), CANVAS, l1.clone(), now);
+        state.retarget_snap(NodeId(0), CANVAS, l1.clone(), now);
         // The same layout again (an ordinary redraw): nothing to repaint.
-        assert!(!state.retarget(NodeId(0), CANVAS, l1, now + Duration::from_secs(1)));
+        assert!(!state.retarget_snap(NodeId(0), CANVAS, l1, now + Duration::from_secs(1)));
+    }
+
+    /// A two-level tree: root (0) → folder "sub" (1) with files (2, 3),
+    /// plus a file (4) directly in the root.
+    fn nested_tree() -> FsTree {
+        use crate::fs_tree::ScanNode;
+        let node = |name: &str, parent: usize, size: u64, is_dir: bool| ScanNode {
+            name: name.into(),
+            path: std::path::Path::new("/root").into(),
+            size,
+            is_dir,
+            parent,
+        };
+        FsTree::from_arena(&[
+            node("root", 0, 0, true),
+            node("sub", 0, 0, true),
+            node("a", 1, 700, false),
+            node("b", 1, 300, false),
+            node("c", 0, 500, false),
+        ])
+    }
+
+    #[test]
+    fn zoom_direction_detects_parent_child_navigation() {
+        let tree = nested_tree();
+        let (root, sub, file) = (NodeId(0), NodeId(1), NodeId(2));
+        assert_eq!(zoom_direction(&tree, Some(root), sub), Zoom::In);
+        assert_eq!(zoom_direction(&tree, Some(sub), root), Zoom::Out);
+        // First layout, same level, a jump over two levels, and a stale id
+        // from a replaced tree all snap.
+        assert_eq!(zoom_direction(&tree, None, root), Zoom::Snap);
+        assert_eq!(zoom_direction(&tree, Some(root), root), Zoom::Snap);
+        assert_eq!(zoom_direction(&tree, Some(file), NodeId(4)), Zoom::Snap);
+        assert_eq!(zoom_direction(&tree, Some(NodeId(99)), root), Zoom::Snap);
+    }
+
+    #[test]
+    fn map_rect_remaps_between_frames() {
+        let bounds = rect(800.0, 400.0);
+        assert_eq!(map_rect(bounds, bounds, bounds), bounds);
+        let target = Rectangle::new(Point::new(400.0, 0.0), Size::new(400.0, 200.0));
+        let brick = Rectangle::new(Point::new(100.0, 50.0), Size::new(200.0, 100.0));
+        // The right top quarter of the map lands in the right top quarter
+        // of the brick.
+        assert_eq!(
+            map_rect(target, bounds, brick),
+            Rectangle::new(Point::new(200.0, 50.0), Size::new(100.0, 50.0))
+        );
+        // …and the inverse remap restores it.
+        assert_eq!(
+            map_rect(
+                Rectangle::new(Point::new(200.0, 50.0), Size::new(100.0, 50.0)),
+                brick,
+                bounds
+            ),
+            target
+        );
+    }
+
+    /// The map bounds of the test canvas, as drawn (inset by the margin).
+    fn canvas_bounds() -> Rectangle {
+        map_bounds(CANVAS)
+    }
+
+    /// A two-brick layout tiling the map bounds left/right.
+    fn halves_layout(left: Brick, right: Brick) -> Layout {
+        let b = canvas_bounds();
+        let half = Size::new(b.width / 2.0, b.height);
+        vec![
+            (left, Rectangle::new(b.position(), half)),
+            (
+                right,
+                Rectangle::new(Point::new(b.x + half.width, b.y), half),
+            ),
+        ]
+    }
+
+    #[test]
+    fn zoom_in_grows_level_out_of_clicked_brick() {
+        let folder = Brick::Node(NodeId(1));
+        let source = Rectangle::new(Point::new(40.0, 20.0), Size::new(200.0, 100.0));
+        let children = halves_layout(Brick::Node(NodeId(2)), Brick::Node(NodeId(3)));
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget_snap(NodeId(0), CANVAS, vec![(folder, source)], t0);
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(state.retarget(NodeId(1), CANVAS, children.clone(), Zoom::In, t1));
+        assert!(state.is_animating());
+        // The new level starts compressed into the clicked brick…
+        let expected: Layout = children
+            .iter()
+            .map(|&(brick, target)| (brick, map_rect(target, canvas_bounds(), source)))
+            .collect();
+        assert_rects_close(&state.bricks(t1), &expected);
+        // …and the springs expand it to the full map.
+        assert_rects_close(&state.bricks(t1 + Duration::from_secs(1)), &children);
+    }
+
+    #[test]
+    fn zoom_in_starts_from_the_brick_mid_flight_position() {
+        // The clicked brick is still flying toward `landing`: the new level
+        // grows out of where the brick is drawn, not where it will land.
+        let folder = Brick::Node(NodeId(1));
+        let parked = rect(100.0, 50.0);
+        let landing = Rectangle::new(Point::new(40.0, 20.0), Size::new(200.0, 100.0));
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget_snap(NodeId(0), CANVAS, vec![(folder, parked)], t0);
+        let t1 = t0 + Duration::from_secs(1);
+        state.retarget_snap(NodeId(0), CANVAS, vec![(folder, landing)], t1);
+        let mid = t1 + Duration::from_millis(100);
+        let (_, drawn) = state.bricks(mid)[0];
+        let children = halves_layout(Brick::Node(NodeId(2)), Brick::Node(NodeId(3)));
+        state.retarget(NodeId(1), CANVAS, children.clone(), Zoom::In, mid);
+        let expected: Layout = children
+            .iter()
+            .map(|&(brick, target)| (brick, map_rect(target, canvas_bounds(), drawn)))
+            .collect();
+        assert_rects_close(&state.bricks(mid), &expected);
+    }
+
+    #[test]
+    fn zoom_out_shrinks_level_into_parent_brick() {
+        let folder = Brick::Node(NodeId(1));
+        let children = halves_layout(Brick::Node(NodeId(2)), Brick::Node(NodeId(3)));
+        let parent = halves_layout(folder, Brick::Node(NodeId(4)));
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget_snap(NodeId(1), CANVAS, children, t0);
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(state.retarget(NodeId(0), CANVAS, parent.clone(), Zoom::Out, t1));
+        assert!(state.is_animating());
+        // The folder being left starts blown up to the whole map (the
+        // inverse of the zoom-in remap) and shrinks into its brick.
+        let (_, folder_target) = parent[0];
+        let expected: Layout = parent
+            .iter()
+            .map(|&(brick, target)| (brick, map_rect(target, folder_target, canvas_bounds())))
+            .collect();
+        assert_eq!(expected[0].1, canvas_bounds());
+        assert_rects_close(&state.bricks(t1), &expected);
+        assert_rects_close(&state.bricks(t1 + Duration::from_secs(1)), &parent);
+    }
+
+    #[test]
+    fn zoom_in_snaps_when_clicked_brick_not_on_screen() {
+        // The springs hold a different brick (e.g. the folder was inside
+        // the collapsed rest tail): no anchor — an instant transition.
+        let children = halves_layout(Brick::Node(NodeId(2)), Brick::Node(NodeId(3)));
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        let elsewhere = vec![(Brick::Node(NodeId(9)), rect(100.0, 50.0))];
+        state.retarget_snap(NodeId(0), CANVAS, elsewhere, t0);
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(state.retarget(NodeId(1), CANVAS, children.clone(), Zoom::In, t1));
+        assert!(!state.is_animating());
+        assert_eq!(state.bricks(t1), children);
+    }
+
+    #[test]
+    fn zoom_out_snaps_when_folder_collapsed_into_rest() {
+        // The parent level has no brick for the folder being left — it sits
+        // inside the rest tail: nothing to shrink into.
+        let children = halves_layout(Brick::Node(NodeId(2)), Brick::Node(NodeId(3)));
+        let parent = halves_layout(
+            Brick::Node(NodeId(4)),
+            Brick::Rest { files: 2, dirs: 1, size: 10 },
+        );
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget_snap(NodeId(1), CANVAS, children, t0);
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(state.retarget(NodeId(0), CANVAS, parent.clone(), Zoom::Out, t1));
+        assert!(!state.is_animating());
+        assert_eq!(state.bricks(t1), parent);
+    }
+
+    #[test]
+    fn zoom_snaps_when_canvas_size_changed() {
+        // Navigation and a resize in the same frame: the source rectangle
+        // belongs to the old canvas — anchor nothing, snap.
+        let folder = Brick::Node(NodeId(1));
+        let children = halves_layout(Brick::Node(NodeId(2)), Brick::Node(NodeId(3)));
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget_snap(NodeId(0), CANVAS, vec![(folder, rect(100.0, 50.0))], t0);
+        let resized = Size::new(400.0, 300.0);
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(state.retarget(NodeId(1), resized, children.clone(), Zoom::In, t1));
+        assert!(!state.is_animating());
+        assert_eq!(state.bricks(t1), children);
     }
 
     #[test]
@@ -1320,14 +1626,17 @@ impl canvas::Program<Message> for DiskMap<'_> {
         match event {
             // Every frame starts here: feed the fresh layout to the tween.
             // Scan snapshots and deletions slide the bricks into their new
-            // rectangles; while the tween runs, the next frame is requested
-            // and the cached geometry is repainted.
+            // rectangles, parent↔child navigation zooms; while the tween
+            // runs, the next frame is requested and the cached geometry is
+            // repainted.
             Event::Window(iced::window::Event::RedrawRequested(now)) => {
                 let size = bounds.size();
+                let zoom = zoom_direction(self.tree, state.level, self.current);
                 let stale = state.retarget(
                     self.current,
                     size,
                     level1(self.tree, self.current, size),
+                    zoom,
                     *now,
                 );
                 if stale {

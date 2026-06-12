@@ -1278,9 +1278,14 @@ fn map_canvas(app: &App) -> Element<'_, Message> {
                 .filter(|&(_, rect)| diskmap::has_label(tree, active, rect))
                 .map(|(_, rect)| brick_actions(app, active, rect, size))
         });
+        // The canvas always sits in the stack, panel or not: moving it
+        // between a bare element and a stack child rebuilds the widget
+        // tree and wipes the canvas state — a click clears `active`,
+        // removes the panel, and the navigation zoom would lose its
+        // springs (and snap) in that very frame.
         match actions {
             Some(panel) => stack![map, panel].into(),
-            None => map.into(),
+            None => stack![map].into(),
         }
     })
     .into()
