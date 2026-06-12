@@ -23,11 +23,15 @@ pub fn human_size(bytes: u64) -> String {
 /// character budget must not erase the name entirely.
 const MIN_LAST_SEGMENT_CHARS: usize = 16;
 
-/// Shortens the path to `max_chars` characters by successively replacing middle
-/// segments with `..` (like `hideFolderNameInPath` in the original).
+/// Shortens the path toward `max_chars` characters by successively replacing
+/// middle segments with `..` (like `hideFolderNameInPath` in the original).
 /// The last segment is never replaced; when it alone exceeds the remaining
 /// budget, it is truncated with an ellipsis (but keeps at least
 /// [`MIN_LAST_SEGMENT_CHARS`] characters).
+///
+/// `max_chars` is a target, not a hard cap: the first segment (root/drive),
+/// the `..` placeholders and the preserved minimum of the last segment are
+/// never sacrificed, so for tiny budgets the result can come out longer.
 pub fn shorten_path(path: &str, max_chars: usize) -> String {
     // Windows paths are displayed with `\` — detect the separator from the input.
     let separator = if path.contains('\\') && !path.contains('/') {
