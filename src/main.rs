@@ -39,7 +39,7 @@ const RMB_ICON: &[u8] = include_bytes!("../assets/rmb.svg");
 const FOLDER_ICON: &[u8] = include_bytes!("../assets/folder.svg");
 const TRASH_ICON: &[u8] = include_bytes!("../assets/trash.svg");
 /// Top bar button icons: a circular arrow for Rescan, a treemap-like
-/// brick layout for New scan.
+/// brick layout for Select folder.
 const RESCAN_ICON: &[u8] = include_bytes!("../assets/rescan.svg");
 const BRICKS_ICON: &[u8] = include_bytes!("../assets/bricks.svg");
 /// An up arrow for the icon-only Go-up button next to Rescan; shown only
@@ -1144,7 +1144,7 @@ fn brick_actions(app: &App, target: NodeId, brick: Rectangle, bounds: Size) -> E
         .into()
 }
 
-/// An outline chrome button with a leading icon: the Rescan / New scan pair.
+/// An outline chrome button with a leading icon: the Rescan / Select folder pair.
 fn chrome_icon_button<'a>(
     icon: &'static [u8],
     label: &'a str,
