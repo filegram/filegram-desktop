@@ -33,7 +33,8 @@ fn worst_row_score(heaviest: f32, lightest: f32, sum: f32, area_width: f32, rati
 }
 
 /// Lays out items with weights `weights` inside rectangle `area`. Rows are
-/// stacked bottom-up, bricks within a row go left to right. Returns
+/// stacked bottom-up and zigzag: bricks of the bottom row go left to right,
+/// the next row right to left, and so on (boustrophedon). Returns
 /// rectangles in input order. The input is typically sorted descending, but
 /// each row's extremes are tracked explicitly, so a heavier trailing weight
 /// (the aggregate rest brick appended by `diskmap::level1`) is judged
@@ -96,6 +97,7 @@ pub fn layout(weights: &[f32], area: Rectangle) -> Vec<Rectangle> {
             .map_or(weights.len(), |&(next_start, _)| next_start);
         let row_height = sum * ratio / area.width;
         let top = (bottom - row_height).max(area.y);
+        let rect_start = rects.len();
         let mut x = area.x;
         for &w in &weights[start..end] {
             let width = (w * ratio / row_height).min(area.x + area.width - x);
@@ -104,6 +106,14 @@ pub fn layout(weights: &[f32], area: Rectangle) -> Vec<Rectangle> {
                 iced::Size::new(width, bottom - top),
             ));
             x += width;
+        }
+        // The floors zigzag: even ones (from the bottom) run left→right,
+        // odd ones are mirrored to run right→left, so the sorted order
+        // stays spatially continuous across row breaks.
+        if i % 2 == 1 {
+            for rect in &mut rects[rect_start..] {
+                rect.x = 2.0 * area.x + area.width - rect.x - rect.width;
+            }
         }
         bottom = top;
     }
@@ -253,6 +263,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn rows_alternate_direction_zigzag() {
+        // Four equal items in a square form two rows of two. The bottom
+        // floor runs left→right, the next one right→left: the third item
+        // sits directly above the second, keeping the sorted order
+        // spatially continuous across the row break.
+        let rects = layout(&[1.0, 1.0, 1.0, 1.0], area_100x100());
+        assert!((rects[0].x - 0.0).abs() < EPS, "{:?}", rects[0]);
+        assert!((rects[1].x - 50.0).abs() < EPS, "{:?}", rects[1]);
+        assert!((rects[2].x - 50.0).abs() < EPS, "{:?}", rects[2]);
+        assert!((rects[3].x - 0.0).abs() < EPS, "{:?}", rects[3]);
+    }
+
+    #[test]
+    fn zigzag_third_row_runs_left_to_right_again() {
+        // Six equal items in a 100×150 area stack three floors of two;
+        // even floors (the first, the third, …) run left→right, odd ones
+        // run right→left.
+        let area = Rectangle::new(Point::ORIGIN, Size::new(100.0, 150.0));
+        let rects = layout(&[1.0; 6], area);
+        assert!((rects[0].x - 0.0).abs() < EPS, "{:?}", rects[0]);
+        assert!((rects[2].x - 50.0).abs() < EPS, "{:?}", rects[2]);
+        assert!((rects[4].x - 0.0).abs() < EPS, "{:?}", rects[4]);
     }
 
     #[test]

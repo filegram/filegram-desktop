@@ -4,6 +4,8 @@
 //! the highlight is drawn as a separate layer on top.
 
 use std::cell::Cell;
+use std::collections::HashMap;
+use std::time::Instant;
 
 use iced::widget::canvas::{self, Action, Event, Frame, Path, Stroke, Text};
 use iced::{Color, Pixels, Point, Rectangle, Size, mouse};
@@ -283,8 +285,17 @@ fn map_bounds(size: Size) -> Rectangle {
 
 impl DiskMap<'_> {
     /// The rest brick is inert: the cursor over it hits nothing.
-    fn hit_test(&self, size: Size, point: Point) -> Option<NodeId> {
-        level1(self.tree, self.current, size)
+    /// Mid-flight the bricks sit away from their targets, so the cursor
+    /// resolves against what is actually drawn — the spring rectangles;
+    /// `level1` is the fallback for events that arrive before the first
+    /// `RedrawRequested` syncs the springs to this level and canvas size.
+    fn hit_test(&self, state: &MapState, size: Size, point: Point) -> Option<NodeId> {
+        let bricks = if state.covers(self.current, size) {
+            state.bricks(Instant::now())
+        } else {
+            level1(self.tree, self.current, size)
+        };
+        bricks
             .into_iter()
             .find(|(_, rect)| rect.contains(point))
             .and_then(|(brick, _)| match brick {
@@ -293,9 +304,14 @@ impl DiskMap<'_> {
             })
     }
 
-    fn draw_map(&self, frame: &mut Frame, palette: &BrickPalette) {
+    fn draw_map(
+        &self,
+        frame: &mut Frame,
+        palette: &BrickPalette,
+        bricks: &[(Brick, Rectangle)],
+    ) {
         frame.fill_rectangle(Point::ORIGIN, frame.size(), palette.map_background);
-        for (brick, rect) in level1(self.tree, self.current, frame.size()) {
+        for &(brick, rect) in bricks {
             match brick {
                 Brick::Node(id) => self.draw_brick(frame, palette, id, rect),
                 Brick::Rest { files, dirs, size } => {
@@ -431,6 +447,247 @@ fn label_font_size(char_count: usize, rect: Rectangle) -> Option<f32> {
     (rect.height >= font_size + 8.0 && rect.width >= 2.0 * font_size).then_some(font_size)
 }
 
+/// Stiffness of the brick spring, s⁻¹: a critically damped spring crosses
+/// a full-map distance to within half a pixel in ≈0.35 s. Higher — snappier.
+const STIFFNESS: f32 = 25.0;
+
+/// A critically damped spring: the value and its velocity `t` seconds after
+/// starting at (`pos`, `velocity`) and heading to `target`. Closed form —
+/// evaluating at `t1 + t2` equals evaluating at `t1`, rebasing, and
+/// evaluating at `t2`, so mid-flight retargets keep velocity seamlessly.
+fn spring(pos: f32, velocity: f32, target: f32, t: f32) -> (f32, f32) {
+    // x(t) = target + (d + b·t)·e^(−ω·t), where d is the initial
+    // displacement and b = v₀ + ω·d; critical damping — no oscillation.
+    let d = pos - target;
+    let b = velocity + STIFFNESS * d;
+    let decay = (-STIFFNESS * t).exp();
+    (
+        target + (d + b * t) * decay,
+        (velocity - b * STIFFNESS * t) * decay,
+    )
+}
+
+/// The identity of a brick across snapshots: nodes match by id, while the
+/// collapsed tail — whose counts and size change every snapshot — is always
+/// the single trailing rest brick.
+type BrickKey = Option<NodeId>;
+
+fn brick_key(brick: Brick) -> BrickKey {
+    match brick {
+        Brick::Node(id) => Some(id),
+        Brick::Rest { .. } => None,
+    }
+}
+
+/// The spring is at rest when every scalar is within half a pixel of its
+/// target and moves slower than [`REST_VELOCITY`].
+const REST_DISTANCE: f32 = 0.5;
+/// Velocity below which remaining motion is invisible (≈0.2 px per frame).
+const REST_VELOCITY: f32 = 10.0;
+
+/// Spring state of one animated rectangle: the four scalars (x, y, width,
+/// height), each with a velocity in px/s.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Motion {
+    rect: Rectangle,
+    velocity: [f32; 4],
+}
+
+impl Motion {
+    fn resting(rect: Rectangle) -> Self {
+        Self { rect, velocity: [0.0; 4] }
+    }
+}
+
+/// One brick in flight: where it was (with what velocity) at the last
+/// rebase, and where it is heading.
+struct BrickSpring {
+    brick: Brick,
+    /// State at [`MapState::started`].
+    motion: Motion,
+    target: Rectangle,
+}
+
+impl BrickSpring {
+    /// Evaluated motion `t` seconds after the rebase.
+    fn motion_at(&self, t: f32) -> Motion {
+        let m = &self.motion;
+        let (x, vx) = spring(m.rect.x, m.velocity[0], self.target.x, t);
+        let (y, vy) = spring(m.rect.y, m.velocity[1], self.target.y, t);
+        let (w, vw) = spring(m.rect.width, m.velocity[2], self.target.width, t);
+        let (h, vh) = spring(m.rect.height, m.velocity[3], self.target.height, t);
+        Motion {
+            rect: Rectangle {
+                x,
+                y,
+                width: w,
+                height: h,
+            },
+            velocity: [vx, vy, vw, vh],
+        }
+    }
+
+    /// The rectangle to draw `t` seconds after the rebase: an inherited
+    /// shrinking velocity can briefly undershoot a small target — sizes
+    /// are clamped so the path never receives a negative extent.
+    fn rect_at(&self, t: f32) -> Rectangle {
+        let rect = self.motion_at(t).rect;
+        Rectangle {
+            width: rect.width.max(0.0),
+            height: rect.height.max(0.0),
+            ..rect
+        }
+    }
+
+    /// Close enough to the target to stop animating.
+    fn settled(&self, t: f32) -> bool {
+        let m = self.motion_at(t);
+        (m.rect.x - self.target.x).abs() < REST_DISTANCE
+            && (m.rect.y - self.target.y).abs() < REST_DISTANCE
+            && (m.rect.width - self.target.width).abs() < REST_DISTANCE
+            && (m.rect.height - self.target.height).abs() < REST_DISTANCE
+            && m.velocity.iter().all(|v| v.abs() < REST_VELOCITY)
+    }
+}
+
+/// Per-widget canvas state: the brick springs and the dark-mode flag of the
+/// last drawn frame (the cache keeps geometry with baked-in colors, so a
+/// theme switch must invalidate it).
+pub struct MapState {
+    theme_dark: Cell<Option<bool>>,
+    /// One spring per brick of the latest layout, in draw order.
+    springs: Vec<BrickSpring>,
+    /// When the spring states were last rebased.
+    started: Instant,
+    animating: bool,
+    /// The navigated-to node and canvas size of the current layout:
+    /// a change of either snaps instead of animating.
+    level: Option<NodeId>,
+    size: Size,
+}
+
+impl Default for MapState {
+    fn default() -> Self {
+        Self {
+            theme_dark: Cell::new(None),
+            springs: Vec::new(),
+            started: Instant::now(),
+            animating: false,
+            level: None,
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl MapState {
+    /// Whether the given layout is what the springs already head to.
+    fn targets_match(&self, layout: &[(Brick, Rectangle)]) -> bool {
+        self.springs.len() == layout.len()
+            && self
+                .springs
+                .iter()
+                .zip(layout)
+                .all(|(s, &(brick, rect))| s.brick == brick && s.target == rect)
+    }
+
+    /// Seconds since the springs were last rebased.
+    fn elapsed(&self, now: Instant) -> f32 {
+        now.duration_since(self.started).as_secs_f32()
+    }
+
+    /// Whether the springs describe this level at this canvas size.
+    fn covers(&self, level: NodeId, size: Size) -> bool {
+        self.level == Some(level) && self.size == size
+    }
+
+    /// Accepts a fresh layout. Scan snapshots and deletions (same level,
+    /// same canvas) animate; navigation and resize snap. Returns whether
+    /// the on-screen picture changed — i.e. the geometry cache is stale.
+    fn retarget(
+        &mut self,
+        level: NodeId,
+        size: Size,
+        layout: Vec<(Brick, Rectangle)>,
+        now: Instant,
+    ) -> bool {
+        if self.level != Some(level) || self.size != size {
+            self.level = Some(level);
+            self.size = size;
+            let stale = self.animating || !self.targets_match(&layout);
+            self.springs = layout
+                .into_iter()
+                .map(|(brick, rect)| BrickSpring {
+                    brick,
+                    motion: Motion::resting(rect),
+                    target: rect,
+                })
+                .collect();
+            self.started = now;
+            self.animating = false;
+            return stale;
+        }
+        if !self.targets_match(&layout) {
+            // Springs may still be in flight: rebase each one to its state
+            // at this very moment — position *and* velocity carry over, so
+            // a retarget never causes a visible kink in the motion.
+            let t = self.elapsed(now);
+            let previous: HashMap<BrickKey, Motion> = self
+                .springs
+                .iter()
+                .map(|s| (brick_key(s.brick), s.motion_at(t)))
+                .collect();
+            self.springs = layout
+                .into_iter()
+                .map(|(brick, target)| {
+                    let motion = previous.get(&brick_key(brick)).copied().unwrap_or_else(
+                        // A brick the scanner just discovered grows out
+                        // of the center of its destination.
+                        || Motion::resting(Rectangle::new(target.center(), Size::ZERO)),
+                    );
+                    BrickSpring { brick, motion, target }
+                })
+                .collect();
+            self.started = now;
+            // A change may be caption-only (the rest brick's counts drift
+            // while its rectangle stays put): repaint once, but don't run
+            // animation frames for springs that are already at rest.
+            self.animating = self.springs.iter().any(|s| !s.settled(0.0));
+            return true;
+        }
+        if self.animating {
+            let t = self.elapsed(now);
+            if self.springs.iter().all(|s| s.settled(t)) {
+                for s in &mut self.springs {
+                    s.motion = Motion::resting(s.target);
+                }
+                self.animating = false;
+            }
+            // The completing frame still repaints: the cache holds the
+            // last in-flight picture.
+            return true;
+        }
+        false
+    }
+
+    /// The bricks to display at `now`.
+    fn bricks(&self, now: Instant) -> Vec<(Brick, Rectangle)> {
+        let t = self.elapsed(now);
+        self.springs
+            .iter()
+            .map(|s| {
+                (
+                    s.brick,
+                    if self.animating { s.rect_at(t) } else { s.target },
+                )
+            })
+            .collect()
+    }
+
+    fn is_animating(&self) -> bool {
+        self.animating
+    }
+}
+
 /// Label origin aligned to whole pixels: a fractional position changes
 /// each glyph's subpixel bin (`CacheKey::{x_bin,y_bin}`), while bricks
 /// shift slightly on every scan snapshot — without rounding the same
@@ -442,6 +699,8 @@ fn label_origin(rect: Rectangle) -> Point {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use iced::{Point, Size};
 
@@ -613,6 +872,320 @@ mod tests {
     }
 
     #[test]
+    fn spring_starts_at_initial_state() {
+        assert_eq!(spring(100.0, -30.0, 200.0, 0.0), (100.0, -30.0));
+    }
+
+    #[test]
+    fn spring_settles_at_target() {
+        let (pos, vel) = spring(0.0, 0.0, 100.0, 1.0);
+        assert!((pos - 100.0).abs() < 1e-3, "{pos}");
+        assert!(vel.abs() < 1e-2, "{vel}");
+    }
+
+    #[test]
+    fn spring_from_rest_never_overshoots() {
+        // Critically damped: heading from 0 to 100 stays within [0, 100]
+        // the whole way.
+        for i in 0..=100 {
+            let t = i as f32 * 0.01;
+            let (pos, _) = spring(0.0, 0.0, 100.0, t);
+            assert!((0.0..=100.0).contains(&pos), "t={t} pos={pos}");
+        }
+    }
+
+    #[test]
+    fn spring_rebase_is_seamless() {
+        // The closed form composes: evaluating 150 ms straight equals
+        // evaluating 100 ms, restarting from that state, and evaluating
+        // 50 ms more — a mid-flight retarget keeps position and velocity.
+        let (p1, v1) = spring(0.0, 0.0, 100.0, 0.1);
+        let (direct, direct_vel) = spring(0.0, 0.0, 100.0, 0.15);
+        let (rebased, rebased_vel) = spring(p1, v1, 100.0, 0.05);
+        assert!((rebased - direct).abs() < 1e-3, "{rebased} vs {direct}");
+        assert!(
+            (rebased_vel - direct_vel).abs() < 1e-2,
+            "{rebased_vel} vs {direct_vel}"
+        );
+    }
+
+    /// A first-level map layout, as produced by [`level1`].
+    type Layout = Vec<(Brick, Rectangle)>;
+
+    /// Two layouts of the same brick: the spring test bed.
+    fn spring_layouts() -> (Layout, Layout) {
+        let brick = Brick::Node(NodeId(1));
+        (
+            vec![(brick, rect(100.0, 50.0))],
+            vec![(
+                brick,
+                Rectangle::new(Point::new(40.0, 20.0), Size::new(200.0, 100.0)),
+            )],
+        )
+    }
+
+    const CANVAS: Size = Size::new(800.0, 500.0);
+
+    /// Component-wise comparison with a tolerance: spring evaluation goes
+    /// through `exp`, exact f32 equality would be brittle.
+    fn assert_rects_close(actual: &[(Brick, Rectangle)], expected: &[(Brick, Rectangle)]) {
+        assert_eq!(actual.len(), expected.len(), "{actual:?} vs {expected:?}");
+        for ((brick, rect), (expected_brick, expected_rect)) in actual.iter().zip(expected) {
+            assert_eq!(brick, expected_brick);
+            for (got, want) in [
+                (rect.x, expected_rect.x),
+                (rect.y, expected_rect.y),
+                (rect.width, expected_rect.width),
+                (rect.height, expected_rect.height),
+            ] {
+                assert!((got - want).abs() < 1e-2, "{rect:?} vs {expected_rect:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn map_state_snaps_on_first_layout() {
+        let (l1, _) = spring_layouts();
+        let mut state = MapState::default();
+        let now = Instant::now();
+        assert!(state.retarget(NodeId(0), CANVAS, l1.clone(), now));
+        assert!(!state.is_animating());
+        assert_eq!(state.bricks(now), l1);
+    }
+
+    #[test]
+    fn map_state_springs_toward_changed_layout() {
+        let (l1, l2) = spring_layouts();
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1.clone(), t0);
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(state.retarget(NodeId(0), CANVAS, l2.clone(), t1));
+        assert!(state.is_animating());
+        // The motion starts where the bricks were…
+        assert_rects_close(&state.bricks(t1), &l1);
+        // …100 ms in, every scalar follows the closed-form spring…
+        let expected = Rectangle {
+            x: spring(0.0, 0.0, 40.0, 0.1).0,
+            y: spring(0.0, 0.0, 20.0, 0.1).0,
+            width: spring(100.0, 0.0, 200.0, 0.1).0,
+            height: spring(50.0, 0.0, 100.0, 0.1).0,
+        };
+        assert_rects_close(
+            &state.bricks(t1 + Duration::from_millis(100)),
+            &[(l2[0].0, expected)],
+        );
+        // …and converges on the new layout.
+        assert_rects_close(&state.bricks(t1 + Duration::from_secs(1)), &l2);
+    }
+
+    #[test]
+    fn spring_outlives_a_display_frame() {
+        // A 60 Hz frame is ~16.7 ms. The motion must still be in flight a
+        // frame after a layout change — otherwise every change becomes an
+        // instant jump and the map visibly twitches during a scan.
+        let (l1, l2) = spring_layouts();
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1.clone(), t0);
+        let t1 = t0 + Duration::from_secs(1);
+        state.retarget(NodeId(0), CANVAS, l2.clone(), t1);
+        let next_frame = state.bricks(t1 + Duration::from_micros(16_700));
+        assert_ne!(next_frame, l1, "the spring has not moved at all");
+        assert_ne!(next_frame, l2, "the spring skipped to the end in one frame");
+    }
+
+    #[test]
+    fn map_state_settles_and_goes_idle() {
+        let (l1, l2) = spring_layouts();
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1, t0);
+        state.retarget(NodeId(0), CANVAS, l2.clone(), t0 + Duration::from_secs(1));
+        // The frame the spring settles on still redraws (the cache holds
+        // the last in-flight frame), the next one is clean.
+        let done = t0 + Duration::from_secs(2);
+        assert!(state.retarget(NodeId(0), CANVAS, l2.clone(), done));
+        assert!(!state.is_animating());
+        assert_eq!(state.bricks(done), l2);
+        assert!(!state.retarget(NodeId(0), CANVAS, l2, done + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn map_state_snaps_on_level_change() {
+        let (l1, l2) = spring_layouts();
+        let mut state = MapState::default();
+        let now = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1, now);
+        // Navigation: a different node is displayed — no animation.
+        assert!(state.retarget(NodeId(7), CANVAS, l2.clone(), now));
+        assert!(!state.is_animating());
+        assert_eq!(state.bricks(now), l2);
+    }
+
+    #[test]
+    fn map_state_snaps_on_resize() {
+        let (l1, l2) = spring_layouts();
+        let mut state = MapState::default();
+        let now = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1, now);
+        assert!(state.retarget(NodeId(0), Size::new(400.0, 300.0), l2.clone(), now));
+        assert!(!state.is_animating());
+        assert_eq!(state.bricks(now), l2);
+    }
+
+    #[test]
+    fn map_state_retargets_mid_flight_without_jump() {
+        let (l1, l2) = spring_layouts();
+        let l3 = vec![(Brick::Node(NodeId(1)), rect(300.0, 200.0))];
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1.clone(), t0);
+        let t1 = t0 + Duration::from_secs(1);
+        state.retarget(NodeId(0), CANVAS, l2.clone(), t1);
+        // A new snapshot lands mid-flight: the bricks continue from where
+        // they are drawn, not from the previous snapshot's layout.
+        let mid = t1 + Duration::from_millis(100);
+        let displayed = state.bricks(mid);
+        assert_ne!(displayed, l1);
+        assert_ne!(displayed, l2);
+        assert!(state.retarget(NodeId(0), CANVAS, l3.clone(), mid));
+        assert_rects_close(&state.bricks(mid), &displayed);
+        // …and the springs converge on the newest target.
+        assert_rects_close(&state.bricks(mid + Duration::from_secs(1)), &l3);
+    }
+
+    #[test]
+    fn map_state_grows_new_brick_from_target_center() {
+        let first = Brick::Node(NodeId(1));
+        let second = Brick::Node(NodeId(2));
+        let l1 = vec![(first, rect(100.0, 50.0))];
+        let l2 = vec![
+            (first, rect(60.0, 50.0)),
+            (
+                second,
+                Rectangle::new(Point::new(10.0, 20.0), Size::new(40.0, 60.0)),
+            ),
+        ];
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1, t0);
+        let t1 = t0 + Duration::from_secs(1);
+        state.retarget(NodeId(0), CANVAS, l2.clone(), t1);
+        // The just-discovered brick starts as a point at the center of its
+        // destination (30, 50) and inflates from there.
+        assert_rects_close(
+            &state.bricks(t1)[1..],
+            &[(second, Rectangle::new(Point::new(30.0, 50.0), Size::ZERO))],
+        );
+        assert_rects_close(&state.bricks(t1 + Duration::from_secs(1))[1..], &l2[1..]);
+    }
+
+    #[test]
+    fn map_state_drops_vanished_brick() {
+        let kept = Brick::Node(NodeId(1));
+        let gone = Brick::Node(NodeId(2));
+        let l1 = vec![(kept, rect(50.0, 50.0)), (gone, rect(30.0, 30.0))];
+        let l2 = vec![(kept, rect(100.0, 100.0))];
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1, t0);
+        let t1 = t0 + Duration::from_secs(1);
+        state.retarget(NodeId(0), CANVAS, l2, t1);
+        let bricks = state.bricks(t1);
+        assert_eq!(bricks.len(), 1, "{bricks:?}");
+        assert_eq!(bricks[0].0, kept);
+    }
+
+    #[test]
+    fn map_state_matches_rest_across_snapshots() {
+        // The collapsed tail changes contents every snapshot, but visually
+        // it is the same brick — it slides from its old rectangle instead
+        // of re-growing; the caption is the target one right away.
+        let l1 = vec![(
+            Brick::Rest { files: 1, dirs: 0, size: 10 },
+            rect(100.0, 50.0),
+        )];
+        let rest = Brick::Rest { files: 3, dirs: 1, size: 40 };
+        let l2 = vec![(
+            rest,
+            Rectangle::new(Point::new(40.0, 20.0), Size::new(200.0, 100.0)),
+        )];
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1, t0);
+        let t1 = t0 + Duration::from_secs(1);
+        state.retarget(NodeId(0), CANVAS, l2, t1);
+        assert_rects_close(&state.bricks(t1), &[(rest, rect(100.0, 50.0))]);
+    }
+
+    #[test]
+    fn map_state_repaints_metadata_change_without_animating() {
+        // Only the rest brick's caption data changes; the geometry is
+        // already at rest. The frame repaints (the caption is baked into
+        // the cache) but no animation frames are requested.
+        let rect_a = rect(100.0, 50.0);
+        let l1 = vec![(Brick::Rest { files: 1, dirs: 0, size: 10 }, rect_a)];
+        let l2 = vec![(Brick::Rest { files: 2, dirs: 0, size: 20 }, rect_a)];
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1, t0);
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(state.retarget(NodeId(0), CANVAS, l2.clone(), t1));
+        assert!(!state.is_animating());
+        assert_eq!(state.bricks(t1), l2);
+    }
+
+    #[test]
+    fn hit_test_follows_animated_bricks() {
+        // Two children: the final layout tiles the whole map, but the
+        // previous snapshot parked both bricks as 10×10 tiles in the
+        // top-left corner and the springs have only just departed.
+        let tree = tree_with_children(&[(100_000_000, false), (90_000_000, false)]);
+        let cache = canvas::Cache::new();
+        let map = DiskMap {
+            tree: &tree,
+            current: tree.root,
+            active: None,
+            cache: &cache,
+        };
+        let target = level1(&tree, tree.root, CANVAS);
+        let parked: Layout = target
+            .iter()
+            .enumerate()
+            .map(|(i, &(brick, _))| {
+                (
+                    brick,
+                    Rectangle::new(Point::new(i as f32 * 10.0, 0.0), Size::new(10.0, 10.0)),
+                )
+            })
+            .collect();
+        let mut state = MapState::default();
+        let now = Instant::now();
+        state.retarget(tree.root, CANVAS, parked.clone(), now);
+        state.retarget(tree.root, CANVAS, target.clone(), now);
+        assert!(state.is_animating());
+        // The probe sits inside the *drawn* rectangle of the first brick
+        // (parked at x 0..10); make sure the final layout disagrees there,
+        // then the cursor must hit what the user currently sees.
+        let probe = Point::new(5.0, 5.0);
+        let (drawn, _) = *parked.iter().find(|(_, r)| r.contains(probe)).unwrap();
+        let (future, _) = *target.iter().find(|(_, r)| r.contains(probe)).unwrap();
+        assert_ne!(drawn, future, "the probe does not separate the layouts");
+        assert_eq!(map.hit_test(&state, CANVAS, probe), Some(NodeId(1)));
+    }
+
+    #[test]
+    fn map_state_idle_frame_is_clean() {
+        let (l1, _) = spring_layouts();
+        let mut state = MapState::default();
+        let now = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1.clone(), now);
+        // The same layout again (an ordinary redraw): nothing to repaint.
+        assert!(!state.retarget(NodeId(0), CANVAS, l1, now + Duration::from_secs(1)));
+    }
+
+    #[test]
     fn rest_label_lists_size_and_counts() {
         assert_eq!(rest_label(4, 2, 408_192), "… 398.6 KB (4 files, 2 folders)");
         assert_eq!(rest_label(1, 0, 500), "… 500 B (1 file)");
@@ -738,28 +1311,43 @@ mod tests {
 }
 
 impl canvas::Program<Message> for DiskMap<'_> {
-    /// The dark-mode flag of the last drawn frame: the cache keeps geometry
-    /// with baked-in colors, so a system theme switch must invalidate it.
-    type State = Cell<Option<bool>>;
+    type State = MapState;
 
     fn update(
         &self,
-        _state: &mut Self::State,
+        state: &mut Self::State,
         event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<Action<Message>> {
-        let hit = || {
+        let hit = |state: &MapState| {
             cursor
                 .position_in(bounds)
-                .and_then(|p| self.hit_test(bounds.size(), p))
+                .and_then(|p| self.hit_test(state, bounds.size(), p))
         };
         match event {
+            // Every frame starts here: feed the fresh layout to the tween.
+            // Scan snapshots and deletions slide the bricks into their new
+            // rectangles; while the tween runs, the next frame is requested
+            // and the cached geometry is repainted.
+            Event::Window(iced::window::Event::RedrawRequested(now)) => {
+                let size = bounds.size();
+                let stale = state.retarget(
+                    self.current,
+                    size,
+                    level1(self.tree, self.current, size),
+                    *now,
+                );
+                if stale {
+                    self.cache.clear();
+                }
+                state.is_animating().then(Action::request_redraw)
+            }
             // A levitating cursor hovers the actions panel stacked above the
             // map: keep the active brick, otherwise the panel would vanish
             // right as the cursor reaches its buttons.
             Event::Mouse(mouse::Event::CursorMoved { .. }) if !cursor.is_levitating() => {
-                let hovered = hit();
+                let hovered = hit(state);
                 (hovered != self.active).then(|| Action::publish(Message::SetActive(hovered)))
             }
             Event::Mouse(mouse::Event::CursorLeft) => self
@@ -767,7 +1355,7 @@ impl canvas::Program<Message> for DiskMap<'_> {
                 .is_some()
                 .then(|| Action::publish(Message::SetActive(None))),
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                hit().map(|id| Action::publish(Message::BrickPressed(id)).and_capture())
+                hit(state).map(|id| Action::publish(Message::BrickPressed(id)).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonPressed(
                 mouse::Button::Right | mouse::Button::Back,
@@ -786,20 +1374,24 @@ impl canvas::Program<Message> for DiskMap<'_> {
     ) -> Vec<canvas::Geometry> {
         let palette = palette(theme);
         let is_dark = theme.extended_palette().is_dark;
-        if state.replace(Some(is_dark)) != Some(is_dark) {
+        if state.theme_dark.replace(Some(is_dark)) != Some(is_dark) {
             self.cache.clear();
         }
+        // The springs hold the current layout: `update` receives
+        // `RedrawRequested` and retargets them before every frame, so
+        // re-running `level1` here would only repeat that work.
+        let bricks = state.bricks(Instant::now());
         let map = self
             .cache
             .draw(renderer, bounds.size(), |frame| {
-                self.draw_map(frame, palette)
+                self.draw_map(frame, palette, &bricks)
             });
         let mut layers = vec![map];
 
         if let Some(active) = self.active
-            && let Some((_, rect)) = level1(self.tree, self.current, bounds.size())
-                .into_iter()
-                .find(|&(brick, _)| brick == Brick::Node(active))
+            && let Some(&(_, rect)) = bricks
+                .iter()
+                .find(|&&(brick, _)| brick == Brick::Node(active))
         {
             let mut frame = Frame::new(renderer, bounds.size());
             let path =
@@ -812,13 +1404,13 @@ impl canvas::Program<Message> for DiskMap<'_> {
 
     fn mouse_interaction(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         let over_brick = cursor
             .position_in(bounds)
-            .and_then(|p| self.hit_test(bounds.size(), p))
+            .and_then(|p| self.hit_test(state, bounds.size(), p))
             .is_some();
         if over_brick {
             mouse::Interaction::Pointer

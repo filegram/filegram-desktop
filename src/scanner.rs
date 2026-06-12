@@ -23,7 +23,12 @@ use crate::fs_tree::{FsTree, ScanNode};
 /// Interval for sending progress to the UI, as in the original.
 pub const PROGRESS_INTERVAL_MS: u64 = 100;
 /// Interval of intermediate tree snapshots for progressive rendering.
-pub const SNAPSHOT_INTERVAL_MS: u64 = 500;
+/// Paced to the map's spring (it settles in ≈0.35 s): one new layout per
+/// glide keeps the bricks moving continuously. The spring survives any
+/// cadence without kinks, but much shorter intervals still churn the
+/// layout itself — children are re-sorted by size on every snapshot, so
+/// bricks would swap places faster than the eye can follow.
+pub const SNAPSHOT_INTERVAL_MS: u64 = 250;
 
 #[derive(Debug, Clone)]
 pub enum ScanEvent {
