@@ -285,8 +285,17 @@ fn map_bounds(size: Size) -> Rectangle {
 
 impl DiskMap<'_> {
     /// The rest brick is inert: the cursor over it hits nothing.
-    fn hit_test(&self, size: Size, point: Point) -> Option<NodeId> {
-        level1(self.tree, self.current, size)
+    /// Mid-flight the bricks sit away from their targets, so the cursor
+    /// resolves against what is actually drawn — the spring rectangles;
+    /// `level1` is the fallback for events that arrive before the first
+    /// `RedrawRequested` syncs the springs to this level and canvas size.
+    fn hit_test(&self, state: &MapState, size: Size, point: Point) -> Option<NodeId> {
+        let bricks = if state.covers(self.current, size) {
+            state.bricks(Instant::now())
+        } else {
+            level1(self.tree, self.current, size)
+        };
+        bricks
             .into_iter()
             .find(|(_, rect)| rect.contains(point))
             .and_then(|(brick, _)| match brick {
@@ -584,6 +593,11 @@ impl MapState {
     /// Seconds since the springs were last rebased.
     fn elapsed(&self, now: Instant) -> f32 {
         now.duration_since(self.started).as_secs_f32()
+    }
+
+    /// Whether the springs describe this level at this canvas size.
+    fn covers(&self, level: NodeId, size: Size) -> bool {
+        self.level == Some(level) && self.size == size
     }
 
     /// Accepts a fresh layout. Scan snapshots and deletions (same level,
@@ -1123,6 +1137,45 @@ mod tests {
     }
 
     #[test]
+    fn hit_test_follows_animated_bricks() {
+        // Two children: the final layout tiles the whole map, but the
+        // previous snapshot parked both bricks as 10×10 tiles in the
+        // top-left corner and the springs have only just departed.
+        let tree = tree_with_children(&[(100_000_000, false), (90_000_000, false)]);
+        let cache = canvas::Cache::new();
+        let map = DiskMap {
+            tree: &tree,
+            current: tree.root,
+            active: None,
+            cache: &cache,
+        };
+        let target = level1(&tree, tree.root, CANVAS);
+        let parked: Layout = target
+            .iter()
+            .enumerate()
+            .map(|(i, &(brick, _))| {
+                (
+                    brick,
+                    Rectangle::new(Point::new(i as f32 * 10.0, 0.0), Size::new(10.0, 10.0)),
+                )
+            })
+            .collect();
+        let mut state = MapState::default();
+        let now = Instant::now();
+        state.retarget(tree.root, CANVAS, parked.clone(), now);
+        state.retarget(tree.root, CANVAS, target.clone(), now);
+        assert!(state.is_animating());
+        // The probe sits inside the *drawn* rectangle of the first brick
+        // (parked at x 0..10); make sure the final layout disagrees there,
+        // then the cursor must hit what the user currently sees.
+        let probe = Point::new(5.0, 5.0);
+        let (drawn, _) = *parked.iter().find(|(_, r)| r.contains(probe)).unwrap();
+        let (future, _) = *target.iter().find(|(_, r)| r.contains(probe)).unwrap();
+        assert_ne!(drawn, future, "the probe does not separate the layouts");
+        assert_eq!(map.hit_test(&state, CANVAS, probe), Some(NodeId(1)));
+    }
+
+    #[test]
     fn map_state_idle_frame_is_clean() {
         let (l1, _) = spring_layouts();
         let mut state = MapState::default();
@@ -1267,10 +1320,10 @@ impl canvas::Program<Message> for DiskMap<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<Action<Message>> {
-        let hit = || {
+        let hit = |state: &MapState| {
             cursor
                 .position_in(bounds)
-                .and_then(|p| self.hit_test(bounds.size(), p))
+                .and_then(|p| self.hit_test(state, bounds.size(), p))
         };
         match event {
             // Every frame starts here: feed the fresh layout to the tween.
@@ -1294,7 +1347,7 @@ impl canvas::Program<Message> for DiskMap<'_> {
             // map: keep the active brick, otherwise the panel would vanish
             // right as the cursor reaches its buttons.
             Event::Mouse(mouse::Event::CursorMoved { .. }) if !cursor.is_levitating() => {
-                let hovered = hit();
+                let hovered = hit(state);
                 (hovered != self.active).then(|| Action::publish(Message::SetActive(hovered)))
             }
             Event::Mouse(mouse::Event::CursorLeft) => self
@@ -1302,7 +1355,7 @@ impl canvas::Program<Message> for DiskMap<'_> {
                 .is_some()
                 .then(|| Action::publish(Message::SetActive(None))),
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                hit().map(|id| Action::publish(Message::BrickPressed(id)).and_capture())
+                hit(state).map(|id| Action::publish(Message::BrickPressed(id)).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonPressed(
                 mouse::Button::Right | mouse::Button::Back,
@@ -1351,13 +1404,13 @@ impl canvas::Program<Message> for DiskMap<'_> {
 
     fn mouse_interaction(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         let over_brick = cursor
             .position_in(bounds)
-            .and_then(|p| self.hit_test(bounds.size(), p))
+            .and_then(|p| self.hit_test(state, bounds.size(), p))
             .is_some();
         if over_brick {
             mouse::Interaction::Pointer
