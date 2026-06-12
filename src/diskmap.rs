@@ -3,7 +3,7 @@
 //! Map geometry is cached in a `canvas::Cache` (analog of the original's offscreen Bitmap),
 //! the highlight is drawn as a separate layer on top.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -238,27 +238,6 @@ pub fn has_label(tree: &FsTree, id: NodeId, rect: Rectangle) -> bool {
     label_font_size(brick_label(tree, id).chars().count(), rect).is_some()
 }
 
-/// Second-level silhouette layout: the folder's children are laid out by
-/// the same algorithm as the post-zoom level — [`level1`] on the full
-/// canvas — and affinely compressed into the brick's content rectangle.
-/// A zoom transition thus morphs the silhouettes into the very bricks
-/// they previewed, keeping the picture proportional throughout.
-fn nested_layout(
-    tree: &FsTree,
-    dir: NodeId,
-    canvas: Size,
-    content: Rectangle,
-) -> Vec<(Brick, Rectangle)> {
-    let bounds = map_bounds(canvas);
-    if bounds.width < 1.0 || bounds.height < 1.0 {
-        return Vec::new();
-    }
-    level1(tree, dir, canvas)
-        .into_iter()
-        .map(|(brick, rect)| (brick, map_rect(rect, bounds, content)))
-        .collect()
-}
-
 /// The brick area: the canvas inset by [`MAP_MARGIN`] on every side.
 fn map_bounds(size: Size) -> Rectangle {
     Rectangle {
@@ -292,6 +271,7 @@ impl DiskMap<'_> {
 
     fn draw_map(
         &self,
+        state: &MapState,
         frame: &mut Frame,
         palette: &BrickPalette,
         bricks: &[(Brick, Rectangle)],
@@ -299,7 +279,7 @@ impl DiskMap<'_> {
         frame.fill_rectangle(Point::ORIGIN, frame.size(), palette.map_background);
         for &(brick, rect) in bricks {
             match brick {
-                Brick::Node(id) => self.draw_brick(frame, palette, id, rect),
+                Brick::Node(id) => self.draw_brick(state, frame, palette, id, rect),
                 Brick::Rest { files, dirs, size } => {
                     self.draw_rest(frame, palette, files, dirs, size, rect);
                 }
@@ -326,7 +306,14 @@ impl DiskMap<'_> {
         self.draw_label(frame, &rest_label(files, dirs, size), palette.rest_text, rect);
     }
 
-    fn draw_brick(&self, frame: &mut Frame, palette: &BrickPalette, id: NodeId, rect: Rectangle) {
+    fn draw_brick(
+        &self,
+        state: &MapState,
+        frame: &mut Frame,
+        palette: &BrickPalette,
+        id: NodeId,
+        rect: Rectangle,
+    ) {
         let node = self.tree.node(id);
         let (fill, stroke, text_color) = if node.is_dir {
             (
@@ -345,7 +332,7 @@ impl DiskMap<'_> {
         let font_size = self.draw_label(frame, &label, text_color, rect);
 
         if node.is_dir {
-            self.draw_nested(frame, palette, id, rect, font_size);
+            self.draw_nested(state, frame, palette, id, rect, font_size);
         }
     }
 
@@ -372,9 +359,11 @@ impl DiskMap<'_> {
     }
 
     /// Nested second-level silhouettes: colored rectangles without text,
-    /// laid out by [`nested_layout`] so they preview the post-zoom level.
+    /// laid out by [`MapState::nested`] so they preview the post-zoom
+    /// level.
     fn draw_nested(
         &self,
+        state: &MapState,
         frame: &mut Frame,
         palette: &BrickPalette,
         dir: NodeId,
@@ -391,7 +380,7 @@ impl DiskMap<'_> {
         if content.width < MIN_CONTENT_SIDE || content.height < MIN_CONTENT_SIDE {
             return;
         }
-        for (brick, r) in nested_layout(self.tree, dir, frame.size(), content) {
+        for (brick, r) in state.nested(self.tree, dir, frame.size(), content) {
             let silhouette = Rectangle {
                 x: r.x + SILHOUETTE_MARGIN,
                 y: r.y,
@@ -581,6 +570,11 @@ pub struct MapState {
     /// a change of either snaps instead of animating.
     level: Option<NodeId>,
     size: Size,
+    /// Memoized [`level1`] layouts of the folder bricks' contents (in map
+    /// bounds coordinates): animation repaints every frame, while the
+    /// nested layouts only change when the springs retarget — the cache
+    /// is dropped there.
+    nested: RefCell<HashMap<NodeId, Vec<(Brick, Rectangle)>>>,
 }
 
 impl Default for MapState {
@@ -592,6 +586,7 @@ impl Default for MapState {
             animating: false,
             level: None,
             size: Size::ZERO,
+            nested: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -615,6 +610,36 @@ impl MapState {
     /// Whether the springs describe this level at this canvas size.
     fn covers(&self, level: NodeId, size: Size) -> bool {
         self.level == Some(level) && self.size == size
+    }
+
+    /// Second-level silhouette layout: the folder's children are laid out
+    /// by the same algorithm as the post-zoom level — [`level1`], which
+    /// fills the map bounds (the canvas inset by [`MAP_MARGIN`]) — and
+    /// that area is affinely compressed into the brick's content
+    /// rectangle. A zoom transition thus morphs the silhouettes into the
+    /// very bricks they previewed, keeping the picture proportional
+    /// throughout. The expensive [`level1`] part is memoized: an
+    /// animation repaints every frame, while the underlying layouts only
+    /// change together with the springs — [`Self::retarget`] drops the
+    /// cache whenever it accepts a new layout.
+    fn nested(
+        &self,
+        tree: &FsTree,
+        dir: NodeId,
+        canvas: Size,
+        content: Rectangle,
+    ) -> Vec<(Brick, Rectangle)> {
+        let bounds = map_bounds(canvas);
+        if bounds.width < 1.0 || bounds.height < 1.0 {
+            return Vec::new();
+        }
+        let mut cache = self.nested.borrow_mut();
+        cache
+            .entry(dir)
+            .or_insert_with(|| level1(tree, dir, canvas))
+            .iter()
+            .map(|&(brick, rect)| (brick, map_rect(rect, bounds, content)))
+            .collect()
     }
 
     /// The rectangle pair (`from`, `to`) of a zoom transition: every spring
@@ -670,6 +695,7 @@ impl MapState {
         now: Instant,
     ) -> bool {
         if self.level != Some(level) || self.size != size {
+            self.nested.borrow_mut().clear();
             // A zoom transition only makes sense on the same canvas: a
             // simultaneous resize would anchor it to stale geometry.
             let frames = (self.size == size)
@@ -704,6 +730,7 @@ impl MapState {
             return stale;
         }
         if !self.targets_match(&layout) {
+            self.nested.borrow_mut().clear();
             // Springs may still be in flight: rebase each one to its state
             // at this very moment — position *and* velocity carry over, so
             // a retarget never causes a visible kink in the motion.
@@ -796,6 +823,22 @@ mod tests {
         ) -> bool {
             self.retarget(level, size, layout, Zoom::Snap, now)
         }
+    }
+
+    /// Reference implementation of [`MapState::nested`], sans memoization:
+    /// the [`level1`] layout of the folder compressed from the map bounds
+    /// into the brick's content rectangle.
+    fn nested_layout(
+        tree: &FsTree,
+        dir: NodeId,
+        canvas: Size,
+        content: Rectangle,
+    ) -> Vec<(Brick, Rectangle)> {
+        let bounds = map_bounds(canvas);
+        level1(tree, dir, canvas)
+            .into_iter()
+            .map(|(brick, rect)| (brick, map_rect(rect, bounds, content)))
+            .collect()
     }
 
     /// A tree: the root and its children with the given (size, is_dir).
@@ -1030,6 +1073,94 @@ mod tests {
         let canvas = Size::new(800.0, 500.0);
         let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(100.0, 60.0));
         assert!(nested_layout(&tree, folder, canvas, content).is_empty());
+    }
+
+    /// A tree of root → one folder → `sizes` files; returns the folder id.
+    fn tree_with_grandchildren(sizes: &[u64]) -> (FsTree, NodeId) {
+        use crate::fs_tree::ScanNode;
+        let mut arena = vec![
+            ScanNode {
+                name: "root".into(),
+                path: std::path::Path::new("/root").into(),
+                size: 0,
+                is_dir: true,
+                parent: 0,
+            },
+            ScanNode {
+                name: "dir".into(),
+                path: std::path::Path::new("/root/dir").into(),
+                size: 0,
+                is_dir: true,
+                parent: 0,
+            },
+        ];
+        for (i, &size) in sizes.iter().enumerate() {
+            arena.push(ScanNode {
+                name: format!("f{i}").into(),
+                path: std::path::Path::new("/root/dir/f").into(),
+                size,
+                is_dir: false,
+                parent: 1,
+            });
+        }
+        let tree = FsTree::from_arena(&arena);
+        let dir = tree.node(tree.root).children[0];
+        (tree, dir)
+    }
+
+    #[test]
+    fn nested_cache_serves_stale_layout_until_retarget() {
+        // The memoized nested layout is recomputed only when the springs
+        // retarget: between retargets even a changed tree yields the
+        // cached rectangles.
+        let canvas = Size::new(800.0, 500.0);
+        let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(200.0, 125.0));
+        let (before, dir) = tree_with_grandchildren(&[500_000_000, 300_000_000]);
+        let (after, _) =
+            tree_with_grandchildren(&[500_000_000, 300_000_000, 120_000_000, 50_000_000]);
+        let mut state = MapState::default();
+        let first = state.nested(&before, dir, canvas, content);
+        assert_eq!(first, nested_layout(&before, dir, canvas, content));
+        // The tree changed, but no retarget happened yet — the cache wins.
+        assert_eq!(state.nested(&after, dir, canvas, content), first);
+        state.retarget_snap(
+            after.root,
+            canvas,
+            level1(&after, after.root, canvas),
+            Instant::now(),
+        );
+        assert_eq!(
+            state.nested(&after, dir, canvas, content),
+            nested_layout(&after, dir, canvas, content)
+        );
+    }
+
+    #[test]
+    fn nested_cache_survives_settled_frames_but_not_new_layouts() {
+        let canvas = Size::new(800.0, 500.0);
+        let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(200.0, 125.0));
+        let (before, dir) = tree_with_grandchildren(&[500_000_000, 300_000_000]);
+        let (after, _) =
+            tree_with_grandchildren(&[500_000_000, 300_000_000, 120_000_000, 50_000_000]);
+        let layout_now = level1(&before, before.root, canvas);
+        let mut state = MapState::default();
+        let now = Instant::now();
+        state.retarget_snap(before.root, canvas, layout_now.clone(), now);
+        let first = state.nested(&before, dir, canvas, content);
+        // A frame with the same targets (the per-frame RedrawRequested
+        // path) keeps the cache…
+        state.retarget_snap(before.root, canvas, layout_now, now);
+        assert_eq!(state.nested(&after, dir, canvas, content), first);
+        // …while a scan snapshot with moved bricks drops it.
+        let moved = vec![(
+            Brick::Node(dir),
+            Rectangle::new(Point::new(4.0, 4.0), Size::new(300.0, 200.0)),
+        )];
+        state.retarget_snap(before.root, canvas, moved, now);
+        assert_eq!(
+            state.nested(&after, dir, canvas, content),
+            nested_layout(&after, dir, canvas, content)
+        );
     }
 
     #[test]
@@ -1717,7 +1848,7 @@ impl canvas::Program<Message> for DiskMap<'_> {
         let map = self
             .cache
             .draw(renderer, bounds.size(), |frame| {
-                self.draw_map(frame, palette, &bricks)
+                self.draw_map(state, frame, palette, &bricks)
             });
         let mut layers = vec![map];
 
