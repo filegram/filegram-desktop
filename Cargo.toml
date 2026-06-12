@@ -58,4 +58,6 @@ winresource = "0.1"
 
 [profile.release]
 strip = true
-lto = true
+# Thin, not fat: fat LTO re-runs codegen over every dependency's bitcode
+# on each final link (~3-4 min per target in CI) for no measurable gain here.
+lto = "thin"
