@@ -24,8 +24,9 @@ impl DiskUsage {
 }
 
 /// Roots of the mounted volumes, for the quick disk row on the start
-/// screen. The filesystem root comes first, extra volumes follow in
-/// name order.
+/// screen. On Unix the filesystem root `/` comes first and the extra
+/// volumes follow in name order; on Windows it is drive roots in
+/// letter order (`A:\` before `C:\` if both exist).
 #[cfg(target_os = "macos")]
 pub fn mounted_roots() -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from("/")];
