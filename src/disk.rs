@@ -82,10 +82,10 @@ fn volume_roots(volumes: &Path) -> Vec<PathBuf> {
     roots
 }
 
-/// Removable/extra mount points out of `/proc/mounts` text: everything
-/// under the directories desktop Linux mounts external drives into.
-/// Octal escapes (`\040` for a space) are decoded; bind-mount duplicates
-/// collapse into one entry.
+/// Removable/extra mount points out of `/proc/mounts` text, sorted by
+/// name: everything under the directories desktop Linux mounts external
+/// drives into. Octal escapes (`\040` for a space) are decoded;
+/// bind-mount duplicates collapse into one entry.
 #[cfg(any(target_os = "linux", test))]
 fn roots_from_mounts(mounts: &str) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
@@ -98,12 +98,43 @@ fn roots_from_mounts(mounts: &str) -> Vec<PathBuf> {
                 .any(|prefix| point.starts_with(prefix))
         })
     {
-        let root = PathBuf::from(mount_point.replace("\\040", " "));
+        let root = PathBuf::from(unescape_mount_point(mount_point));
         if !roots.contains(&root) {
             roots.push(root);
         }
     }
+    roots.sort();
     roots
+}
+
+/// Decodes the `\ooo` octal escapes `/proc/mounts` hides whitespace and
+/// backslashes behind: `\040` space, `\011` tab, `\012` newline, `\134`
+/// backslash. Anything that is not a backslash followed by exactly three
+/// octal digits passes through untouched.
+#[cfg(any(target_os = "linux", test))]
+fn unescape_mount_point(point: &str) -> String {
+    let bytes = point.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // A byte is three octal digits at most (`\377`), so the leading
+        // digit stops at '3'.
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && bytes[i + 1].is_ascii_digit()
+            && bytes[i + 1] <= b'3'
+            && bytes[i + 2..=i + 3].iter().all(|b| (b'0'..=b'7').contains(b))
+        {
+            decoded.push(
+                (bytes[i + 1] - b'0') * 0o100 + (bytes[i + 2] - b'0') * 0o10 + (bytes[i + 3] - b'0'),
+            );
+            i += 4;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 /// The display name of a volume root: the directory name for mounted
@@ -160,13 +191,15 @@ mod tests {
     }
 
     #[test]
-    fn roots_from_mounts_keep_removable_mount_points() {
+    fn roots_from_mounts_keep_removable_mount_points_in_name_order() {
+        // Deliberately out of name order: the result must not lean on
+        // the kernel's mount order.
         let mounts = "\
 /dev/sda1 / ext4 rw 0 0
 proc /proc proc rw 0 0
+/dev/sdd1 /run/media/user/Card exfat rw 0 0
 /dev/sdb1 /media/user/USB\\040Drive vfat rw 0 0
 /dev/sdc1 /mnt/backup ext4 rw 0 0
-/dev/sdd1 /run/media/user/Card exfat rw 0 0
 tmpfs /run/user/1000 tmpfs rw 0 0
 /dev/sdc1 /mnt/backup ext4 rw 0 0";
         assert_eq!(
@@ -176,6 +209,28 @@ tmpfs /run/user/1000 tmpfs rw 0 0
                 PathBuf::from("/mnt/backup"),
                 PathBuf::from("/run/media/user/Card"),
             ]
+        );
+    }
+
+    #[test]
+    fn roots_from_mounts_decode_all_octal_escapes() {
+        // /proc/mounts escapes space, tab, newline and backslash as \040,
+        // \011, \012 and \134 — not only the space.
+        let mounts = "/dev/sdb1 /media/user/a\\011b\\012c\\134d vfat rw 0 0";
+        assert_eq!(
+            roots_from_mounts(mounts),
+            vec![PathBuf::from("/media/user/a\tb\nc\\d")]
+        );
+    }
+
+    #[test]
+    fn roots_from_mounts_keep_non_escape_backslashes_literal() {
+        // Not an octal triple (\8 is no octal digit, \77 is too short):
+        // the backslash must survive as-is instead of corrupting the path.
+        let mounts = "/dev/sdb1 /media/user/a\\800b\\77 vfat rw 0 0";
+        assert_eq!(
+            roots_from_mounts(mounts),
+            vec![PathBuf::from("/media/user/a\\800b\\77")]
         );
     }
 
