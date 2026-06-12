@@ -134,6 +134,7 @@ enum Message {
     SystemThemeChanged(Mode),
     ToggleTheme,
     WindowFocused,
+    DiskRootsTick,
 }
 
 /// The default content of the path input: the most recent scanned path,
@@ -211,7 +212,7 @@ fn is_dark(app: &App) -> bool {
     matches!(app.theme_override.unwrap_or(app.theme_mode), Mode::Dark)
 }
 
-fn subscription(_app: &App) -> Subscription<Message> {
+fn subscription(app: &App) -> Subscription<Message> {
     Subscription::batch([
         iced::system::theme_changes().map(Message::SystemThemeChanged),
         // There is no ready-made focus subscription, only the unfiltered
@@ -220,7 +221,40 @@ fn subscription(_app: &App) -> Subscription<Message> {
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
             _ => None,
         }),
+        // The quick disk row only lives on the start screen; elsewhere the
+        // focus handler already catches up on return.
+        if matches!(app.scan, ScanState::Idle) {
+            disk_roots_ticker()
+        } else {
+            Subscription::none()
+        },
     ])
+}
+
+/// How often the start screen re-reads the mounted volumes while it is
+/// visible — quick enough to feel live when a stick is plugged in,
+/// and `mounted_roots` never stats live volumes, so the poll is cheap.
+const DISK_ROOTS_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Ticks [`Message::DiskRootsTick`] every [`DISK_ROOTS_POLL`] from a plain
+/// thread: `iced::time::every` needs an async-runtime feature the project
+/// does not pull in. When the subscription is dropped (a scan starts), the
+/// receiver side closes and the thread sees it on the next send and exits.
+fn disk_roots_ticker() -> Subscription<Message> {
+    Subscription::run(|| {
+        iced::stream::channel(1, async |mut sender| {
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(DISK_ROOTS_POLL);
+                    if sender.try_send(Message::DiskRootsTick).is_err() && sender.is_closed() {
+                        return;
+                    }
+                    // A full channel is not an exit: the tick merely was not
+                    // consumed yet, and a fresher one replaces it next round.
+                }
+            });
+        })
+    })
 }
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
@@ -385,6 +419,12 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             {
                 app.disk_usage = root_usage(tree);
             }
+            Task::none()
+        }
+        Message::DiskRootsTick => {
+            // The poll behind the start screen: a stick plugged in while
+            // the window keeps focus shows up without an alt-tab.
+            app.disk_roots = disk::mounted_roots();
             Task::none()
         }
         Message::SystemThemeChanged(mode) => {
@@ -1329,6 +1369,20 @@ mod tests {
             kind: disk::DiskKind::Removable,
         }];
         let _ = update(&mut app, Message::WindowFocused);
+        assert_eq!(app.disk_roots, disk::mounted_roots());
+    }
+
+    #[test]
+    fn disk_roots_tick_refreshes_disk_roots() {
+        // The ticker behind the start screen replaces the list the same
+        // way the focus handler does; the sentinel no OS reports proves
+        // the tick handler did the replacement.
+        let mut app = test_app();
+        app.disk_roots = vec![disk::DiskRoot {
+            path: PathBuf::from("/filegram-test-unmounted"),
+            kind: disk::DiskKind::Removable,
+        }];
+        let _ = update(&mut app, Message::DiskRootsTick);
         assert_eq!(app.disk_roots, disk::mounted_roots());
     }
 
