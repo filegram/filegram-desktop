@@ -97,7 +97,7 @@ pub fn layout(weights: &[f32], area: Rectangle) -> Vec<Rectangle> {
             .map_or(weights.len(), |&(next_start, _)| next_start);
         let row_height = sum * ratio / area.width;
         let top = (bottom - row_height).max(area.y);
-        let row_start = rects.len();
+        let rect_start = rects.len();
         let mut x = area.x;
         for &w in &weights[start..end] {
             let width = (w * ratio / row_height).min(area.x + area.width - x);
@@ -111,7 +111,7 @@ pub fn layout(weights: &[f32], area: Rectangle) -> Vec<Rectangle> {
         // odd ones are mirrored to run right→left, so the sorted order
         // stays spatially continuous across row breaks.
         if i % 2 == 1 {
-            for rect in &mut rects[row_start..] {
+            for rect in &mut rects[rect_start..] {
                 rect.x = 2.0 * area.x + area.width - rect.x - rect.width;
             }
         }
