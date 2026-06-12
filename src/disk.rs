@@ -138,7 +138,9 @@ fn fs_types() -> std::collections::HashMap<PathBuf, String> {
     use std::os::unix::ffi::OsStrExt;
     let mut mounts: *mut libc::statfs = std::ptr::null_mut();
     let count = unsafe { libc::getmntinfo(&mut mounts, libc::MNT_NOWAIT) };
-    if count <= 0 {
+    // The null check backs the `from_raw_parts` non-null requirement
+    // explicitly instead of leaning on the getmntinfo contract alone.
+    if count <= 0 || mounts.is_null() {
         return std::collections::HashMap::new();
     }
     // getmntinfo hands out a buffer it owns (freed never, reused per
