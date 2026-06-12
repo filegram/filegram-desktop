@@ -909,6 +909,7 @@ dependencies = [
  "open",
  "opener",
  "rayon",
+ "sys-locale",
  "tempfile",
  "trash",
  "winresource",
