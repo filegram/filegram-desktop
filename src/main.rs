@@ -448,7 +448,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::LatestReleasePressed => {
-            let _ = open::that_detached(release::LATEST_RELEASE_URL);
+            // The page of the tag the footer shows; the message only ever
+            // arrives from the link, which exists when the tag is known.
+            if let Some(tag) = &app.latest_release {
+                let _ = open::that_detached(release::release_url(tag));
+            }
             Task::none()
         }
         Message::ToggleTheme => {
