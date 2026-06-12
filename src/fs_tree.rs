@@ -46,9 +46,10 @@ pub struct FsTree {
     pub nodes: Vec<FsNode>,
     pub root: NodeId,
     /// Identity of this snapshot: every [`FsTree::from_arena`] call gets
-    /// the next value of a process-wide counter. Node ids are only
-    /// meaningful within one snapshot — caches keyed by [`NodeId`] use
-    /// the generation to detect that the tree was replaced underneath.
+    /// the next value of a process-wide counter. Caches of data derived
+    /// from the tree compare generations to drop stale entries: sizes and
+    /// layouts shift with every snapshot even within one scan, and ids
+    /// point into a different arena entirely after a rescan.
     pub generation: u64,
 }
 
