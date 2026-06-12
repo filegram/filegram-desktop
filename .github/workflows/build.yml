@@ -230,7 +230,7 @@ jobs:
                 gh release delete "$stale" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
               done
           gh release create "v$version" --repo "$GITHUB_REPOSITORY" \
-            --title "Filegram $version" \
+            --title "Latest" \
             --notes "Automatic dev build from \`$GITHUB_SHA\`" \
             --prerelease \
             --target "$GITHUB_SHA" \
