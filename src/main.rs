@@ -393,7 +393,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             // enforced here so no other path can desync the tree from the
             // scanner's arena. A loaded tree is required for the same
             // reason: the modal renders the target node from it.
-            if matches!(app.scan, ScanState::Done) && app.tree.is_some() {
+            if matches!(&app.scan, ScanState::Done) && app.tree.is_some() {
                 app.pending_delete = Some(id);
             }
             Task::none()
@@ -411,7 +411,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             // programs write and delete); refresh the bar when the user
             // comes back to a finished map. Mid-scan readings stay owned
             // by StartScan/Finished — the bar is hidden until then anyway.
-            if matches!(app.scan, ScanState::Done)
+            if matches!(&app.scan, ScanState::Done)
                 && let Some(tree) = &app.tree
             {
                 app.disk_usage = root_usage(tree);
@@ -453,7 +453,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             };
             // Filesystem mutation requires a finished scan: the snapshot
             // must not be edited while the scanner still produces them.
-            if !matches!(app.scan, ScanState::Done) {
+            if !matches!(&app.scan, ScanState::Done) {
                 return Task::none();
             }
             let Some(tree) = app.tree.as_mut() else {
@@ -996,7 +996,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         )
     };
     let mut content = row![].spacing(16).align_y(Center);
-    if matches!(app.scan, ScanState::Done)
+    if matches!(&app.scan, ScanState::Done)
         && let Some(usage_bar) = disk_usage_bar(app)
     {
         content = content.push(usage_bar);
@@ -1006,9 +1006,10 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     // The mouse hints only make sense while the cursor is over a brick:
     // `active` is set on hover and cleared when the cursor leaves the map.
     if app.active.is_some() {
-        content = content
-            .push(mouse_hint(LMB_ICON, strings(app).hint_select))
-            .push(mouse_hint(RMB_ICON, strings(app).hint_back));
+        content = content.push(mouse_hint(LMB_ICON, strings(app).hint_select));
+        if !app.nav_stack.is_empty() {
+            content = content.push(mouse_hint(RMB_ICON, strings(app).hint_back));
+        }
     }
     container(content)
         .padding(8)
@@ -1107,7 +1108,7 @@ fn disk_usage_progress_style(theme: &Theme) -> progress_bar::Style {
 fn brick_actions(app: &App, target: NodeId, brick: Rectangle, bounds: Size) -> Element<'_, Message> {
     // Deletion needs a finished scan: removing entries mid-scan would
     // desync the tree from the scanner's arena.
-    let deletable = matches!(app.scan, ScanState::Done).then_some(target);
+    let deletable = matches!(&app.scan, ScanState::Done).then_some(target);
     let s = strings(app);
     let panel = container(
         row![
@@ -1160,7 +1161,8 @@ fn chrome_icon_button<'a>(
     .into()
 }
 
-/// An outline chrome button with only an icon (no label): the Rescan action.
+/// An outline chrome button with only an icon (no label): used for compact
+/// top-bar actions like Go up and Rescan.
 /// An empty text keeps the line height — and thus the button height — equal to
 /// the labeled `chrome_icon_button` next to it.
 fn chrome_icon_only_button<'a>(
@@ -1170,14 +1172,21 @@ fn chrome_icon_only_button<'a>(
     chrome_icon_only_button_maybe(icon, Some(on_press))
 }
 
-/// Like [`chrome_icon_only_button`], but greys out when there is no action
-/// (an empty navigation stack disables Back).
+/// Like [`chrome_icon_only_button`], but with an optional action; a missing
+/// action also mutes the icon tint to match the disabled button state.
 fn chrome_icon_only_button_maybe<'a>(
     icon: &'static [u8],
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
+    let disabled = on_press.is_none();
     button(
-        row![themed_icon(icon).width(16).height(16), text("")].align_y(Center),
+        row![
+            themed_icon_maybe_disabled(icon, disabled)
+                .width(16)
+                .height(16),
+            text("")
+        ]
+        .align_y(Center),
     )
     .style(chrome_button)
     .on_press_maybe(on_press)
@@ -1220,6 +1229,17 @@ fn mouse_hint<'a>(icon: &'static [u8], action: &'a str) -> Element<'a, Message> 
 fn themed_icon<'a>(icon: &'static [u8]) -> svg::Svg<'a> {
     svg(svg::Handle::from_memory(icon)).style(|theme: &Theme, _status| svg::Style {
         color: Some(theme.palette().text),
+    })
+}
+
+/// Like [`themed_icon`], but muted for disabled controls.
+fn themed_icon_maybe_disabled<'a>(icon: &'static [u8], disabled: bool) -> svg::Svg<'a> {
+    svg(svg::Handle::from_memory(icon)).style(move |theme: &Theme, _status| svg::Style {
+        color: Some(if disabled {
+            muted_color(theme)
+        } else {
+            theme.palette().text
+        }),
     })
 }
 
@@ -1519,6 +1539,22 @@ mod tests {
         // An empty history falls back to a usable default.
         assert_ne!(initial_path(&history::History::default()), "/scans/latest");
         assert!(!initial_path(&history::History::default()).is_empty());
+    }
+
+    #[test]
+    fn size_percent_formats_zero_and_thresholds() {
+        let cases = [
+            (0, 0, "0%"),
+            (0, 100, "0.00%"),
+            (5, 1000, "0.50%"),
+            (15, 1000, "1.5%"),
+            (95, 1000, "9.5%"),
+            (100, 1000, "10%"),
+            (999, 1000, "100%"),
+        ];
+        for (part, whole, expected) in cases {
+            assert_eq!(size_percent(part, whole), expected);
+        }
     }
 
     #[test]
