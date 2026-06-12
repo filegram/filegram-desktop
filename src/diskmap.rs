@@ -571,10 +571,22 @@ pub struct MapState {
     level: Option<NodeId>,
     size: Size,
     /// Memoized [`level1`] layouts of the folder bricks' contents (in map
-    /// bounds coordinates): animation repaints every frame, while the
-    /// nested layouts only change when the springs retarget — the cache
-    /// is dropped there.
-    nested: RefCell<HashMap<NodeId, Vec<(Brick, Rectangle)>>>,
+    /// bounds coordinates): animation repaints every frame, while a
+    /// nested layout is a pure function of the tree snapshot and the
+    /// canvas size — the cache drops itself when either changes.
+    nested: RefCell<NestedCache>,
+}
+
+/// See [`MapState::nested`]. The layouts are valid only for the tree
+/// snapshot and canvas size they were computed for: node ids do not
+/// survive a tree replacement, and rectangles live in the map-bounds
+/// space of one canvas size.
+#[derive(Default)]
+struct NestedCache {
+    /// [`FsTree::generation`] of the cached layouts; 0 matches no tree.
+    generation: u64,
+    canvas: Size,
+    layouts: HashMap<NodeId, Vec<(Brick, Rectangle)>>,
 }
 
 impl Default for MapState {
@@ -586,7 +598,7 @@ impl Default for MapState {
             animating: false,
             level: None,
             size: Size::ZERO,
-            nested: RefCell::new(HashMap::new()),
+            nested: RefCell::new(NestedCache::default()),
         }
     }
 }
@@ -618,10 +630,11 @@ impl MapState {
     /// that area is affinely compressed into the brick's content
     /// rectangle. A zoom transition thus morphs the silhouettes into the
     /// very bricks they previewed, keeping the picture proportional
-    /// throughout. The expensive [`level1`] part is memoized: an
-    /// animation repaints every frame, while the underlying layouts only
-    /// change together with the springs — [`Self::retarget`] drops the
-    /// cache whenever it accepts a new layout.
+    /// throughout. The expensive [`level1`] part is memoized per folder:
+    /// an animation repaints every frame, while the layout is a pure
+    /// function of the tree snapshot and the canvas size — a change of
+    /// either purges the cache (stale node ids must not outlive their
+    /// tree), and only the affine remap runs per frame.
     fn nested(
         &self,
         tree: &FsTree,
@@ -634,7 +647,13 @@ impl MapState {
             return Vec::new();
         }
         let mut cache = self.nested.borrow_mut();
+        if cache.generation != tree.generation || cache.canvas != canvas {
+            cache.layouts.clear();
+            cache.generation = tree.generation;
+            cache.canvas = canvas;
+        }
         cache
+            .layouts
             .entry(dir)
             .or_insert_with(|| level1(tree, dir, canvas))
             .iter()
@@ -695,7 +714,6 @@ impl MapState {
         now: Instant,
     ) -> bool {
         if self.level != Some(level) || self.size != size {
-            self.nested.borrow_mut().clear();
             // A zoom transition only makes sense on the same canvas: a
             // simultaneous resize would anchor it to stale geometry.
             let frames = (self.size == size)
@@ -730,7 +748,6 @@ impl MapState {
             return stale;
         }
         if !self.targets_match(&layout) {
-            self.nested.borrow_mut().clear();
             // Springs may still be in flight: rebase each one to its state
             // at this very moment — position *and* velocity carry over, so
             // a retarget never causes a visible kink in the motion.
@@ -1109,58 +1126,54 @@ mod tests {
     }
 
     #[test]
-    fn nested_cache_serves_stale_layout_until_retarget() {
-        // The memoized nested layout is recomputed only when the springs
-        // retarget: between retargets even a changed tree yields the
-        // cached rectangles.
+    fn nested_cache_is_dropped_when_the_tree_is_replaced() {
+        // A rescan can produce a tree whose top-level layout is identical
+        // (so the springs never retarget), yet the folders' contents — and
+        // even the node ids — belong to a different snapshot. The cache is
+        // keyed to the snapshot identity, never serving rectangles of a
+        // tree that is no longer rendered.
         let canvas = Size::new(800.0, 500.0);
         let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(200.0, 125.0));
         let (before, dir) = tree_with_grandchildren(&[500_000_000, 300_000_000]);
         let (after, _) =
             tree_with_grandchildren(&[500_000_000, 300_000_000, 120_000_000, 50_000_000]);
-        let mut state = MapState::default();
+        let state = MapState::default();
         let first = state.nested(&before, dir, canvas, content);
         assert_eq!(first, nested_layout(&before, dir, canvas, content));
-        // The tree changed, but no retarget happened yet — the cache wins.
-        assert_eq!(state.nested(&after, dir, canvas, content), first);
-        state.retarget_snap(
-            after.root,
-            canvas,
-            level1(&after, after.root, canvas),
-            Instant::now(),
-        );
         assert_eq!(
             state.nested(&after, dir, canvas, content),
             nested_layout(&after, dir, canvas, content)
+        );
+        // The replaced snapshot's layouts are purged, not accumulated.
+        assert_eq!(state.nested.borrow().layouts.len(), 1);
+    }
+
+    #[test]
+    fn nested_cache_is_dropped_when_the_canvas_resizes() {
+        // Cached rectangles live in the map-bounds space of one canvas
+        // size: remapping them from another size would skew proportions.
+        let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(200.0, 125.0));
+        let (tree, dir) = tree_with_grandchildren(&[500_000_000, 300_000_000, 120_000_000]);
+        let state = MapState::default();
+        state.nested(&tree, dir, Size::new(800.0, 500.0), content);
+        let resized = Size::new(400.0, 600.0);
+        assert_eq!(
+            state.nested(&tree, dir, resized, content),
+            nested_layout(&tree, dir, resized, content)
         );
     }
 
     #[test]
-    fn nested_cache_survives_settled_frames_but_not_new_layouts() {
+    fn nested_cache_memoizes_within_one_snapshot() {
         let canvas = Size::new(800.0, 500.0);
         let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(200.0, 125.0));
-        let (before, dir) = tree_with_grandchildren(&[500_000_000, 300_000_000]);
-        let (after, _) =
-            tree_with_grandchildren(&[500_000_000, 300_000_000, 120_000_000, 50_000_000]);
-        let layout_now = level1(&before, before.root, canvas);
-        let mut state = MapState::default();
-        let now = Instant::now();
-        state.retarget_snap(before.root, canvas, layout_now.clone(), now);
-        let first = state.nested(&before, dir, canvas, content);
-        // A frame with the same targets (the per-frame RedrawRequested
-        // path) keeps the cache…
-        state.retarget_snap(before.root, canvas, layout_now, now);
-        assert_eq!(state.nested(&after, dir, canvas, content), first);
-        // …while a scan snapshot with moved bricks drops it.
-        let moved = vec![(
-            Brick::Node(dir),
-            Rectangle::new(Point::new(4.0, 4.0), Size::new(300.0, 200.0)),
-        )];
-        state.retarget_snap(before.root, canvas, moved, now);
-        assert_eq!(
-            state.nested(&after, dir, canvas, content),
-            nested_layout(&after, dir, canvas, content)
-        );
+        let (tree, dir) = tree_with_grandchildren(&[500_000_000, 300_000_000]);
+        let state = MapState::default();
+        let first = state.nested(&tree, dir, canvas, content);
+        assert!(state.nested.borrow().layouts.contains_key(&dir));
+        // A repeated frame of the same snapshot reuses the entry.
+        assert_eq!(state.nested(&tree, dir, canvas, content), first);
+        assert_eq!(state.nested.borrow().layouts.len(), 1);
     }
 
     #[test]
