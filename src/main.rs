@@ -5,6 +5,7 @@ mod diskmap;
 mod format;
 mod fs_tree;
 mod history;
+mod i18n;
 mod scanner;
 mod settings;
 mod treemap;
@@ -16,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use iced::theme::{Mode, Palette};
 use iced::widget::{
     button, canvas, center, column, container, mouse_area, opaque, progress_bar, responsive, row,
-    stack, svg, text, text_input, tooltip,
+    scrollable, stack, svg, text, text_input, tooltip,
 };
 use iced::{
     Border, Center, Color, Element, Fill, Font, Padding, Rectangle, Shadow, Size, Subscription,
@@ -25,6 +26,7 @@ use iced::{
 
 use diskmap::DiskMap;
 use fs_tree::{FsTree, NodeId};
+use i18n::Lang;
 use scanner::ScanEvent;
 
 /// Maximum number of characters in the path bar above the map (then `/../` compression).
@@ -46,7 +48,8 @@ const DOWNLOADS_ICON: &[u8] = include_bytes!("../assets/downloads.svg");
 const DESKTOP_ICON: &[u8] = include_bytes!("../assets/desktop.svg");
 const DOCUMENTS_ICON: &[u8] = include_bytes!("../assets/documents.svg");
 /// Quick disk row icons, one per hardware kind: internal drive, plugged-in
-/// media, network share, optical disc.
+/// media, network share, optical disc. The globe doubles as the footer's
+/// language menu button.
 const DRIVE_ICON: &[u8] = include_bytes!("../assets/drive.svg");
 const USB_ICON: &[u8] = include_bytes!("../assets/usb.svg");
 const GLOBE_ICON: &[u8] = include_bytes!("../assets/globe.svg");
@@ -102,8 +105,20 @@ struct App {
     /// The user's manual choice from the theme toggle; overrides the
     /// system preference and persists across launches.
     theme_override: Option<Mode>,
-    /// Where the theme choice is persisted; `None` disables saving (tests).
-    theme_file: Option<PathBuf>,
+    /// The system UI language, captured at startup; the chrome follows it
+    /// until the menu picks an override.
+    system_lang: Lang,
+    /// The user's pick from the language menu; overrides the system locale
+    /// and persists across launches.
+    lang_override: Option<Lang>,
+    /// Whether the footer language menu is open.
+    lang_menu_open: bool,
+    /// Whether the open menu shows the full list instead of the short one;
+    /// the "…" entry expands it, reopening resets to short.
+    lang_menu_expanded: bool,
+    /// Where the theme and language choices are persisted; `None` disables
+    /// saving (tests).
+    settings_file: Option<PathBuf>,
     /// The deletion backend: `trash::delete` in production. Tests swap in
     /// a tempdir-local delete so nothing ever reaches the OS trash.
     delete: fn(&Path) -> std::io::Result<()>,
@@ -133,6 +148,9 @@ enum Message {
     DeleteCancelled,
     SystemThemeChanged(Mode),
     ToggleTheme,
+    LanguageMenuToggled,
+    LanguageMenuExpanded,
+    LanguagePicked(Lang),
     WindowFocused,
 }
 
@@ -160,15 +178,21 @@ fn boot() -> (App, Task<Message>) {
         None => (history::History::default(), None),
     };
     let mut app = initial_app(history, history_file);
-    app.theme_file = settings::default_file();
-    // Unlike the history, an unreadable theme file is safe to save over:
-    // the next toggle rewrites the whole one-word file anyway.
-    app.theme_override = app.theme_file.as_deref().and_then(|file| {
-        settings::load(file).unwrap_or_else(|error| {
-            eprintln!("filegram: failed to read the theme choice: {error}");
-            None
+    app.settings_file = settings::default_file();
+    // Unlike the history, an unreadable settings file is safe to save over:
+    // the next toggle or language pick rewrites the whole file anyway.
+    let saved = app
+        .settings_file
+        .as_deref()
+        .map(|file| {
+            settings::load(file).unwrap_or_else(|error| {
+                eprintln!("filegram: failed to read the settings: {error}");
+                settings::Settings::default()
+            })
         })
-    });
+        .unwrap_or_default();
+    app.theme_override = saved.theme;
+    app.lang_override = saved.lang;
     (app, iced::system::theme().map(Message::SystemThemeChanged))
 }
 
@@ -192,7 +216,11 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         cancel: Arc::new(AtomicBool::new(false)),
         theme_mode: Mode::default(),
         theme_override: None,
-        theme_file: None,
+        system_lang: Lang::system(),
+        lang_override: None,
+        lang_menu_open: false,
+        lang_menu_expanded: false,
+        settings_file: None,
         delete: |path| trash::delete(path).map_err(std::io::Error::other),
     }
 }
@@ -396,11 +424,24 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::ToggleTheme => {
             let mode = if is_dark(app) { Mode::Light } else { Mode::Dark };
             app.theme_override = Some(mode);
-            if let Some(file) = &app.theme_file
-                && let Err(error) = settings::save(file, mode)
-            {
-                eprintln!("filegram: failed to save the theme choice: {error}");
-            }
+            save_settings(app);
+            Task::none()
+        }
+        Message::LanguageMenuToggled => {
+            app.lang_menu_open = !app.lang_menu_open;
+            // The menu opens short — unless the current language only
+            // lives in the full list, which would otherwise be invisible.
+            app.lang_menu_expanded = !Lang::PRIMARY.contains(&lang(app));
+            Task::none()
+        }
+        Message::LanguageMenuExpanded => {
+            app.lang_menu_expanded = true;
+            Task::none()
+        }
+        Message::LanguagePicked(lang) => {
+            app.lang_override = Some(lang);
+            app.lang_menu_open = false;
+            save_settings(app);
             Task::none()
         }
         Message::DeleteConfirmed => {
@@ -444,6 +485,33 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 /// number.
 fn root_usage(tree: &FsTree) -> Option<disk::DiskUsage> {
     disk::usage(&tree.node(tree.root).path)
+}
+
+/// Persists the manual theme and language choices together; a missing
+/// settings file disables saving, like the history.
+fn save_settings(app: &App) {
+    if let Some(file) = &app.settings_file
+        && let Err(error) = settings::save(
+            file,
+            settings::Settings {
+                theme: app.theme_override,
+                lang: app.lang_override,
+            },
+        )
+    {
+        eprintln!("filegram: failed to save the settings: {error}");
+    }
+}
+
+/// The effective language: the menu pick when there is one, the system
+/// locale otherwise.
+fn lang(app: &App) -> Lang {
+    app.lang_override.unwrap_or(app.system_lang)
+}
+
+/// The string table of the effective language.
+fn strings(app: &App) -> &'static i18n::Strings {
+    lang(app).strings()
 }
 
 /// An outline chrome button from the light-minimal mockup: transparent fill,
@@ -543,13 +611,14 @@ fn view(app: &App) -> Element<'_, Message> {
 }
 
 fn idle_view(app: &App) -> Element<'_, Message> {
+    let s = strings(app);
     let mut content = column![
-        text("Filegram — disk map").size(28),
+        text(s.app_title).size(28),
         row![
-            text_input("Directory path…", &app.path_input)
+            text_input(s.path_placeholder, &app.path_input)
                 .on_input(Message::PathChanged)
                 .on_submit(Message::StartScan),
-            button(text("Scan"))
+            button(text(s.scan))
                 .style(chrome_button)
                 .on_press(Message::StartScan),
         ]
@@ -557,7 +626,7 @@ fn idle_view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(16)
     .max_width(600);
-    if let Some(quick) = quick_scans() {
+    if let Some(quick) = quick_scans(s) {
         content = content.push(quick);
     }
     if let Some(disks) = disk_scans(app) {
@@ -566,7 +635,81 @@ fn idle_view(app: &App) -> Element<'_, Message> {
     if !app.history.entries().is_empty() {
         content = content.push(recent_scans(app));
     }
-    column![center(content), corner_footer(app)].into()
+    let screen = column![center(content), corner_footer(app)];
+    if !app.lang_menu_open {
+        return screen.into();
+    }
+    stack![screen, language_menu_overlay(app)].into()
+}
+
+/// The language popup pinned above the footer's globe button: a card with
+/// the short list and a trailing "…" that expands it to every language,
+/// native names, the current one highlighted. The transparent backdrop
+/// closes the menu on a click anywhere else.
+fn language_menu_overlay(app: &App) -> Element<'_, Message> {
+    let current = lang(app);
+    let listed: &[Lang] = if app.lang_menu_expanded {
+        &Lang::ALL
+    } else {
+        &Lang::PRIMARY
+    };
+    let mut entries = column(listed.iter().map(|&lang| {
+        let style = if lang == current {
+            button::primary
+        } else {
+            button::text
+        };
+        // A name never wraps: a two-line entry would break the menu rhythm;
+        // the card is sized so the longest name fits next to the scrollbar.
+        button(
+            text(lang.native_name())
+                .size(14)
+                .wrapping(iced::widget::text::Wrapping::None),
+        )
+        .width(Fill)
+        .padding(Padding {
+            top: 4.0,
+            right: 10.0,
+            bottom: 4.0,
+            left: 10.0,
+        })
+        .style(style)
+        .on_press(Message::LanguagePicked(lang))
+        .into()
+    }))
+    .spacing(2);
+    if !app.lang_menu_expanded {
+        entries = entries.push(
+            button(text("…").size(14).width(Fill).align_x(Center))
+                .width(Fill)
+                .padding(Padding {
+                    top: 4.0,
+                    right: 10.0,
+                    bottom: 4.0,
+                    left: 10.0,
+                })
+                .style(button::text)
+                .on_press(Message::LanguageMenuExpanded),
+        );
+    }
+    let card = container(scrollable(entries).width(250))
+        .style(tooltip_style)
+        .padding(4)
+        .max_height(560);
+    opaque(
+        mouse_area(
+            container(opaque(card))
+                .width(Fill)
+                .height(Fill)
+                .align_y(iced::Bottom)
+                .padding(Padding {
+                    left: 8.0,
+                    bottom: 44.0,
+                    ..Padding::ZERO
+                }),
+        )
+        .on_press(Message::LanguageMenuToggled),
+    )
 }
 
 /// The quick disk row right under the folder row: the root of every
@@ -589,7 +732,7 @@ fn disk_scans(app: &App) -> Option<Element<'_, Message>> {
         // The same muted header the history row wears, so the two sections
         // under the folder shortcuts read alike.
         column![
-            text("Disks").size(14).style(muted_text),
+            text(strings(app).disks).size(14).style(muted_text),
             row(buttons).spacing(8).wrap(),
         ]
         .spacing(2)
@@ -612,12 +755,12 @@ fn disk_icon(kind: disk::DiskKind) -> &'static [u8] {
 /// history: a click scans the folder exactly like a history entry. A folder
 /// the OS cannot locate is omitted; `None` when none can be, so the idle
 /// screen does not reserve a blank gap for an empty row.
-fn quick_scans<'a>() -> Option<Element<'a, Message>> {
+fn quick_scans<'a>(s: &'static i18n::Strings) -> Option<Element<'a, Message>> {
     let folders: [(&[u8], &str, Option<PathBuf>); 4] = [
-        (HOME_ICON, "Home", dirs::home_dir()),
-        (DOWNLOADS_ICON, "Downloads", dirs::download_dir()),
-        (DESKTOP_ICON, "Desktop", dirs::desktop_dir()),
-        (DOCUMENTS_ICON, "Documents", dirs::document_dir()),
+        (HOME_ICON, s.home, dirs::home_dir()),
+        (DOWNLOADS_ICON, s.downloads, dirs::download_dir()),
+        (DESKTOP_ICON, s.desktop, dirs::desktop_dir()),
+        (DOCUMENTS_ICON, s.documents, dirs::document_dir()),
     ];
     let buttons: Vec<Element<'a, Message>> = folders
         .into_iter()
@@ -648,7 +791,7 @@ fn quick_scan_button<'a>(icon: &'static [u8], name: String, path: &Path) -> Elem
 
 /// The scan history under the path input: a click rescans the path.
 fn recent_scans(app: &App) -> Element<'_, Message> {
-    column![text("Recent scans").size(14).style(muted_text)]
+    column![text(strings(app).recent_scans).size(14).style(muted_text)]
         .spacing(2)
         .extend(app.history.entries().iter().map(|path| {
             button(text(format::shorten_path(path, PATH_BAR_MAX_CHARS)).size(14))
@@ -663,9 +806,9 @@ fn recent_scans(app: &App) -> Element<'_, Message> {
 /// The scan progress label. Monospace digits keep the width a function of the
 /// digit count alone, and the counter only grows — so the label can widen but
 /// never shrinks, and the path next to it does not jitter.
-fn scan_label<'a>(files: u64, size: f32) -> Element<'a, Message> {
+fn scan_label<'a>(label: &'static str, files: u64, size: f32) -> Element<'a, Message> {
     row![
-        text("Scanning… files: ").size(size),
+        text(label).size(size),
         text(files.to_string()).size(size).font(Font::MONOSPACE),
     ]
     .align_y(Center)
@@ -675,12 +818,13 @@ fn scan_label<'a>(files: u64, size: f32) -> Element<'a, Message> {
 /// Scan screen: a counter until the first snapshot, after that the map grows
 /// right as the scan proceeds (navigating it already works: NodeIds are stable).
 fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Message> {
+    let s = strings(app);
     if app.tree.is_none() {
         return center(
             column![
-                scan_label(files, 20.0),
+                scan_label(s.scanning_files, files, 20.0),
                 text(format::shorten_path(current, PATH_BAR_MAX_CHARS)).style(muted_text),
-                button(text("Cancel"))
+                button(text(s.cancel))
                     .style(chrome_button)
                     .on_press(Message::CancelScan),
             ]
@@ -690,11 +834,11 @@ fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Mess
     }
     let bar = container(
         row![
-            scan_label(files, 16.0),
+            scan_label(s.scanning_files, files, 16.0),
             container(text(format::shorten_path(current, PATH_BAR_MAX_CHARS)).style(muted_text))
                 .width(Fill)
                 .padding(8),
-            button(text("Cancel"))
+            button(text(s.cancel))
                 .style(chrome_button)
                 .on_press(Message::CancelScan),
         ]
@@ -714,9 +858,10 @@ fn map_view(app: &App) -> Element<'_, Message> {
     // Equal-width side zones keep the disk-usage bar dead center between
     // the navigation controls. The bar only appears with the final map:
     // mid-scan readings would drift while the map is still growing.
+    let s = strings(app);
     let mut top = row![
         row![
-            button(text("← Back"))
+            button(text(s.back))
                 .style(chrome_button)
                 .on_press_maybe((!app.nav_stack.is_empty()).then_some(Message::GoBack)),
             container(
@@ -737,8 +882,8 @@ fn map_view(app: &App) -> Element<'_, Message> {
         top.push(
             container(
                 row![
-                    chrome_icon_button(RESCAN_ICON, "Rescan", Message::Rescan),
-                    chrome_icon_button(BRICKS_ICON, "New scan", Message::NewScan),
+                    chrome_icon_button(RESCAN_ICON, s.rescan, Message::Rescan),
+                    chrome_icon_button(BRICKS_ICON, s.new_scan, Message::NewScan),
                 ]
                 .spacing(8),
             )
@@ -781,20 +926,21 @@ fn map_view(app: &App) -> Element<'_, Message> {
 fn delete_dialog(app: &App, target: NodeId) -> Element<'_, Message> {
     let tree = app.tree.as_ref().expect("delete_dialog requires a tree");
     let node = tree.node(target);
-    let kind = if node.is_dir { "Folder" } else { "File" };
+    let s = strings(app);
+    let kind = if node.is_dir { s.folder } else { s.file };
     container(
         column![
-            text("Move to trash?").size(20),
+            text(s.trash_question).size(20),
             text(format!(
                 "{kind} \"{}\" — {}",
                 node.name,
                 format::human_size(node.size)
             )),
             row![
-                button(text("Cancel"))
+                button(text(s.cancel))
                     .style(chrome_button)
                     .on_press(Message::DeleteCancelled),
-                button(text("Move to Trash"))
+                button(text(s.trash_button))
                     .style(button::danger)
                     .on_press(Message::DeleteConfirmed),
             ]
@@ -818,8 +964,8 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     container(
         row![
             container(text(size_label).size(14).style(muted_text)).width(Fill),
-            mouse_hint(LMB_ICON, "select"),
-            mouse_hint(RMB_ICON, "back"),
+            mouse_hint(LMB_ICON, strings(app).hint_select),
+            mouse_hint(RMB_ICON, strings(app).hint_back),
         ]
         .spacing(16)
         .align_y(Center),
@@ -831,12 +977,23 @@ fn status_bar(app: &App) -> Element<'_, Message> {
 
 /// The theme toggle: an icon button showing the mode a click switches to.
 fn theme_toggle(app: &App) -> Element<'_, Message> {
+    let s = strings(app);
     let (icon, tip) = if is_dark(app) {
-        (SUN_ICON, "Light theme")
+        (SUN_ICON, s.light_theme)
     } else {
-        (MOON_ICON, "Dark theme")
+        (MOON_ICON, s.dark_theme)
     };
     action_button(icon, tip, Some(Message::ToggleTheme))
+}
+
+/// The language menu trigger: the same square icon button as the theme
+/// toggle, a globe with the localized "Language" hint.
+fn language_button(app: &App) -> Element<'_, Message> {
+    action_button(
+        GLOBE_ICON,
+        strings(app).language,
+        Some(Message::LanguageMenuToggled),
+    )
 }
 
 /// The application version in the bottom-right corner.
@@ -847,13 +1004,16 @@ fn version_label<'a>() -> Element<'a, Message> {
         .into()
 }
 
-/// The bottom corners of the start screen: the theme toggle on the left,
-/// the version on the right. The map screens stay free of chrome.
+/// The bottom corners of the start screen: the theme toggle and the
+/// language menu on the left, the version on the right. The map screens
+/// stay free of chrome.
 fn corner_footer(app: &App) -> Element<'_, Message> {
     row![
         theme_toggle(app),
+        language_button(app),
         container(version_label()).width(Fill).align_x(iced::Right),
     ]
+    .spacing(2)
     .padding(8)
     .align_y(Center)
     .into()
@@ -864,7 +1024,8 @@ fn corner_footer(app: &App) -> Element<'_, Message> {
 fn disk_usage_bar(app: &App) -> Option<Element<'_, Message>> {
     let usage = app.disk_usage?;
     let label = format!(
-        "Disk: {} / {}",
+        "{} {} / {}",
+        strings(app).disk,
         format::human_size(usage.used),
         format::human_size(usage.total)
     );
@@ -887,16 +1048,17 @@ fn brick_actions(app: &App, target: NodeId, brick: Rectangle, bounds: Size) -> E
     // Deletion needs a finished scan: removing entries mid-scan would
     // desync the tree from the scanner's arena.
     let deletable = matches!(app.scan, ScanState::Done).then_some(target);
+    let s = strings(app);
     let panel = container(
         row![
             action_button(
                 FOLDER_ICON,
-                "Open in file manager",
+                s.open_in_file_manager,
                 Some(Message::Reveal(target)),
             ),
             action_button(
                 TRASH_ICON,
-                "Move to trash",
+                s.trash_tip,
                 deletable.map(Message::DeleteRequested),
             ),
         ]
@@ -923,10 +1085,15 @@ fn chrome_icon_button<'a>(
     label: &'a str,
     on_press: Message,
 ) -> Element<'a, Message> {
+    // A label never wraps: a two-line button would outgrow its row; long
+    // translations must shorten instead.
     button(
-        row![themed_icon(icon).width(16).height(16), text(label)]
-            .spacing(6)
-            .align_y(Center),
+        row![
+            themed_icon(icon).width(16).height(16),
+            text(label).wrapping(iced::widget::text::Wrapping::None),
+        ]
+        .spacing(6)
+        .align_y(Center),
     )
     .style(chrome_button)
     .on_press(on_press)
@@ -1179,11 +1346,74 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("settings.cfg");
         let mut app = test_app();
-        app.theme_file = Some(file.clone());
+        app.settings_file = Some(file.clone());
         let _ = update(&mut app, Message::ToggleTheme);
-        assert_eq!(settings::load(&file).unwrap(), Some(Mode::Dark));
+        assert_eq!(settings::load(&file).unwrap().theme, Some(Mode::Dark));
         let _ = update(&mut app, Message::ToggleTheme);
-        assert_eq!(settings::load(&file).unwrap(), Some(Mode::Light));
+        assert_eq!(settings::load(&file).unwrap().theme, Some(Mode::Light));
+    }
+
+    #[test]
+    fn language_pick_overrides_system_and_closes_menu() {
+        let mut app = test_app();
+        let _ = update(&mut app, Message::LanguageMenuToggled);
+        assert!(app.lang_menu_open);
+        let _ = update(&mut app, Message::LanguagePicked(Lang::RuRu));
+        assert!(!app.lang_menu_open);
+        assert_eq!(strings(&app).scan, "Сканировать");
+    }
+
+    #[test]
+    fn language_menu_expands_and_resets_on_reopen() {
+        let mut app = test_app();
+        app.system_lang = Lang::EnUs;
+        let _ = update(&mut app, Message::LanguageMenuToggled);
+        // The menu opens short; "…" expands it to the full list.
+        assert!(!app.lang_menu_expanded);
+        let _ = update(&mut app, Message::LanguageMenuExpanded);
+        assert!(app.lang_menu_expanded);
+        // Closing and reopening lands on the short list again.
+        let _ = update(&mut app, Message::LanguageMenuToggled);
+        let _ = update(&mut app, Message::LanguageMenuToggled);
+        assert!(app.lang_menu_open);
+        assert!(!app.lang_menu_expanded);
+    }
+
+    #[test]
+    fn language_menu_opens_expanded_for_an_extended_language() {
+        // A language living only in the full list must be visible (and
+        // highlighted) right away — the short list would hide it.
+        let mut app = test_app();
+        app.lang_override = Some(Lang::Uk);
+        let _ = update(&mut app, Message::LanguageMenuToggled);
+        assert!(app.lang_menu_expanded);
+    }
+
+    #[test]
+    fn language_pick_persists_alongside_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.cfg");
+        let mut app = test_app();
+        app.settings_file = Some(file.clone());
+        // Either choice must save the file whole, not clobber the other.
+        let _ = update(&mut app, Message::ToggleTheme);
+        let _ = update(&mut app, Message::LanguagePicked(Lang::JaJp));
+        assert_eq!(
+            settings::load(&file).unwrap(),
+            settings::Settings {
+                theme: Some(Mode::Dark),
+                lang: Some(Lang::JaJp),
+            }
+        );
+    }
+
+    #[test]
+    fn strings_follow_system_until_overridden() {
+        let mut app = test_app();
+        app.system_lang = Lang::DeDe;
+        assert_eq!(strings(&app).scan, "Scannen");
+        let _ = update(&mut app, Message::LanguagePicked(Lang::Tr));
+        assert_eq!(strings(&app).scan, "Tara");
     }
 
     #[test]
