@@ -386,7 +386,7 @@ pub struct Strings {
     pub dark_theme: &'static str,
     pub language: &'static str,
     pub hint_select: &'static str,
-    pub hint_back: &'static str,
+    pub hint_go_up: &'static str,
     /// The disk-usage bar connector: `{free} {disk_free} {total}`, e.g.
     /// "182.4 GB free of 494.4 GB".
     pub disk_free: &'static str,
@@ -417,7 +417,7 @@ static EN_US: Strings = Strings {
     dark_theme: "Dark theme",
     language: "Language",
     hint_select: "select",
-    hint_back: "back",
+    hint_go_up: "go up",
     disk_free: "free of",
 };
 
@@ -446,7 +446,7 @@ static ZH_CN: Strings = Strings {
     dark_theme: "深色主题",
     language: "语言",
     hint_select: "选择",
-    hint_back: "返回",
+    hint_go_up: "上一级",
     disk_free: "可用，共",
 };
 
@@ -475,7 +475,7 @@ static ES_ES: Strings = Strings {
     dark_theme: "Tema oscuro",
     language: "Idioma",
     hint_select: "seleccionar",
-    hint_back: "atrás",
+    hint_go_up: "subir",
     disk_free: "libres de",
 };
 
@@ -504,7 +504,7 @@ static HI_IN: Strings = Strings {
     dark_theme: "गहरी थीम",
     language: "भाषा",
     hint_select: "चुनें",
-    hint_back: "वापस",
+    hint_go_up: "ऊपर जाएँ",
     disk_free: "मुक्त /",
 };
 
@@ -533,7 +533,7 @@ static AR: Strings = Strings {
     dark_theme: "سمة داكنة",
     language: "اللغة",
     hint_select: "تحديد",
-    hint_back: "رجوع",
+    hint_go_up: "للأعلى",
     disk_free: "حر من",
 };
 
@@ -562,7 +562,7 @@ static PT_PT: Strings = Strings {
     dark_theme: "Tema escuro",
     language: "Idioma",
     hint_select: "selecionar",
-    hint_back: "voltar",
+    hint_go_up: "subir",
     disk_free: "livres de",
 };
 
@@ -591,7 +591,7 @@ static JA_JP: Strings = Strings {
     dark_theme: "ダークテーマ",
     language: "言語",
     hint_select: "選択",
-    hint_back: "戻る",
+    hint_go_up: "上の階層へ",
     disk_free: "空き /",
 };
 
@@ -620,7 +620,7 @@ static RU_RU: Strings = Strings {
     dark_theme: "Тёмная тема",
     language: "Язык",
     hint_select: "выбрать",
-    hint_back: "назад",
+    hint_go_up: "наверх",
     disk_free: "свободно из",
 };
 
@@ -649,7 +649,7 @@ static FR_FR: Strings = Strings {
     dark_theme: "Thème sombre",
     language: "Langue",
     hint_select: "sélectionner",
-    hint_back: "retour",
+    hint_go_up: "remonter",
     disk_free: "libres sur",
 };
 
@@ -678,7 +678,7 @@ static DE_DE: Strings = Strings {
     dark_theme: "Dunkles Design",
     language: "Sprache",
     hint_select: "auswählen",
-    hint_back: "zurück",
+    hint_go_up: "nach oben",
     disk_free: "frei von",
 };
 
@@ -707,7 +707,7 @@ static ES_419: Strings = Strings {
     dark_theme: "Tema oscuro",
     language: "Idioma",
     hint_select: "seleccionar",
-    hint_back: "atrás",
+    hint_go_up: "subir",
     disk_free: "libres de",
 };
 
@@ -736,7 +736,7 @@ static ID: Strings = Strings {
     dark_theme: "Tema gelap",
     language: "Bahasa",
     hint_select: "pilih",
-    hint_back: "kembali",
+    hint_go_up: "naik",
     disk_free: "tersedia dari",
 };
 
@@ -765,7 +765,7 @@ static IT_IT: Strings = Strings {
     dark_theme: "Tema scuro",
     language: "Lingua",
     hint_select: "seleziona",
-    hint_back: "indietro",
+    hint_go_up: "su",
     disk_free: "liberi di",
 };
 
@@ -794,7 +794,7 @@ static KO: Strings = Strings {
     dark_theme: "다크 테마",
     language: "언어",
     hint_select: "선택",
-    hint_back: "뒤로",
+    hint_go_up: "위로",
     disk_free: "사용 가능 /",
 };
 
@@ -823,7 +823,7 @@ static PT_BR: Strings = Strings {
     dark_theme: "Tema escuro",
     language: "Idioma",
     hint_select: "selecionar",
-    hint_back: "voltar",
+    hint_go_up: "subir",
     disk_free: "livres de",
 };
 
@@ -852,7 +852,7 @@ static TH: Strings = Strings {
     dark_theme: "ธีมมืด",
     language: "ภาษา",
     hint_select: "เลือก",
-    hint_back: "กลับ",
+    hint_go_up: "ขึ้นหนึ่งระดับ",
     disk_free: "ว่างจาก",
 };
 
@@ -881,7 +881,7 @@ static TR: Strings = Strings {
     dark_theme: "Koyu tema",
     language: "Dil",
     hint_select: "seç",
-    hint_back: "geri",
+    hint_go_up: "yukarı",
     disk_free: "boş /",
 };
 
@@ -910,7 +910,7 @@ static FA: Strings = Strings {
     dark_theme: "تم تیره",
     language: "زبان",
     hint_select: "انتخاب",
-    hint_back: "بازگشت",
+    hint_go_up: "بالا",
     disk_free: "آزاد از",
 };
 
@@ -939,7 +939,7 @@ static NL: Strings = Strings {
     dark_theme: "Donker thema",
     language: "Taal",
     hint_select: "selecteren",
-    hint_back: "terug",
+    hint_go_up: "omhoog",
     disk_free: "vrij van",
 };
 
@@ -968,7 +968,7 @@ static PL: Strings = Strings {
     dark_theme: "Ciemny motyw",
     language: "Język",
     hint_select: "wybierz",
-    hint_back: "wstecz",
+    hint_go_up: "w górę",
     disk_free: "wolne z",
 };
 
@@ -997,7 +997,7 @@ static VI: Strings = Strings {
     dark_theme: "Giao diện tối",
     language: "Ngôn ngữ",
     hint_select: "chọn",
-    hint_back: "quay lại",
+    hint_go_up: "lên trên",
     disk_free: "trống trên",
 };
 
@@ -1026,7 +1026,7 @@ static CS: Strings = Strings {
     dark_theme: "Tmavý motiv",
     language: "Jazyk",
     hint_select: "vybrat",
-    hint_back: "zpět",
+    hint_go_up: "nahoru",
     disk_free: "volných z",
 };
 
@@ -1055,7 +1055,7 @@ static EL: Strings = Strings {
     dark_theme: "Σκούρο θέμα",
     language: "Γλώσσα",
     hint_select: "επιλογή",
-    hint_back: "πίσω",
+    hint_go_up: "επάνω",
     disk_free: "ελεύθερα από",
 };
 
@@ -1084,7 +1084,7 @@ static SV: Strings = Strings {
     dark_theme: "Mörkt tema",
     language: "Språk",
     hint_select: "välj",
-    hint_back: "tillbaka",
+    hint_go_up: "uppåt",
     disk_free: "ledigt av",
 };
 
@@ -1113,7 +1113,7 @@ static UK: Strings = Strings {
     dark_theme: "Темна тема",
     language: "Мова",
     hint_select: "вибрати",
-    hint_back: "назад",
+    hint_go_up: "вгору",
     disk_free: "вільно з",
 };
 
@@ -1142,7 +1142,7 @@ static HU: Strings = Strings {
     dark_theme: "Sötét téma",
     language: "Nyelv",
     hint_select: "kijelölés",
-    hint_back: "vissza",
+    hint_go_up: "fel",
     disk_free: "szabad ebből",
 };
 
@@ -1171,7 +1171,7 @@ static RO: Strings = Strings {
     dark_theme: "Temă întunecată",
     language: "Limbă",
     hint_select: "selectează",
-    hint_back: "înapoi",
+    hint_go_up: "în sus",
     disk_free: "liberi din",
 };
 
@@ -1200,7 +1200,7 @@ static DA: Strings = Strings {
     dark_theme: "Mørkt tema",
     language: "Sprog",
     hint_select: "vælg",
-    hint_back: "tilbage",
+    hint_go_up: "op",
     disk_free: "ledig af",
 };
 
@@ -1229,7 +1229,7 @@ static FI: Strings = Strings {
     dark_theme: "Tumma teema",
     language: "Kieli",
     hint_select: "valitse",
-    hint_back: "takaisin",
+    hint_go_up: "ylös",
     disk_free: "vapaana /",
 };
 
@@ -1258,7 +1258,7 @@ static NO: Strings = Strings {
     dark_theme: "Mørkt tema",
     language: "Språk",
     hint_select: "velg",
-    hint_back: "tilbake",
+    hint_go_up: "opp",
     disk_free: "ledig av",
 };
 
@@ -1287,7 +1287,7 @@ static SK: Strings = Strings {
     dark_theme: "Tmavý motív",
     language: "Jazyk",
     hint_select: "vybrať",
-    hint_back: "späť",
+    hint_go_up: "nahor",
     disk_free: "voľných z",
 };
 
@@ -1316,7 +1316,7 @@ static BG: Strings = Strings {
     dark_theme: "Тъмна тема",
     language: "Език",
     hint_select: "избор",
-    hint_back: "назад",
+    hint_go_up: "нагоре",
     disk_free: "свободни от",
 };
 
@@ -1345,7 +1345,7 @@ static HR: Strings = Strings {
     dark_theme: "Tamna tema",
     language: "Jezik",
     hint_select: "odaberi",
-    hint_back: "natrag",
+    hint_go_up: "gore",
     disk_free: "slobodno od",
 };
 
@@ -1374,7 +1374,7 @@ static LT: Strings = Strings {
     dark_theme: "Tamsi tema",
     language: "Kalba",
     hint_select: "pasirinkti",
-    hint_back: "atgal",
+    hint_go_up: "aukštyn",
     disk_free: "laisva iš",
 };
 
@@ -1403,7 +1403,7 @@ static SR: Strings = Strings {
     dark_theme: "Тамна тема",
     language: "Језик",
     hint_select: "изабери",
-    hint_back: "назад",
+    hint_go_up: "нагоре",
     disk_free: "слободно од",
 };
 
@@ -1432,7 +1432,7 @@ static LV: Strings = Strings {
     dark_theme: "Tumšs motīvs",
     language: "Valoda",
     hint_select: "izvēlēties",
-    hint_back: "atpakaļ",
+    hint_go_up: "uz augšu",
     disk_free: "brīvs no",
 };
 
@@ -1461,7 +1461,7 @@ static SL: Strings = Strings {
     dark_theme: "Temna tema",
     language: "Jezik",
     hint_select: "izberi",
-    hint_back: "nazaj",
+    hint_go_up: "navzgor",
     disk_free: "prosto od",
 };
 
@@ -1490,7 +1490,7 @@ static ET: Strings = Strings {
     dark_theme: "Tume teema",
     language: "Keel",
     hint_select: "vali",
-    hint_back: "tagasi",
+    hint_go_up: "üles",
     disk_free: "vaba /",
 };
 
@@ -1519,7 +1519,7 @@ static HE: Strings = Strings {
     dark_theme: "ערכת נושא כהה",
     language: "שפה",
     hint_select: "בחירה",
-    hint_back: "חזרה",
+    hint_go_up: "למעלה",
     disk_free: "פנוי מתוך",
 };
 
@@ -1548,7 +1548,7 @@ static MS: Strings = Strings {
     dark_theme: "Tema gelap",
     language: "Bahasa",
     hint_select: "pilih",
-    hint_back: "kembali",
+    hint_go_up: "naik",
     disk_free: "bebas daripada",
 };
 
@@ -1577,7 +1577,7 @@ static FIL: Strings = Strings {
     dark_theme: "Madilim na tema",
     language: "Wika",
     hint_select: "pumili",
-    hint_back: "bumalik",
+    hint_go_up: "pataas",
     disk_free: "libre sa",
 };
 

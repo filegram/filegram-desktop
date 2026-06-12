@@ -1009,7 +1009,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     if app.active.is_some() {
         content = content.push(mouse_hint(LMB_ICON, strings(app).hint_select));
         if !app.nav_stack.is_empty() {
-            content = content.push(mouse_hint(RMB_ICON, strings(app).hint_back));
+            content = content.push(mouse_hint(RMB_ICON, strings(app).hint_go_up));
         }
     }
     container(content)
