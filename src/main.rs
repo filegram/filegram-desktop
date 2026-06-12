@@ -424,8 +424,12 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::DiskRootsTick => {
             // The poll behind the start screen: a stick plugged in while
-            // the window keeps focus shows up without an alt-tab.
-            app.disk_roots = disk::mounted_roots();
+            // the window keeps focus shows up without an alt-tab. A tick
+            // can outlive its subscription — already queued when a scan
+            // starts — so off the start screen it is dropped.
+            if matches!(app.scan, ScanState::Idle) {
+                app.disk_roots = disk::mounted_roots();
+            }
             Task::none()
         }
         Message::SystemThemeChanged(mode) => {
@@ -1385,6 +1389,29 @@ mod tests {
         }];
         let _ = update(&mut app, Message::DiskRootsTick);
         assert_eq!(app.disk_roots, disk::mounted_roots());
+    }
+
+    #[test]
+    fn disk_roots_tick_is_ignored_off_the_start_screen() {
+        // A tick can already sit in the queue when a scan starts; once
+        // the start screen is gone it must leave the list alone.
+        let mut app = test_app();
+        let sentinel = vec![disk::DiskRoot {
+            path: PathBuf::from("/filegram-test-unmounted"),
+            kind: disk::DiskKind::Removable,
+        }];
+        for scan in [
+            ScanState::Running {
+                current: String::new(),
+                files: 0,
+            },
+            ScanState::Done,
+        ] {
+            app.scan = scan;
+            app.disk_roots = sentinel.clone();
+            let _ = update(&mut app, Message::DiskRootsTick);
+            assert_eq!(app.disk_roots, sentinel);
+        }
     }
 
     #[test]
