@@ -8,20 +8,26 @@ use std::time::Duration;
 
 use iced::futures::channel::oneshot;
 
-/// The release page the footer link opens.
-pub const LATEST_RELEASE_URL: &str =
-    "https://github.com/filegram/filegram-desktop/releases/latest";
-
 const API_URL: &str = "https://api.github.com/repos/filegram/filegram-desktop/releases/latest";
+
+/// The page of the specific release the footer shows — not `/releases/latest`,
+/// which could already point to a newer release published while the app runs.
+pub fn release_url(tag: &str) -> String {
+    format!("https://github.com/filegram/filegram-desktop/releases/tag/{tag}")
+}
 
 /// Resolves to the latest release tag (e.g. `v0.2.2`), `None` on any
 /// network or parse failure. The blocking request runs on a dedicated
 /// thread, so the future never occupies the executor.
 pub fn fetch_latest_tag() -> impl Future<Output = Option<String>> {
     let (tx, rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(request_latest_tag());
-    });
+    // Best-effort: a refused thread (resource exhaustion) must not crash
+    // startup. A failed spawn drops `tx`, the future resolves to `None`.
+    let _ = std::thread::Builder::new()
+        .name("release-check".into())
+        .spawn(move || {
+            let _ = tx.send(request_latest_tag());
+        });
     async move { rx.await.ok().flatten() }
 }
 
