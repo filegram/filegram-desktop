@@ -84,8 +84,9 @@ fn volume_roots(volumes: &Path) -> Vec<PathBuf> {
 }
 
 /// Removable/extra mount points out of `/proc/mounts` text, sorted by
-/// name: everything under the directories desktop Linux mounts external
-/// drives into. Octal escapes (`\040` for a space) are decoded;
+/// name: everything under (or mounted directly at) the directories
+/// desktop Linux mounts external drives into.
+/// Octal escapes (`\040` for a space) are decoded;
 /// bind-mount duplicates collapse into one entry.
 #[cfg(any(target_os = "linux", test))]
 fn roots_from_mounts(mounts: &str) -> Vec<PathBuf> {
@@ -94,9 +95,13 @@ fn roots_from_mounts(mounts: &str) -> Vec<PathBuf> {
         .lines()
         .filter_map(|line| line.split_whitespace().nth(1))
         .filter(|point| {
-            ["/media/", "/run/media/", "/mnt/"]
-                .iter()
-                .any(|prefix| point.starts_with(prefix))
+            // The directory itself counts too (`mount /dev/sdb1 /mnt`),
+            // but not a sibling like /mnt2.
+            ["/media", "/run/media", "/mnt"].iter().any(|dir| {
+                point
+                    .strip_prefix(dir)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            })
         })
     {
         let root = PathBuf::from(unescape_mount_point(mount_point));
@@ -211,6 +216,16 @@ tmpfs /run/user/1000 tmpfs rw 0 0
                 PathBuf::from("/run/media/user/Card"),
             ]
         );
+    }
+
+    #[test]
+    fn roots_from_mounts_accept_a_drive_mounted_at_the_directory_itself() {
+        // `mount /dev/sdb1 /mnt` is a common manual mount: the directory
+        // itself counts, but a sibling like /mnt2 must not.
+        let mounts = "\
+/dev/sdb1 /mnt ext4 rw 0 0
+/dev/sdc1 /mnt2 ext4 rw 0 0";
+        assert_eq!(roots_from_mounts(mounts), vec![PathBuf::from("/mnt")]);
     }
 
     #[test]
