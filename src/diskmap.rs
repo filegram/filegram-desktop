@@ -110,33 +110,6 @@ pub enum Brick {
 /// is below this fraction goes into the rest tail.
 const REST_SHARE: f32 = 0.05;
 
-/// How many trailing items to collapse by the weight-share criterion.
-/// Collapsing a single item is pointless — the rest brick would occupy
-/// exactly the same area — so anything under two items stays as is.
-fn share_collapse_count(weights: &[f32]) -> usize {
-    let total: f32 = weights.iter().sum();
-    if total <= 0.0 {
-        return 0;
-    }
-    let mut count = weights
-        .iter()
-        .rev()
-        .take_while(|&&w| w / total < REST_SHARE)
-        .count();
-    // The tail must stay strictly lighter than the smallest displayed item:
-    // otherwise a folder of uniform small entries would hide the whole area
-    // behind the rest. While it outweighs one, the heaviest tail items are
-    // released back.
-    let mut rest: f32 = weights[weights.len() - count..].iter().sum();
-    while count > 0
-        && (count == weights.len() || rest >= weights[weights.len() - count - 1])
-    {
-        rest -= weights[weights.len() - count];
-        count -= 1;
-    }
-    if count >= 2 { count } else { 0 }
-}
-
 /// The rest brick caption: combined size and the collapsed entry counts.
 fn rest_label(files: usize, dirs: usize, size: u64) -> String {
     let plural = |n: usize, word: &str| {
@@ -265,6 +238,27 @@ pub fn has_label(tree: &FsTree, id: NodeId, rect: Rectangle) -> bool {
     label_font_size(brick_label(tree, id).chars().count(), rect).is_some()
 }
 
+/// Second-level silhouette layout: the folder's children are laid out by
+/// the same algorithm as the post-zoom level — [`level1`] on the full
+/// canvas — and affinely compressed into the brick's content rectangle.
+/// A zoom transition thus morphs the silhouettes into the very bricks
+/// they previewed, keeping the picture proportional throughout.
+fn nested_layout(
+    tree: &FsTree,
+    dir: NodeId,
+    canvas: Size,
+    content: Rectangle,
+) -> Vec<(Brick, Rectangle)> {
+    let bounds = map_bounds(canvas);
+    if bounds.width < 1.0 || bounds.height < 1.0 {
+        return Vec::new();
+    }
+    level1(tree, dir, canvas)
+        .into_iter()
+        .map(|(brick, rect)| (brick, map_rect(rect, bounds, content)))
+        .collect()
+}
+
 /// The brick area: the canvas inset by [`MAP_MARGIN`] on every side.
 fn map_bounds(size: Size) -> Rectangle {
     Rectangle {
@@ -351,7 +345,7 @@ impl DiskMap<'_> {
         let font_size = self.draw_label(frame, &label, text_color, rect);
 
         if node.is_dir {
-            self.draw_nested(frame, palette, node.children.as_slice(), rect, font_size);
+            self.draw_nested(frame, palette, id, rect, font_size);
         }
     }
 
@@ -377,12 +371,13 @@ impl DiskMap<'_> {
         font_size
     }
 
-    /// Nested second-level silhouettes: colored rectangles without text.
+    /// Nested second-level silhouettes: colored rectangles without text,
+    /// laid out by [`nested_layout`] so they preview the post-zoom level.
     fn draw_nested(
         &self,
         frame: &mut Frame,
         palette: &BrickPalette,
-        children: &[NodeId],
+        dir: NodeId,
         rect: Rectangle,
         font_size: f32,
     ) {
@@ -396,29 +391,17 @@ impl DiskMap<'_> {
         if content.width < MIN_CONTENT_SIDE || content.height < MIN_CONTENT_SIDE {
             return;
         }
-        let weights: Vec<f32> = children
-            .iter()
-            .map(|&id| normalize_weight(self.tree.node(id).size))
-            .collect();
-        // The tail of small silhouettes collapses into one rectangle too.
-        let kept = children.len() - share_collapse_count(&weights);
-        let mut shown = weights[..kept].to_vec();
-        if kept < children.len() {
-            shown.push(weights[kept..].iter().sum());
-        }
-        for (i, r) in layout(&shown, content).into_iter().enumerate() {
+        for (brick, r) in nested_layout(self.tree, dir, frame.size(), content) {
             let silhouette = Rectangle {
                 x: r.x + SILHOUETTE_MARGIN,
                 y: r.y,
                 width: (r.width - SILHOUETTE_MARGIN).max(0.0),
                 height: (r.height - SILHOUETTE_MARGIN).max(0.0),
             };
-            let fill = if i >= kept {
-                palette.nested_rest_fill
-            } else if self.tree.node(children[i]).is_dir {
-                palette.nested_folder_fill
-            } else {
-                palette.nested_file_fill
+            let fill = match brick {
+                Brick::Rest { .. } => palette.nested_rest_fill,
+                Brick::Node(id) if self.tree.node(id).is_dir => palette.nested_folder_fill,
+                Brick::Node(_) => palette.nested_file_fill,
             };
             frame.fill_rectangle(silhouette.position(), silhouette.size(), fill);
         }
@@ -979,6 +962,77 @@ mod tests {
     }
 
     #[test]
+    fn nested_layout_is_level1_compressed_into_content() {
+        // The nested silhouettes are the post-zoom level squeezed into the
+        // brick: same bricks in the same order, and each rectangle sits at
+        // the same relative position inside `content` as its level1
+        // counterpart inside the full map bounds.
+        let tree = tree_with_children(&[
+            (500_000_000, true),
+            (300_000_000, false),
+            (120_000_000, true),
+            (50_000_000, false),
+            (10_000_000, false),
+            (2_000_000, false),
+            (1_000_000, false),
+        ]);
+        let canvas = Size::new(800.0, 500.0);
+        let content = Rectangle::new(Point::new(100.0, 50.0), Size::new(200.0, 125.0));
+        let full = level1(&tree, tree.root, canvas);
+        let nested = nested_layout(&tree, tree.root, canvas, content);
+        assert_eq!(full.len(), nested.len(), "{nested:?}");
+        let bounds = map_bounds(canvas);
+        let relative = |v: f32, origin: f32, extent: f32| (v - origin) / extent;
+        for (&(brick, r), &(nested_brick, n)) in full.iter().zip(&nested) {
+            assert_eq!(brick, nested_brick);
+            let pairs = [
+                (relative(n.x, content.x, content.width), relative(r.x, bounds.x, bounds.width)),
+                (relative(n.y, content.y, content.height), relative(r.y, bounds.y, bounds.height)),
+                (n.width / content.width, r.width / bounds.width),
+                (n.height / content.height, r.height / bounds.height),
+            ];
+            for (got, expected) in pairs {
+                assert!((got - expected).abs() < 1e-3, "{n:?} vs {r:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn nested_layout_collapses_tail_exactly_like_level1() {
+        // A decaying tail collapses into a rest brick by level1's rules —
+        // the silhouettes must mirror that, not run their own collapse
+        // heuristic on the tiny content rectangle.
+        let tree = tree_with_children(&[
+            (1_000_000, false),
+            (10_000, false),
+            (1_600, false),
+            (324, false),
+            (64, false),
+            (9, false),
+        ]);
+        let canvas = Size::new(800.0, 500.0);
+        let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(60.0, 40.0));
+        let full: Vec<Brick> = level1(&tree, tree.root, canvas)
+            .into_iter()
+            .map(|(brick, _)| brick)
+            .collect();
+        let nested: Vec<Brick> = nested_layout(&tree, tree.root, canvas, content)
+            .into_iter()
+            .map(|(brick, _)| brick)
+            .collect();
+        assert_eq!(full, nested);
+    }
+
+    #[test]
+    fn nested_layout_of_empty_folder_is_empty() {
+        let tree = tree_with_children(&[(0, true)]);
+        let folder = tree.node(tree.root).children[0];
+        let canvas = Size::new(800.0, 500.0);
+        let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(100.0, 60.0));
+        assert!(nested_layout(&tree, folder, canvas, content).is_empty());
+    }
+
+    #[test]
     fn spring_starts_at_initial_state() {
         assert_eq!(spring(100.0, -30.0, 200.0, 0.0), (100.0, -30.0));
     }
@@ -1489,29 +1543,6 @@ mod tests {
         assert_eq!(rest_label(4, 2, 408_192), "… 398.6 KB (4 files, 2 folders)");
         assert_eq!(rest_label(1, 0, 500), "… 500 B (1 file)");
         assert_eq!(rest_label(0, 3, 12_288), "… 12.0 KB (3 folders)");
-    }
-
-    #[test]
-    fn share_collapse_needs_two_small_items() {
-        // A tail of three sub-5% items collapses…
-        assert_eq!(share_collapse_count(&[10.0, 0.3, 0.2, 0.1]), 3);
-        // …while a single small item does not.
-        assert_eq!(share_collapse_count(&[10.0, 0.3]), 0);
-        assert_eq!(share_collapse_count(&[1.0, 1.0, 1.0]), 0);
-        assert_eq!(share_collapse_count(&[]), 0);
-    }
-
-    #[test]
-    fn share_collapse_keeps_rest_below_smallest_kept_item() {
-        // A tail of equal items would outweigh each remaining one —
-        // nothing collapses.
-        let mut weights = vec![4.0];
-        weights.extend([1.0; 26]);
-        assert_eq!(share_collapse_count(&weights), 0);
-        assert_eq!(share_collapse_count(&[1.0; 25]), 0);
-        // A sharply decaying tail: 0.45 is lighter than the smallest kept
-        // item (1.0).
-        assert_eq!(share_collapse_count(&[4.0, 1.0, 0.2, 0.15, 0.1]), 3);
     }
 
     #[test]
