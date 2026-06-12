@@ -7,6 +7,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A directory's own entry size is a fixed 4096 bytes, as in the original.
 pub const DIR_ENTRY_SIZE: u64 = 4096;
@@ -44,7 +45,17 @@ pub struct FsNode {
 pub struct FsTree {
     pub nodes: Vec<FsNode>,
     pub root: NodeId,
+    /// Identity of this snapshot: every [`FsTree::from_arena`] call gets
+    /// the next value of a process-wide counter. Caches of data derived
+    /// from the tree compare generations to drop stale entries: sizes and
+    /// layouts shift with every snapshot even within one scan, and ids
+    /// point into a different arena entirely after a rescan.
+    pub generation: u64,
 }
+
+/// Snapshot counter behind [`FsTree::generation`]; starts at 1 so that a
+/// zero-initialized cache never matches a real tree.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 impl FsTree {
     /// Builds a tree snapshot from a (possibly partially filled) arena.
@@ -85,6 +96,7 @@ impl FsTree {
         FsTree {
             nodes,
             root: NodeId(0),
+            generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
         }
     }
 
