@@ -492,15 +492,16 @@ fn root_usage(tree: &FsTree) -> Option<disk::DiskUsage> {
 
 /// The share `part` weighs against `whole`, as a percentage string. Tiny
 /// shares keep more decimals so they don't all collapse to "0%"; a zero
-/// `whole` (an empty scan) reads as "0%".
+/// `whole` (an empty scan) reads as "0%". The precision thresholds apply to
+/// the value as it would print, so a 9.96% share reads "10%", never "10.0%".
 fn size_percent(part: u64, whole: u64) -> String {
     if whole == 0 {
         return "0%".to_string();
     }
     let percent = part as f64 / whole as f64 * 100.0;
-    if percent >= 10.0 {
+    if (percent * 10.0).round() >= 100.0 {
         format!("{percent:.0}%")
-    } else if percent >= 1.0 {
+    } else if (percent * 100.0).round() >= 100.0 {
         format!("{percent:.1}%")
     } else {
         format!("{percent:.2}%")
@@ -894,9 +895,9 @@ fn map_view(app: &App) -> Element<'_, Message> {
     // an empty navigation stack hides it rather than greying it out.
     let mut actions = row![].spacing(8);
     if !app.nav_stack.is_empty() {
-        actions = actions.push(chrome_icon_only_button(UP_ICON, Message::GoUp));
+        actions = actions.push(chrome_icon_only_button(UP_ICON, s.go_up, Message::GoUp));
     }
-    actions = actions.push(chrome_icon_only_button(RESCAN_ICON, Message::Rescan));
+    actions = actions.push(chrome_icon_only_button(RESCAN_ICON, s.rescan, Message::Rescan));
     let bar = container(
         top.push(
             container(actions)
@@ -1162,34 +1163,44 @@ fn chrome_icon_button<'a>(
 }
 
 /// An outline chrome button with only an icon (no label): used for compact
-/// top-bar actions like Go up and Rescan.
+/// top-bar actions like Go up and Rescan. A tooltip names the action, since
+/// the icon alone carries no text.
 /// An empty text keeps the line height — and thus the button height — equal to
 /// the labeled `chrome_icon_button` next to it.
 fn chrome_icon_only_button<'a>(
     icon: &'static [u8],
+    tip: &'a str,
     on_press: Message,
 ) -> Element<'a, Message> {
-    chrome_icon_only_button_maybe(icon, Some(on_press))
+    chrome_icon_only_button_maybe(icon, tip, Some(on_press))
 }
 
 /// Like [`chrome_icon_only_button`], but with an optional action; a missing
 /// action also mutes the icon tint to match the disabled button state.
 fn chrome_icon_only_button_maybe<'a>(
     icon: &'static [u8],
+    tip: &'a str,
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
     let disabled = on_press.is_none();
-    button(
-        row![
-            themed_icon_maybe_disabled(icon, disabled)
-                .width(16)
-                .height(16),
-            text("")
-        ]
-        .align_y(Center),
+    tooltip(
+        button(
+            row![
+                themed_icon_maybe_disabled(icon, disabled)
+                    .width(16)
+                    .height(16),
+                text("")
+            ]
+            .align_y(Center),
+        )
+        .style(chrome_button)
+        .on_press_maybe(on_press),
+        text(tip).size(12),
+        tooltip::Position::Bottom,
     )
-    .style(chrome_button)
-    .on_press_maybe(on_press)
+    .style(tooltip_style)
+    .padding(8)
+    .gap(6)
     .into()
 }
 
@@ -1551,6 +1562,12 @@ mod tests {
             (95, 1000, "9.5%"),
             (100, 1000, "10%"),
             (999, 1000, "100%"),
+            // Rounding at the finer precision crosses a threshold: the
+            // printed value decides, so no "10.0%" or "1.00%" boundary leaks.
+            (996, 10_000, "10%"),
+            (994, 10_000, "9.9%"),
+            (996, 100_000, "1.0%"),
+            (994, 100_000, "0.99%"),
         ];
         for (part, whole, expected) in cases {
             assert_eq!(size_percent(part, whole), expected);
