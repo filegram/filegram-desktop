@@ -19,9 +19,15 @@ pub fn human_size(bytes: u64) -> String {
     format!("{value:.1} {unit}")
 }
 
+/// How much of an over-long last segment survives at minimum: a tiny
+/// character budget must not erase the name entirely.
+const MIN_LAST_SEGMENT_CHARS: usize = 16;
+
 /// Shortens the path to `max_chars` characters by successively replacing middle
 /// segments with `..` (like `hideFolderNameInPath` in the original).
-/// The last segment is never replaced.
+/// The last segment is never replaced; when it alone exceeds the remaining
+/// budget, it is truncated with an ellipsis (but keeps at least
+/// [`MIN_LAST_SEGMENT_CHARS`] characters).
 pub fn shorten_path(path: &str, max_chars: usize) -> String {
     // Windows paths are displayed with `\` — detect the separator from the input.
     let separator = if path.contains('\\') && !path.contains('/') {
@@ -46,7 +52,22 @@ pub fn shorten_path(path: &str, max_chars: usize) -> String {
         };
         segments[victim + 1] = "..";
     }
-    segments.join(&separator.to_string())
+    let name = segments.pop().unwrap_or_default();
+    let mut result = segments.join(&separator.to_string());
+    if !segments.is_empty() {
+        result.push(separator);
+    }
+    // The budget left for the name; `+ 1` reserves room for the ellipsis.
+    let budget = max_chars
+        .saturating_sub(result.chars().count() + 1)
+        .max(MIN_LAST_SEGMENT_CHARS);
+    if name.chars().count() > budget + 1 {
+        result.extend(name.chars().take(budget));
+        result.push('…');
+    } else {
+        result.push_str(name);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -93,6 +114,35 @@ mod tests {
         assert_eq!(
             shorten_path(r"C:\Users\stan\projects\filegram", 22),
             r"C:\..\..\..\filegram"
+        );
+    }
+
+    #[test]
+    fn shorten_path_truncates_overlong_last_segment() {
+        // A single super-long folder name cannot be collapsed into `..` —
+        // it is cut to the remaining budget with an ellipsis, so the label
+        // never exceeds `max_chars` and never wraps the UI.
+        let path = format!("/data/projects/{}", "a".repeat(100));
+        let shortened = shorten_path(&path, 40);
+        assert_eq!(shortened, format!("/../../{}…", "a".repeat(32)));
+        assert_eq!(shortened.chars().count(), 40);
+    }
+
+    #[test]
+    fn shorten_path_truncates_single_segment() {
+        let shortened = shorten_path(&"x".repeat(50), 20);
+        assert_eq!(shortened, format!("{}…", "x".repeat(19)));
+        assert_eq!(shortened.chars().count(), 20);
+    }
+
+    #[test]
+    fn shorten_path_truncation_keeps_readable_minimum() {
+        // Absurdly small budgets do not erase the name: at least 16
+        // characters of the last segment survive.
+        let path = format!("/home/user/{}", "b".repeat(60));
+        assert_eq!(
+            shorten_path(&path, 10),
+            format!("/../../{}…", "b".repeat(16))
         );
     }
 
