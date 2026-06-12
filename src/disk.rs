@@ -167,11 +167,17 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn mounted_roots_include_the_filesystem_root() {
-        let roots = mounted_roots();
-        assert!(!roots.is_empty());
+    fn mounted_roots_keep_the_platform_contract() {
+        // Unix always has `/`, first in the list. Windows promises no
+        // minimum — an empty drive list is legal in a restricted session —
+        // only the `X:\` shape of whatever is returned.
         #[cfg(unix)]
-        assert_eq!(roots[0], PathBuf::from("/"));
+        assert_eq!(mounted_roots().first(), Some(&PathBuf::from("/")));
+        #[cfg(windows)]
+        for root in mounted_roots() {
+            let root = root.display().to_string();
+            assert!(root.len() == 3 && root.ends_with(":\\"), "{root}");
+        }
     }
 
     #[cfg(unix)]
