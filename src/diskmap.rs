@@ -4,6 +4,7 @@
 //! the highlight is drawn as a separate layer on top.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::time::Instant;
 
 use iced::widget::canvas::{self, Action, Event, Frame, Path, Stroke, Text};
@@ -457,14 +458,15 @@ fn spring(pos: f32, velocity: f32, target: f32, t: f32) -> (f32, f32) {
     )
 }
 
-/// Whether two bricks are the same visual entity across snapshots: nodes
-/// match by id, while the collapsed tail — whose counts and size change
-/// every snapshot — is always the single trailing rest brick.
-fn same_brick(a: Brick, b: Brick) -> bool {
-    match (a, b) {
-        (Brick::Node(x), Brick::Node(y)) => x == y,
-        (Brick::Rest { .. }, Brick::Rest { .. }) => true,
-        _ => false,
+/// The identity of a brick across snapshots: nodes match by id, while the
+/// collapsed tail — whose counts and size change every snapshot — is always
+/// the single trailing rest brick.
+type BrickKey = Option<NodeId>;
+
+fn brick_key(brick: Brick) -> BrickKey {
+    match brick {
+        Brick::Node(id) => Some(id),
+        Brick::Rest { .. } => None,
     }
 }
 
@@ -615,19 +617,19 @@ impl MapState {
             // at this very moment — position *and* velocity carry over, so
             // a retarget never causes a visible kink in the motion.
             let t = self.elapsed(now);
+            let previous: HashMap<BrickKey, Motion> = self
+                .springs
+                .iter()
+                .map(|s| (brick_key(s.brick), s.motion_at(t)))
+                .collect();
             self.springs = layout
                 .into_iter()
                 .map(|(brick, target)| {
-                    let motion = self
-                        .springs
-                        .iter()
-                        .find(|s| same_brick(s.brick, brick))
-                        .map_or_else(
-                            // A brick the scanner just discovered grows out
-                            // of the center of its destination.
-                            || Motion::resting(Rectangle::new(target.center(), Size::ZERO)),
-                            |s| s.motion_at(t),
-                        );
+                    let motion = previous.get(&brick_key(brick)).copied().unwrap_or_else(
+                        // A brick the scanner just discovered grows out
+                        // of the center of its destination.
+                        || Motion::resting(Rectangle::new(target.center(), Size::ZERO)),
+                    );
                     BrickSpring { brick, motion, target }
                 })
                 .collect();
@@ -1322,14 +1324,10 @@ impl canvas::Program<Message> for DiskMap<'_> {
         if state.theme_dark.replace(Some(is_dark)) != Some(is_dark) {
             self.cache.clear();
         }
-        // Mid-tween the bricks are interpolated; at rest the layout is
-        // computed directly, so the very first frame — drawn before any
-        // `RedrawRequested` reaches `update` — does not flash an empty map.
-        let bricks = if state.is_animating() {
-            state.bricks(Instant::now())
-        } else {
-            level1(self.tree, self.current, bounds.size())
-        };
+        // The springs hold the current layout: `update` receives
+        // `RedrawRequested` and retargets them before every frame, so
+        // re-running `level1` here would only repeat that work.
+        let bricks = state.bricks(Instant::now());
         let map = self
             .cache
             .draw(renderer, bounds.size(), |frame| {
