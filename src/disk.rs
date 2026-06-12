@@ -58,9 +58,10 @@ pub fn mounted_roots() -> Vec<PathBuf> {
     vec![PathBuf::from("/")]
 }
 
-/// The extra volumes under `/Volumes`, sorted by name. The boot volume is
-/// skipped: it appears there as a symlink to `/`, which is already first
-/// in the row. Hidden entries (`.timemachine` and friends) are not volumes.
+/// The extra volumes under `/Volumes`, sorted by name. Only real
+/// directories count: the boot volume drops out as a symlink to `/`
+/// (already first in the row), and hidden entries (`.timemachine` and
+/// friends) are not volumes.
 #[cfg(any(target_os = "macos", test))]
 fn volume_roots(volumes: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(volumes) else {
@@ -68,16 +69,12 @@ fn volume_roots(volumes: &Path) -> Vec<PathBuf> {
     };
     let mut roots: Vec<PathBuf> = entries
         .flatten()
+        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+        // The readdir entry type, not `path.is_dir()`: the latter stats
+        // the mount target and can hang on a dead network volume. Symlinks
+        // drop out here too, the boot firmlink among them.
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .map(|entry| entry.path())
-        .filter(|path| {
-            !path
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
-        })
-        // `read_link` never touches the target, unlike `canonicalize`,
-        // which would walk into (possibly dead network) volumes.
-        .filter(|path| !std::fs::read_link(path).is_ok_and(|target| target == Path::new("/")))
-        .filter(|path| path.is_dir())
         .collect();
     roots.sort();
     roots
