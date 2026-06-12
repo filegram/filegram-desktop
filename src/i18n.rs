@@ -371,8 +371,6 @@ pub struct Strings {
     /// punctuation its script needs before the number.
     pub scanning_files: &'static str,
     pub cancel: &'static str,
-    pub back: &'static str,
-    pub rescan: &'static str,
     pub new_scan: &'static str,
     pub trash_question: &'static str,
     pub folder: &'static str,
@@ -385,8 +383,9 @@ pub struct Strings {
     pub language: &'static str,
     pub hint_select: &'static str,
     pub hint_back: &'static str,
-    /// The disk-usage bar label; `used / total` follows after a space.
-    pub disk: &'static str,
+    /// The disk-usage bar connector: `{free} {disk_free} {total}`, e.g.
+    /// "182.4 GB free of 494.4 GB".
+    pub disk_free: &'static str,
 }
 
 static EN_US: Strings = Strings {
@@ -401,8 +400,6 @@ static EN_US: Strings = Strings {
     documents: "Documents",
     scanning_files: "Scanning… files: ",
     cancel: "Cancel",
-    back: "← Back",
-    rescan: "Rescan",
     new_scan: "New scan",
     trash_question: "Move to trash?",
     folder: "Folder",
@@ -415,7 +412,7 @@ static EN_US: Strings = Strings {
     language: "Language",
     hint_select: "select",
     hint_back: "back",
-    disk: "Disk:",
+    disk_free: "free of",
 };
 
 static ZH_CN: Strings = Strings {
@@ -430,8 +427,6 @@ static ZH_CN: Strings = Strings {
     documents: "文档",
     scanning_files: "正在扫描… 文件数：",
     cancel: "取消",
-    back: "← 返回",
-    rescan: "重新扫描",
     new_scan: "新建扫描",
     trash_question: "移到回收站？",
     folder: "文件夹",
@@ -444,7 +439,7 @@ static ZH_CN: Strings = Strings {
     language: "语言",
     hint_select: "选择",
     hint_back: "返回",
-    disk: "磁盘：",
+    disk_free: "可用，共",
 };
 
 static ES_ES: Strings = Strings {
@@ -459,8 +454,6 @@ static ES_ES: Strings = Strings {
     documents: "Documentos",
     scanning_files: "Escaneando… archivos: ",
     cancel: "Cancelar",
-    back: "← Atrás",
-    rescan: "Reescanear",
     new_scan: "Nuevo escaneo",
     trash_question: "¿Mover a la papelera?",
     folder: "Carpeta",
@@ -473,7 +466,7 @@ static ES_ES: Strings = Strings {
     language: "Idioma",
     hint_select: "seleccionar",
     hint_back: "atrás",
-    disk: "Disco:",
+    disk_free: "libres de",
 };
 
 static HI_IN: Strings = Strings {
@@ -488,8 +481,6 @@ static HI_IN: Strings = Strings {
     documents: "दस्तावेज़",
     scanning_files: "स्कैन हो रहा है… फ़ाइलें: ",
     cancel: "रद्द करें",
-    back: "← वापस",
-    rescan: "फिर से स्कैन करें",
     new_scan: "नया स्कैन",
     trash_question: "ट्रैश में ले जाएँ?",
     folder: "फ़ोल्डर",
@@ -502,7 +493,7 @@ static HI_IN: Strings = Strings {
     language: "भाषा",
     hint_select: "चुनें",
     hint_back: "वापस",
-    disk: "डिस्क:",
+    disk_free: "मुक्त /",
 };
 
 static AR: Strings = Strings {
@@ -517,8 +508,6 @@ static AR: Strings = Strings {
     documents: "المستندات",
     scanning_files: "جارٍ الفحص… الملفات: ",
     cancel: "إلغاء",
-    back: "← رجوع",
-    rescan: "إعادة الفحص",
     new_scan: "فحص جديد",
     trash_question: "نقل إلى سلة المهملات؟",
     folder: "مجلد",
@@ -531,7 +520,7 @@ static AR: Strings = Strings {
     language: "اللغة",
     hint_select: "تحديد",
     hint_back: "رجوع",
-    disk: "القرص:",
+    disk_free: "حر من",
 };
 
 static PT_PT: Strings = Strings {
@@ -546,8 +535,6 @@ static PT_PT: Strings = Strings {
     documents: "Documentos",
     scanning_files: "A analisar… ficheiros: ",
     cancel: "Cancelar",
-    back: "← Voltar",
-    rescan: "Reanalisar",
     new_scan: "Nova análise",
     trash_question: "Mover para o lixo?",
     folder: "Pasta",
@@ -560,7 +547,7 @@ static PT_PT: Strings = Strings {
     language: "Idioma",
     hint_select: "selecionar",
     hint_back: "voltar",
-    disk: "Disco:",
+    disk_free: "livres de",
 };
 
 static JA_JP: Strings = Strings {
@@ -575,8 +562,6 @@ static JA_JP: Strings = Strings {
     documents: "書類",
     scanning_files: "スキャン中… ファイル数：",
     cancel: "キャンセル",
-    back: "← 戻る",
-    rescan: "再スキャン",
     new_scan: "新規スキャン",
     trash_question: "ゴミ箱に移動しますか？",
     folder: "フォルダ",
@@ -589,7 +574,7 @@ static JA_JP: Strings = Strings {
     language: "言語",
     hint_select: "選択",
     hint_back: "戻る",
-    disk: "ディスク：",
+    disk_free: "空き /",
 };
 
 static RU_RU: Strings = Strings {
@@ -604,8 +589,6 @@ static RU_RU: Strings = Strings {
     documents: "Документы",
     scanning_files: "Сканирование… файлов: ",
     cancel: "Отмена",
-    back: "← Назад",
-    rescan: "Пересканировать",
     new_scan: "Новый скан",
     trash_question: "Переместить в корзину?",
     folder: "Папка",
@@ -618,7 +601,7 @@ static RU_RU: Strings = Strings {
     language: "Язык",
     hint_select: "выбрать",
     hint_back: "назад",
-    disk: "Диск:",
+    disk_free: "свободно из",
 };
 
 static FR_FR: Strings = Strings {
@@ -633,8 +616,6 @@ static FR_FR: Strings = Strings {
     documents: "Documents",
     scanning_files: "Analyse… fichiers : ",
     cancel: "Annuler",
-    back: "← Retour",
-    rescan: "Réanalyser",
     new_scan: "Nouvelle analyse",
     trash_question: "Déplacer vers la corbeille ?",
     folder: "Dossier",
@@ -647,7 +628,7 @@ static FR_FR: Strings = Strings {
     language: "Langue",
     hint_select: "sélectionner",
     hint_back: "retour",
-    disk: "Disque :",
+    disk_free: "libres sur",
 };
 
 static DE_DE: Strings = Strings {
@@ -662,8 +643,6 @@ static DE_DE: Strings = Strings {
     documents: "Dokumente",
     scanning_files: "Scanne… Dateien: ",
     cancel: "Abbrechen",
-    back: "← Zurück",
-    rescan: "Erneut scannen",
     new_scan: "Neuer Scan",
     trash_question: "In den Papierkorb verschieben?",
     folder: "Ordner",
@@ -676,7 +655,7 @@ static DE_DE: Strings = Strings {
     language: "Sprache",
     hint_select: "auswählen",
     hint_back: "zurück",
-    disk: "Festplatte:",
+    disk_free: "frei von",
 };
 
 static ES_419: Strings = Strings {
@@ -691,8 +670,6 @@ static ES_419: Strings = Strings {
     documents: "Documentos",
     scanning_files: "Escaneando… archivos: ",
     cancel: "Cancelar",
-    back: "← Atrás",
-    rescan: "Reescanear",
     new_scan: "Nuevo escaneo",
     trash_question: "¿Mover a la papelera?",
     folder: "Carpeta",
@@ -705,7 +682,7 @@ static ES_419: Strings = Strings {
     language: "Idioma",
     hint_select: "seleccionar",
     hint_back: "atrás",
-    disk: "Disco:",
+    disk_free: "libres de",
 };
 
 static ID: Strings = Strings {
@@ -720,8 +697,6 @@ static ID: Strings = Strings {
     documents: "Dokumen",
     scanning_files: "Memindai… berkas: ",
     cancel: "Batal",
-    back: "← Kembali",
-    rescan: "Pindai ulang",
     new_scan: "Pemindaian baru",
     trash_question: "Pindahkan ke tempat sampah?",
     folder: "Folder",
@@ -734,7 +709,7 @@ static ID: Strings = Strings {
     language: "Bahasa",
     hint_select: "pilih",
     hint_back: "kembali",
-    disk: "Disk:",
+    disk_free: "tersedia dari",
 };
 
 static IT_IT: Strings = Strings {
@@ -749,8 +724,6 @@ static IT_IT: Strings = Strings {
     documents: "Documenti",
     scanning_files: "Scansione… file: ",
     cancel: "Annulla",
-    back: "← Indietro",
-    rescan: "Scansiona di nuovo",
     new_scan: "Nuova scansione",
     trash_question: "Spostare nel cestino?",
     folder: "Cartella",
@@ -763,7 +736,7 @@ static IT_IT: Strings = Strings {
     language: "Lingua",
     hint_select: "seleziona",
     hint_back: "indietro",
-    disk: "Disco:",
+    disk_free: "liberi di",
 };
 
 static KO: Strings = Strings {
@@ -778,8 +751,6 @@ static KO: Strings = Strings {
     documents: "문서",
     scanning_files: "스캔 중… 파일: ",
     cancel: "취소",
-    back: "← 뒤로",
-    rescan: "다시 스캔",
     new_scan: "새 스캔",
     trash_question: "휴지통으로 이동할까요?",
     folder: "폴더",
@@ -792,7 +763,7 @@ static KO: Strings = Strings {
     language: "언어",
     hint_select: "선택",
     hint_back: "뒤로",
-    disk: "디스크:",
+    disk_free: "사용 가능 /",
 };
 
 static PT_BR: Strings = Strings {
@@ -807,8 +778,6 @@ static PT_BR: Strings = Strings {
     documents: "Documentos",
     scanning_files: "Escaneando… arquivos: ",
     cancel: "Cancelar",
-    back: "← Voltar",
-    rescan: "Reescanear",
     new_scan: "Novo escaneamento",
     trash_question: "Mover para a lixeira?",
     folder: "Pasta",
@@ -821,7 +790,7 @@ static PT_BR: Strings = Strings {
     language: "Idioma",
     hint_select: "selecionar",
     hint_back: "voltar",
-    disk: "Disco:",
+    disk_free: "livres de",
 };
 
 static TH: Strings = Strings {
@@ -836,8 +805,6 @@ static TH: Strings = Strings {
     documents: "เอกสาร",
     scanning_files: "กำลังสแกน… ไฟล์: ",
     cancel: "ยกเลิก",
-    back: "← กลับ",
-    rescan: "สแกนอีกครั้ง",
     new_scan: "สแกนใหม่",
     trash_question: "ย้ายไปถังขยะ?",
     folder: "โฟลเดอร์",
@@ -850,7 +817,7 @@ static TH: Strings = Strings {
     language: "ภาษา",
     hint_select: "เลือก",
     hint_back: "กลับ",
-    disk: "ดิสก์:",
+    disk_free: "ว่างจาก",
 };
 
 static TR: Strings = Strings {
@@ -865,8 +832,6 @@ static TR: Strings = Strings {
     documents: "Belgeler",
     scanning_files: "Taranıyor… dosya: ",
     cancel: "İptal",
-    back: "← Geri",
-    rescan: "Yeniden tara",
     new_scan: "Yeni tarama",
     trash_question: "Çöp kutusuna taşınsın mı?",
     folder: "Klasör",
@@ -879,7 +844,7 @@ static TR: Strings = Strings {
     language: "Dil",
     hint_select: "seç",
     hint_back: "geri",
-    disk: "Disk:",
+    disk_free: "boş /",
 };
 
 static FA: Strings = Strings {
@@ -894,8 +859,6 @@ static FA: Strings = Strings {
     documents: "اسناد",
     scanning_files: "در حال اسکن… فایل‌ها: ",
     cancel: "لغو",
-    back: "← بازگشت",
-    rescan: "اسکن مجدد",
     new_scan: "اسکن جدید",
     trash_question: "به سطل زباله منتقل شود؟",
     folder: "پوشه",
@@ -908,7 +871,7 @@ static FA: Strings = Strings {
     language: "زبان",
     hint_select: "انتخاب",
     hint_back: "بازگشت",
-    disk: "دیسک:",
+    disk_free: "آزاد از",
 };
 
 static NL: Strings = Strings {
@@ -923,8 +886,6 @@ static NL: Strings = Strings {
     documents: "Documenten",
     scanning_files: "Scannen… bestanden: ",
     cancel: "Annuleren",
-    back: "← Terug",
-    rescan: "Opnieuw scannen",
     new_scan: "Nieuwe scan",
     trash_question: "Naar de prullenbak verplaatsen?",
     folder: "Map",
@@ -937,7 +898,7 @@ static NL: Strings = Strings {
     language: "Taal",
     hint_select: "selecteren",
     hint_back: "terug",
-    disk: "Schijf:",
+    disk_free: "vrij van",
 };
 
 static PL: Strings = Strings {
@@ -952,8 +913,6 @@ static PL: Strings = Strings {
     documents: "Dokumenty",
     scanning_files: "Skanowanie… pliki: ",
     cancel: "Anuluj",
-    back: "← Wstecz",
-    rescan: "Skanuj ponownie",
     new_scan: "Nowy skan",
     trash_question: "Przenieść do kosza?",
     folder: "Folder",
@@ -966,7 +925,7 @@ static PL: Strings = Strings {
     language: "Język",
     hint_select: "wybierz",
     hint_back: "wstecz",
-    disk: "Dysk:",
+    disk_free: "wolne z",
 };
 
 static VI: Strings = Strings {
@@ -981,8 +940,6 @@ static VI: Strings = Strings {
     documents: "Tài liệu",
     scanning_files: "Đang quét… tệp: ",
     cancel: "Hủy",
-    back: "← Quay lại",
-    rescan: "Quét lại",
     new_scan: "Quét mới",
     trash_question: "Chuyển vào thùng rác?",
     folder: "Thư mục",
@@ -995,7 +952,7 @@ static VI: Strings = Strings {
     language: "Ngôn ngữ",
     hint_select: "chọn",
     hint_back: "quay lại",
-    disk: "Ổ đĩa:",
+    disk_free: "trống trên",
 };
 
 static CS: Strings = Strings {
@@ -1010,8 +967,6 @@ static CS: Strings = Strings {
     documents: "Dokumenty",
     scanning_files: "Skenování… souborů: ",
     cancel: "Zrušit",
-    back: "← Zpět",
-    rescan: "Skenovat znovu",
     new_scan: "Nový sken",
     trash_question: "Přesunout do koše?",
     folder: "Složka",
@@ -1024,7 +979,7 @@ static CS: Strings = Strings {
     language: "Jazyk",
     hint_select: "vybrat",
     hint_back: "zpět",
-    disk: "Disk:",
+    disk_free: "volných z",
 };
 
 static EL: Strings = Strings {
@@ -1039,8 +994,6 @@ static EL: Strings = Strings {
     documents: "Έγγραφα",
     scanning_files: "Σάρωση… αρχεία: ",
     cancel: "Άκυρο",
-    back: "← Πίσω",
-    rescan: "Επανασάρωση",
     new_scan: "Νέα σάρωση",
     trash_question: "Μετακίνηση στα απορρίμματα;",
     folder: "Φάκελος",
@@ -1053,7 +1006,7 @@ static EL: Strings = Strings {
     language: "Γλώσσα",
     hint_select: "επιλογή",
     hint_back: "πίσω",
-    disk: "Δίσκος:",
+    disk_free: "ελεύθερα από",
 };
 
 static SV: Strings = Strings {
@@ -1068,8 +1021,6 @@ static SV: Strings = Strings {
     documents: "Dokument",
     scanning_files: "Skannar… filer: ",
     cancel: "Avbryt",
-    back: "← Tillbaka",
-    rescan: "Skanna om",
     new_scan: "Ny skanning",
     trash_question: "Flytta till papperskorgen?",
     folder: "Mapp",
@@ -1082,7 +1033,7 @@ static SV: Strings = Strings {
     language: "Språk",
     hint_select: "välj",
     hint_back: "tillbaka",
-    disk: "Disk:",
+    disk_free: "ledigt av",
 };
 
 static UK: Strings = Strings {
@@ -1097,8 +1048,6 @@ static UK: Strings = Strings {
     documents: "Документи",
     scanning_files: "Сканування… файлів: ",
     cancel: "Скасувати",
-    back: "← Назад",
-    rescan: "Пересканувати",
     new_scan: "Новий скан",
     trash_question: "Перемістити в смітник?",
     folder: "Тека",
@@ -1111,7 +1060,7 @@ static UK: Strings = Strings {
     language: "Мова",
     hint_select: "вибрати",
     hint_back: "назад",
-    disk: "Диск:",
+    disk_free: "вільно з",
 };
 
 static HU: Strings = Strings {
@@ -1126,8 +1075,6 @@ static HU: Strings = Strings {
     documents: "Dokumentumok",
     scanning_files: "Vizsgálat… fájlok: ",
     cancel: "Mégse",
-    back: "← Vissza",
-    rescan: "Újravizsgálat",
     new_scan: "Új vizsgálat",
     trash_question: "Áthelyezi a kukába?",
     folder: "Mappa",
@@ -1140,7 +1087,7 @@ static HU: Strings = Strings {
     language: "Nyelv",
     hint_select: "kijelölés",
     hint_back: "vissza",
-    disk: "Lemez:",
+    disk_free: "szabad ebből",
 };
 
 static RO: Strings = Strings {
@@ -1155,8 +1102,6 @@ static RO: Strings = Strings {
     documents: "Documente",
     scanning_files: "Se scanează… fișiere: ",
     cancel: "Anulează",
-    back: "← Înapoi",
-    rescan: "Rescanează",
     new_scan: "Scanare nouă",
     trash_question: "Mutați la coșul de gunoi?",
     folder: "Dosar",
@@ -1169,7 +1114,7 @@ static RO: Strings = Strings {
     language: "Limbă",
     hint_select: "selectează",
     hint_back: "înapoi",
-    disk: "Disc:",
+    disk_free: "liberi din",
 };
 
 static DA: Strings = Strings {
@@ -1184,8 +1129,6 @@ static DA: Strings = Strings {
     documents: "Dokumenter",
     scanning_files: "Scanner… filer: ",
     cancel: "Annuller",
-    back: "← Tilbage",
-    rescan: "Scan igen",
     new_scan: "Ny scanning",
     trash_question: "Flyt til papirkurven?",
     folder: "Mappe",
@@ -1198,7 +1141,7 @@ static DA: Strings = Strings {
     language: "Sprog",
     hint_select: "vælg",
     hint_back: "tilbage",
-    disk: "Disk:",
+    disk_free: "ledig af",
 };
 
 static FI: Strings = Strings {
@@ -1213,8 +1156,6 @@ static FI: Strings = Strings {
     documents: "Asiakirjat",
     scanning_files: "Skannataan… tiedostoja: ",
     cancel: "Peruuta",
-    back: "← Takaisin",
-    rescan: "Skannaa uudelleen",
     new_scan: "Uusi skannaus",
     trash_question: "Siirretäänkö roskakoriin?",
     folder: "Kansio",
@@ -1227,7 +1168,7 @@ static FI: Strings = Strings {
     language: "Kieli",
     hint_select: "valitse",
     hint_back: "takaisin",
-    disk: "Levy:",
+    disk_free: "vapaana /",
 };
 
 static NO: Strings = Strings {
@@ -1242,8 +1183,6 @@ static NO: Strings = Strings {
     documents: "Dokumenter",
     scanning_files: "Skanner… filer: ",
     cancel: "Avbryt",
-    back: "← Tilbake",
-    rescan: "Skann på nytt",
     new_scan: "Ny skanning",
     trash_question: "Flytte til papirkurven?",
     folder: "Mappe",
@@ -1256,7 +1195,7 @@ static NO: Strings = Strings {
     language: "Språk",
     hint_select: "velg",
     hint_back: "tilbake",
-    disk: "Disk:",
+    disk_free: "ledig av",
 };
 
 static SK: Strings = Strings {
@@ -1271,8 +1210,6 @@ static SK: Strings = Strings {
     documents: "Dokumenty",
     scanning_files: "Skenovanie… súborov: ",
     cancel: "Zrušiť",
-    back: "← Späť",
-    rescan: "Skenovať znova",
     new_scan: "Nový sken",
     trash_question: "Presunúť do koša?",
     folder: "Priečinok",
@@ -1285,7 +1222,7 @@ static SK: Strings = Strings {
     language: "Jazyk",
     hint_select: "vybrať",
     hint_back: "späť",
-    disk: "Disk:",
+    disk_free: "voľných z",
 };
 
 static BG: Strings = Strings {
@@ -1300,8 +1237,6 @@ static BG: Strings = Strings {
     documents: "Документи",
     scanning_files: "Сканиране… файлове: ",
     cancel: "Отказ",
-    back: "← Назад",
-    rescan: "Сканирай отново",
     new_scan: "Ново сканиране",
     trash_question: "Преместване в кошчето?",
     folder: "Папка",
@@ -1314,7 +1249,7 @@ static BG: Strings = Strings {
     language: "Език",
     hint_select: "избор",
     hint_back: "назад",
-    disk: "Диск:",
+    disk_free: "свободни от",
 };
 
 static HR: Strings = Strings {
@@ -1329,8 +1264,6 @@ static HR: Strings = Strings {
     documents: "Dokumenti",
     scanning_files: "Skeniranje… datoteke: ",
     cancel: "Odustani",
-    back: "← Natrag",
-    rescan: "Skeniraj ponovno",
     new_scan: "Novo skeniranje",
     trash_question: "Premjestiti u smeće?",
     folder: "Mapa",
@@ -1343,7 +1276,7 @@ static HR: Strings = Strings {
     language: "Jezik",
     hint_select: "odaberi",
     hint_back: "natrag",
-    disk: "Disk:",
+    disk_free: "slobodno od",
 };
 
 static LT: Strings = Strings {
@@ -1358,8 +1291,6 @@ static LT: Strings = Strings {
     documents: "Dokumentai",
     scanning_files: "Skenuojama… failai: ",
     cancel: "Atšaukti",
-    back: "← Atgal",
-    rescan: "Skenuoti iš naujo",
     new_scan: "Naujas skenavimas",
     trash_question: "Perkelti į šiukšlinę?",
     folder: "Aplankas",
@@ -1372,7 +1303,7 @@ static LT: Strings = Strings {
     language: "Kalba",
     hint_select: "pasirinkti",
     hint_back: "atgal",
-    disk: "Diskas:",
+    disk_free: "laisva iš",
 };
 
 static SR: Strings = Strings {
@@ -1387,8 +1318,6 @@ static SR: Strings = Strings {
     documents: "Документи",
     scanning_files: "Скенирање… датотеке: ",
     cancel: "Откажи",
-    back: "← Назад",
-    rescan: "Скенирај поново",
     new_scan: "Ново скенирање",
     trash_question: "Преместити у смеће?",
     folder: "Фасцикла",
@@ -1401,7 +1330,7 @@ static SR: Strings = Strings {
     language: "Језик",
     hint_select: "изабери",
     hint_back: "назад",
-    disk: "Диск:",
+    disk_free: "слободно од",
 };
 
 static LV: Strings = Strings {
@@ -1416,8 +1345,6 @@ static LV: Strings = Strings {
     documents: "Dokumenti",
     scanning_files: "Skenē… faili: ",
     cancel: "Atcelt",
-    back: "← Atpakaļ",
-    rescan: "Skenēt vēlreiz",
     new_scan: "Jauna skenēšana",
     trash_question: "Pārvietot uz atkritni?",
     folder: "Mape",
@@ -1430,7 +1357,7 @@ static LV: Strings = Strings {
     language: "Valoda",
     hint_select: "izvēlēties",
     hint_back: "atpakaļ",
-    disk: "Disks:",
+    disk_free: "brīvs no",
 };
 
 static SL: Strings = Strings {
@@ -1445,8 +1372,6 @@ static SL: Strings = Strings {
     documents: "Dokumenti",
     scanning_files: "Pregledovanje… datoteke: ",
     cancel: "Prekliči",
-    back: "← Nazaj",
-    rescan: "Preglej znova",
     new_scan: "Nov pregled",
     trash_question: "Premakniti v smeti?",
     folder: "Mapa",
@@ -1459,7 +1384,7 @@ static SL: Strings = Strings {
     language: "Jezik",
     hint_select: "izberi",
     hint_back: "nazaj",
-    disk: "Disk:",
+    disk_free: "prosto od",
 };
 
 static ET: Strings = Strings {
@@ -1474,8 +1399,6 @@ static ET: Strings = Strings {
     documents: "Dokumendid",
     scanning_files: "Skannimine… faile: ",
     cancel: "Loobu",
-    back: "← Tagasi",
-    rescan: "Skanni uuesti",
     new_scan: "Uus skannimine",
     trash_question: "Kas viia prügikasti?",
     folder: "Kaust",
@@ -1488,7 +1411,7 @@ static ET: Strings = Strings {
     language: "Keel",
     hint_select: "vali",
     hint_back: "tagasi",
-    disk: "Ketas:",
+    disk_free: "vaba /",
 };
 
 static HE: Strings = Strings {
@@ -1503,8 +1426,6 @@ static HE: Strings = Strings {
     documents: "מסמכים",
     scanning_files: "סורק… קבצים: ",
     cancel: "ביטול",
-    back: "← חזרה",
-    rescan: "סריקה מחדש",
     new_scan: "סריקה חדשה",
     trash_question: "להעביר לאשפה?",
     folder: "תיקייה",
@@ -1517,7 +1438,7 @@ static HE: Strings = Strings {
     language: "שפה",
     hint_select: "בחירה",
     hint_back: "חזרה",
-    disk: "דיסק:",
+    disk_free: "פנוי מתוך",
 };
 
 static MS: Strings = Strings {
@@ -1532,8 +1453,6 @@ static MS: Strings = Strings {
     documents: "Dokumen",
     scanning_files: "Mengimbas… fail: ",
     cancel: "Batal",
-    back: "← Kembali",
-    rescan: "Imbas semula",
     new_scan: "Imbasan baharu",
     trash_question: "Alih ke tong sampah?",
     folder: "Folder",
@@ -1546,7 +1465,7 @@ static MS: Strings = Strings {
     language: "Bahasa",
     hint_select: "pilih",
     hint_back: "kembali",
-    disk: "Cakera:",
+    disk_free: "bebas daripada",
 };
 
 static FIL: Strings = Strings {
@@ -1561,8 +1480,6 @@ static FIL: Strings = Strings {
     documents: "Mga dokumento",
     scanning_files: "Nag-i-scan… mga file: ",
     cancel: "Kanselahin",
-    back: "← Bumalik",
-    rescan: "I-scan muli",
     new_scan: "Bagong scan",
     trash_question: "Ilipat sa basurahan?",
     folder: "Folder",
@@ -1575,7 +1492,7 @@ static FIL: Strings = Strings {
     language: "Wika",
     hint_select: "pumili",
     hint_back: "bumalik",
-    disk: "Disk:",
+    disk_free: "libre sa",
 };
 
 #[cfg(test)]

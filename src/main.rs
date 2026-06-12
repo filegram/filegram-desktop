@@ -42,6 +42,9 @@ const TRASH_ICON: &[u8] = include_bytes!("../assets/trash.svg");
 /// brick layout for New scan.
 const RESCAN_ICON: &[u8] = include_bytes!("../assets/rescan.svg");
 const BRICKS_ICON: &[u8] = include_bytes!("../assets/bricks.svg");
+/// An up arrow for the icon-only Go-up button next to Rescan; shown only
+/// when there is a parent to ascend to.
+const UP_ICON: &[u8] = include_bytes!("../assets/up.svg");
 /// Quick-scan folder icons on the start screen.
 const HOME_ICON: &[u8] = include_bytes!("../assets/home.svg");
 const DOWNLOADS_ICON: &[u8] = include_bytes!("../assets/downloads.svg");
@@ -139,7 +142,7 @@ enum Message {
     Scan(ScanEvent),
     BrickPressed(NodeId),
     SetActive(Option<NodeId>),
-    GoBack,
+    GoUp,
     NewScan,
     Rescan,
     Reveal(NodeId),
@@ -356,7 +359,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.active = id;
             Task::none()
         }
-        Message::GoBack => {
+        Message::GoUp => {
             if let Some(previous) = app.nav_stack.pop() {
                 app.current = previous;
                 app.active = None;
@@ -485,6 +488,23 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 /// number.
 fn root_usage(tree: &FsTree) -> Option<disk::DiskUsage> {
     disk::usage(&tree.node(tree.root).path)
+}
+
+/// The share `part` weighs against `whole`, as a percentage string. Tiny
+/// shares keep more decimals so they don't all collapse to "0%"; a zero
+/// `whole` (an empty scan) reads as "0%".
+fn size_percent(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        return "0%".to_string();
+    }
+    let percent = part as f64 / whole as f64 * 100.0;
+    if percent >= 10.0 {
+        format!("{percent:.0}%")
+    } else if percent >= 1.0 {
+        format!("{percent:.1}%")
+    } else {
+        format!("{percent:.2}%")
+    }
 }
 
 /// Persists the manual theme and language choices together; a missing
@@ -618,9 +638,7 @@ fn idle_view(app: &App) -> Element<'_, Message> {
             text_input(s.path_placeholder, &app.path_input)
                 .on_input(Message::PathChanged)
                 .on_submit(Message::StartScan),
-            button(text(s.scan))
-                .style(chrome_button)
-                .on_press(Message::StartScan),
+            chrome_icon_button(BRICKS_ICON, s.scan, Message::StartScan),
         ]
         .spacing(8),
     ]
@@ -855,17 +873,14 @@ fn map_view(app: &App) -> Element<'_, Message> {
         return idle_view(app);
     };
     let current_path = tree.node(app.current).path.display().to_string();
-    // Equal-width side zones keep the disk-usage bar dead center between
-    // the navigation controls. The bar only appears with the final map:
-    // mid-scan readings would drift while the map is still growing.
     let s = strings(app);
-    let mut top = row![
+    let top = row![
         row![
-            button(text(s.back))
-                .style(chrome_button)
-                .on_press_maybe((!app.nav_stack.is_empty()).then_some(Message::GoBack)),
+            chrome_icon_button(HOME_ICON, s.new_scan, Message::NewScan),
             container(
-                text(format::shorten_path(&current_path, PATH_BAR_MAX_CHARS)).style(muted_text)
+                text(format::shorten_path(&current_path, PATH_BAR_MAX_CHARS))
+                    .style(muted_text)
+                    .wrapping(iced::widget::text::Wrapping::None)
             )
             .padding(8),
         ]
@@ -875,20 +890,18 @@ fn map_view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(8)
     .align_y(Center);
-    if let Some(usage_bar) = disk_usage_bar(app) {
-        top = top.push(usage_bar);
+    // The Go-up button only appears when there is a parent to ascend to;
+    // an empty navigation stack hides it rather than greying it out.
+    let mut actions = row![].spacing(8);
+    if !app.nav_stack.is_empty() {
+        actions = actions.push(chrome_icon_only_button(UP_ICON, Message::GoUp));
     }
+    actions = actions.push(chrome_icon_only_button(RESCAN_ICON, Message::Rescan));
     let bar = container(
         top.push(
-            container(
-                row![
-                    chrome_icon_button(RESCAN_ICON, s.rescan, Message::Rescan),
-                    chrome_icon_button(BRICKS_ICON, s.new_scan, Message::NewScan),
-                ]
-                .spacing(8),
-            )
-            .width(Fill)
-            .align_x(iced::Right),
+            container(actions)
+                .width(Fill)
+                .align_x(iced::Right),
         ),
     )
     .padding(8)
@@ -955,24 +968,52 @@ fn delete_dialog(app: &App, target: NodeId) -> Element<'_, Message> {
     .into()
 }
 
-/// Bottom status bar: on the left — the active node (or the current folder)
-/// with its size, on the right — mouse button hints.
+/// Bottom status bar: on the far left — the disk-usage bar of the scan
+/// root's volume, then the active node (or the current folder) with its
+/// size, on the right — mouse button hints. The usage bar only appears
+/// with the final map: mid-scan readings would drift while the map is
+/// still growing.
 fn status_bar(app: &App) -> Element<'_, Message> {
     let tree = app.tree.as_ref().expect("status_bar requires a tree");
     let node = tree.node(app.active.unwrap_or(app.current));
-    let size_label = format!("{} — {}", node.name, format::human_size(node.size));
-    container(
-        row![
-            container(text(size_label).size(14).style(muted_text)).width(Fill),
-            mouse_hint(LMB_ICON, strings(app).hint_select),
-            mouse_hint(RMB_ICON, strings(app).hint_back),
-        ]
-        .spacing(16)
-        .align_y(Center),
-    )
-    .padding(8)
-    .style(bar_style)
-    .into()
+    // The percentage the node weighs against the whole scanned tree, plus
+    // the entry count for folders (relocated here from the brick caption).
+    let percent = size_percent(node.size, tree.node(tree.root).size);
+    let size_label = if node.is_dir {
+        format!(
+            "{} | {} | {} ({})",
+            format::human_size(node.size),
+            percent,
+            node.name,
+            node.children.len(),
+        )
+    } else {
+        format!(
+            "{} | {} | {}",
+            format::human_size(node.size),
+            percent,
+            node.name,
+        )
+    };
+    let mut content = row![].spacing(16).align_y(Center);
+    if matches!(app.scan, ScanState::Done)
+        && let Some(usage_bar) = disk_usage_bar(app)
+    {
+        content = content.push(usage_bar);
+    }
+    content =
+        content.push(container(text(size_label).size(14).style(muted_text)).width(Fill));
+    // The mouse hints only make sense while the cursor is over a brick:
+    // `active` is set on hover and cleared when the cursor leaves the map.
+    if app.active.is_some() {
+        content = content
+            .push(mouse_hint(LMB_ICON, strings(app).hint_select))
+            .push(mouse_hint(RMB_ICON, strings(app).hint_back));
+    }
+    container(content)
+        .padding(8)
+        .style(bar_style)
+        .into()
 }
 
 /// The theme toggle: an icon button showing the mode a click switches to.
@@ -1024,22 +1065,41 @@ fn corner_footer(app: &App) -> Element<'_, Message> {
 fn disk_usage_bar(app: &App) -> Option<Element<'_, Message>> {
     let usage = app.disk_usage?;
     let label = format!(
-        "{} {} / {}",
-        strings(app).disk,
-        format::human_size(usage.used),
+        "{} {} {}",
+        format::human_size(usage.total.saturating_sub(usage.used)),
+        strings(app).disk_free,
         format::human_size(usage.total)
     );
     Some(
-        row![
-            text(label).size(14).style(muted_text),
+        column![
+            text(label).size(11).style(muted_text),
             progress_bar(0.0..=1.0, usage.fraction())
                 .length(140)
-                .girth(6),
+                .girth(6)
+                .style(disk_usage_progress_style),
         ]
-        .spacing(8)
-        .align_y(Center)
+        .spacing(4)
+        .align_x(Center)
         .into(),
     )
+}
+
+/// The mini disk-usage bar: an amber fill (the folder-brick accent) on a
+/// muted track, matching the app mockup.
+fn disk_usage_progress_style(theme: &Theme) -> progress_bar::Style {
+    let track = if theme.extended_palette().is_dark {
+        Color::from_rgb8(0x45, 0x45, 0x45)
+    } else {
+        Color::from_rgb8(0xD0, 0xD0, 0xD0)
+    };
+    progress_bar::Style {
+        background: track.into(),
+        bar: Color::from_rgb8(0xF9, 0xA8, 0x25).into(),
+        border: Border {
+            radius: 3.0.into(),
+            ..Border::default()
+        },
+    }
 }
 
 /// The hover actions panel pinned to the active brick's top-right corner,
@@ -1097,6 +1157,30 @@ fn chrome_icon_button<'a>(
     )
     .style(chrome_button)
     .on_press(on_press)
+    .into()
+}
+
+/// An outline chrome button with only an icon (no label): the Rescan action.
+/// An empty text keeps the line height — and thus the button height — equal to
+/// the labeled `chrome_icon_button` next to it.
+fn chrome_icon_only_button<'a>(
+    icon: &'static [u8],
+    on_press: Message,
+) -> Element<'a, Message> {
+    chrome_icon_only_button_maybe(icon, Some(on_press))
+}
+
+/// Like [`chrome_icon_only_button`], but greys out when there is no action
+/// (an empty navigation stack disables Back).
+fn chrome_icon_only_button_maybe<'a>(
+    icon: &'static [u8],
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    button(
+        row![themed_icon(icon).width(16).height(16), text("")].align_y(Center),
+    )
+    .style(chrome_button)
+    .on_press_maybe(on_press)
     .into()
 }
 
