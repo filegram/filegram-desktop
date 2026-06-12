@@ -42,6 +42,7 @@ const RESCAN_ICON: &[u8] = include_bytes!("../assets/rescan.svg");
 const BRICKS_ICON: &[u8] = include_bytes!("../assets/bricks.svg");
 /// Quick-scan folder icons on the start screen.
 const HOME_ICON: &[u8] = include_bytes!("../assets/home.svg");
+const DRIVE_ICON: &[u8] = include_bytes!("../assets/drive.svg");
 const DOWNLOADS_ICON: &[u8] = include_bytes!("../assets/downloads.svg");
 const DESKTOP_ICON: &[u8] = include_bytes!("../assets/desktop.svg");
 const DOCUMENTS_ICON: &[u8] = include_bytes!("../assets/documents.svg");
@@ -81,6 +82,10 @@ struct App {
     /// The volume of the scan root, for the mini disk-usage bar; `None`
     /// hides the bar (no scan yet, or the OS query failed).
     disk_usage: Option<disk::DiskUsage>,
+    /// Mounted volume roots for the quick disk row on the start screen;
+    /// refreshed on window focus, so volumes mounted in the background
+    /// show up.
+    disk_roots: Vec<PathBuf>,
     path_input: String,
     history: history::History,
     /// Where the history is persisted; `None` disables saving (tests).
@@ -174,6 +179,7 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         pending_delete: None,
         scan: ScanState::Idle,
         disk_usage: None,
+        disk_roots: disk::mounted_roots(),
         path_input: initial_path(&history),
         history,
         history_file,
@@ -356,6 +362,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::WindowFocused => {
+            // Volumes mount and unmount while the app is in the background;
+            // the quick disk row refreshes on any screen — the start screen
+            // is exactly where the user lands after plugging a drive in.
+            app.disk_roots = disk::mounted_roots();
             // The volume drifts while the app is in the background (other
             // programs write and delete); refresh the bar when the user
             // comes back to a finished map. Mid-scan readings stay owned
@@ -537,6 +547,9 @@ fn idle_view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(16)
     .max_width(600);
+    if let Some(disks) = disk_scans(app) {
+        content = content.push(disks);
+    }
     if let Some(quick) = quick_scans() {
         content = content.push(quick);
     }
@@ -544,6 +557,18 @@ fn idle_view(app: &App) -> Element<'_, Message> {
         content = content.push(recent_scans(app));
     }
     column![center(content), corner_footer(app)].into()
+}
+
+/// The quick disk row right above the folder row: the root of every
+/// mounted volume, a click scans the volume whole. `None` hides the row
+/// (no volume could be listed), like an empty folder row.
+fn disk_scans(app: &App) -> Option<Element<'_, Message>> {
+    let buttons: Vec<Element<'_, Message>> = app
+        .disk_roots
+        .iter()
+        .map(|path| quick_scan_button(DRIVE_ICON, disk::root_label(path), path))
+        .collect();
+    (!buttons.is_empty()).then(|| row(buttons).spacing(8).wrap().into())
 }
 
 /// Quick scans of the standard user folders, between the scan row and the
@@ -560,20 +585,24 @@ fn quick_scans<'a>() -> Option<Element<'a, Message>> {
     let buttons: Vec<Element<'a, Message>> = folders
         .into_iter()
         .filter_map(|(icon, name, path)| {
-            path.map(|path| {
-                button(
-                    row![themed_icon(icon).width(16).height(16), text(name).size(14)]
-                        .spacing(6)
-                        .align_y(Center),
-                )
-                .style(button::text)
-                .padding(4)
-                .on_press(Message::HistoryPicked(path.display().to_string()))
-                .into()
-            })
+            path.map(|path| quick_scan_button(icon, name.to_string(), &path))
         })
         .collect();
     (!buttons.is_empty()).then(|| row(buttons).spacing(8).into())
+}
+
+/// One entry of the quick rows: an icon with a short name; a click scans
+/// the path exactly like a history entry.
+fn quick_scan_button<'a>(icon: &'static [u8], name: String, path: &Path) -> Element<'a, Message> {
+    button(
+        row![themed_icon(icon).width(16).height(16), text(name).size(14)]
+            .spacing(6)
+            .align_y(Center),
+    )
+    .style(button::text)
+    .padding(4)
+    .on_press(Message::HistoryPicked(path.display().to_string()))
+    .into()
 }
 
 /// The scan history under the path input: a click rescans the path.
@@ -1238,6 +1267,23 @@ mod tests {
             let _ = update(&mut app, Message::WindowFocused);
             assert_eq!(app.disk_usage, Some(stale_usage()));
         }
+    }
+
+    #[test]
+    fn initial_app_lists_disk_roots() {
+        // Every supported OS has at least one mounted volume.
+        assert!(!test_app().disk_roots.is_empty());
+    }
+
+    #[test]
+    fn window_focus_refreshes_disk_roots() {
+        // A volume mounted while the app was in the background must appear
+        // in the quick disk row when the user comes back — on any screen,
+        // unlike the usage bar, which only lives on the finished map.
+        let mut app = test_app();
+        app.disk_roots.clear();
+        let _ = update(&mut app, Message::WindowFocused);
+        assert!(!app.disk_roots.is_empty());
     }
 
     #[test]
