@@ -252,19 +252,11 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
     bricks.into_iter().zip(rects).collect()
 }
 
-/// The brick caption: name and size, plus the entry count for folders.
+/// The brick caption: name and size. The folder entry count lives in the
+/// status bar, not on the brick.
 fn brick_label(tree: &FsTree, id: NodeId) -> String {
     let node = tree.node(id);
-    if node.is_dir {
-        format!(
-            "{} {} ({})",
-            node.name,
-            crate::format::human_size(node.size),
-            node.children.len()
-        )
-    } else {
-        format!("{} {}", node.name, crate::format::human_size(node.size))
-    }
+    format!("{} {}", node.name, crate::format::human_size(node.size))
 }
 
 /// Whether the brick is large enough to fit its caption. Tiny slivers get
@@ -1359,7 +1351,7 @@ impl canvas::Program<Message> for DiskMap<'_> {
             }
             Event::Mouse(mouse::Event::ButtonPressed(
                 mouse::Button::Right | mouse::Button::Back,
-            )) => Some(Action::publish(Message::GoBack).and_capture()),
+            )) => Some(Action::publish(Message::GoUp).and_capture()),
             _ => None,
         }
     }

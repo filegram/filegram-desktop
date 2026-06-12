@@ -4,96 +4,107 @@
 
   <!-- Top bar -->
   <rect x="0" y="0" width="900" height="48" fill="#333333"/>
-  <rect x="12" y="10" width="78" height="28" rx="6" fill="#454545"/>
-  <text x="51" y="29" fill="#E0E0E0" font-size="14" text-anchor="middle">&#8592; Back</text>
-  <text x="104" y="29" fill="#9E9E9E" font-size="14">/Users/stan/projects</text>
 
-  <!-- Disk usage bar (centered) -->
-  <text x="450" y="22" fill="#9E9E9E" font-size="11" text-anchor="middle">182.4 GB free of 494.4 GB</text>
-  <rect x="380" y="28" width="140" height="8" rx="4" fill="#454545"/>
-  <rect x="380" y="28" width="88" height="8" rx="4" fill="#F9A825"/>
-
-  <!-- Rescan / New scan buttons -->
-  <rect x="816" y="10" width="32" height="28" rx="6" fill="#454545"/>
-  <g stroke="#E0E0E0" stroke-width="1.6" fill="none">
-    <path d="M838 24 a6.5 6.5 0 1 1 -2.2 -4.9"/>
-    <path d="M838 15 v4.5 h-4.5" stroke-linejoin="round"/>
+  <!-- New scan button: outline chrome button with a home icon + label -->
+  <rect x="12" y="10" width="120" height="28" rx="4" fill="none" stroke="#555555" stroke-width="1"/>
+  <g stroke="#E0E0E0" stroke-width="1.5" fill="none" stroke-linejoin="round">
+    <path d="M20 24 L27 18 L34 24"/>
+    <path d="M22 24 V30 H32 V24"/>
   </g>
-  <rect x="856" y="10" width="32" height="28" rx="6" fill="#454545"/>
-  <g fill="none" stroke="#E0E0E0" stroke-width="1.4">
-    <rect x="864" y="17" width="7" height="6"/>
-    <rect x="873" y="17" width="7" height="6"/>
-    <rect x="864" y="25" width="11" height="6"/>
-    <rect x="877" y="25" width="3" height="6"/>
+  <text x="44" y="29" fill="#E0E0E0" font-size="14">New scan</text>
+
+  <!-- Current path -->
+  <text x="144" y="29" fill="#9E9E9E" font-size="14">/Users/stan/projects</text>
+
+  <!-- Go up button (icon only) -->
+  <rect x="816" y="10" width="32" height="28" rx="4" fill="none" stroke="#555555" stroke-width="1"/>
+  <g stroke="#E0E0E0" stroke-width="1.6" fill="none" stroke-linejoin="round">
+    <path d="M832 29 V19"/>
+    <path d="M827 24 L832 19 L837 24"/>
+  </g>
+
+  <!-- Rescan button (icon only) -->
+  <rect x="856" y="10" width="32" height="28" rx="4" fill="none" stroke="#555555" stroke-width="1"/>
+  <g transform="translate(864,16) scale(0.6667)" fill="none" stroke="#E0E0E0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="23 4 23 10 17 10"/>
+    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
   </g>
 
   <!-- Map background -->
-  <rect x="0" y="48" width="900" height="514" fill="#1C1C1C"/>
+  <rect x="0" y="48" width="900" height="508" fill="#1C1C1C"/>
 
   <!-- Treemap bricks: folders (orange), files (teal), rest (gray) -->
   <g stroke-width="1.5">
     <!-- top row: smaller bricks -->
     <rect x="4" y="52" width="300" height="182" fill="#F9A825" stroke="#582B04"/>
-    <text x="154" y="140" fill="#FFFFFF" font-size="15" text-anchor="middle">.git</text>
-    <text x="154" y="158" fill="#FFFFFF" font-size="12" text-anchor="middle" opacity="0.85">1.8 GB</text>
+    <text x="154" y="134" fill="#FFFFFF" font-size="15" text-anchor="middle">.git</text>
+    <text x="154" y="152" fill="#FFFFFF" font-size="12" text-anchor="middle" opacity="0.85">1.8 GB</text>
 
     <rect x="308" y="52" width="216" height="182" fill="#4DB6AC" stroke="#004D40"/>
-    <text x="416" y="140" fill="#FFFFFF" font-size="14" text-anchor="middle">backup.tar.gz</text>
-    <text x="416" y="158" fill="#FFFFFF" font-size="12" text-anchor="middle" opacity="0.85">1.3 GB</text>
+    <text x="416" y="134" fill="#FFFFFF" font-size="14" text-anchor="middle">backup.tar.gz</text>
+    <text x="416" y="152" fill="#FFFFFF" font-size="12" text-anchor="middle" opacity="0.85">1.3 GB</text>
 
     <rect x="528" y="52" width="160" height="182" fill="#F9A825" stroke="#582B04"/>
-    <text x="608" y="140" fill="#FFFFFF" font-size="14" text-anchor="middle">photos</text>
-    <text x="608" y="158" fill="#FFFFFF" font-size="12" text-anchor="middle" opacity="0.85">0.9 GB</text>
+    <text x="608" y="134" fill="#FFFFFF" font-size="14" text-anchor="middle">photos</text>
+    <text x="608" y="152" fill="#FFFFFF" font-size="12" text-anchor="middle" opacity="0.85">0.9 GB</text>
 
     <rect x="692" y="52" width="110" height="182" fill="#4DB6AC" stroke="#004D40"/>
-    <text x="747" y="140" fill="#FFFFFF" font-size="13" text-anchor="middle">app.dmg</text>
-    <text x="747" y="158" fill="#FFFFFF" font-size="11" text-anchor="middle" opacity="0.85">0.6 GB</text>
+    <text x="747" y="134" fill="#FFFFFF" font-size="13" text-anchor="middle">app.dmg</text>
+    <text x="747" y="152" fill="#FFFFFF" font-size="11" text-anchor="middle" opacity="0.85">0.6 GB</text>
 
-    <!-- rest brick -->
+    <!-- rest brick: collapsed tail of tiny entries -->
     <rect x="806" y="52" width="90" height="182" fill="#3C3C3C" stroke="#757575"/>
-    <text x="851" y="134" fill="#B0B0B0" font-size="12" text-anchor="middle">214 files</text>
-    <text x="851" y="150" fill="#B0B0B0" font-size="12" text-anchor="middle">9 dirs</text>
-    <text x="851" y="166" fill="#B0B0B0" font-size="12" text-anchor="middle">0.4 GB</text>
+    <text x="851" y="134" fill="#B0B0B0" font-size="11" text-anchor="middle">… 0.4 GB</text>
+    <text x="851" y="150" fill="#B0B0B0" font-size="11" text-anchor="middle">(214 files,</text>
+    <text x="851" y="164" fill="#B0B0B0" font-size="11" text-anchor="middle">9 folders)</text>
 
     <!-- bottom row: big bricks -->
-    <!-- big folder: node_modules -->
-    <rect x="4" y="238" width="448" height="320" fill="#F9A825" stroke="#582B04"/>
-    <text x="228" y="280" fill="#FFFFFF" font-size="18" text-anchor="middle">node_modules</text>
-    <text x="228" y="302" fill="#FFFFFF" font-size="13" text-anchor="middle" opacity="0.85">8.2 GB</text>
+    <!-- big folder: node_modules (name + size only, no entry count) -->
+    <rect x="4" y="238" width="448" height="314" fill="#F9A825" stroke="#582B04"/>
+    <text x="228" y="276" fill="#FFFFFF" font-size="18" text-anchor="middle">node_modules</text>
+    <text x="228" y="298" fill="#FFFFFF" font-size="13" text-anchor="middle" opacity="0.85">8.2 GB</text>
     <!-- nested hint inside folder: fills bottom-up, largest at the bottom -->
     <g fill="#FBC02D" stroke="#582B04" opacity="0.55">
-      <rect x="14" y="428" width="200" height="120"/>
-      <rect x="224" y="428" width="120" height="120"/>
-      <rect x="14" y="328" width="140" height="90"/>
+      <rect x="14" y="424" width="200" height="120"/>
+      <rect x="224" y="424" width="120" height="120"/>
+      <rect x="14" y="328" width="140" height="88"/>
     </g>
 
     <!-- folder: target -->
-    <rect x="456" y="238" width="276" height="320" fill="#F9A825" stroke="#582B04"/>
-    <text x="594" y="330" fill="#FFFFFF" font-size="16" text-anchor="middle">target</text>
-    <text x="594" y="350" fill="#FFFFFF" font-size="12" text-anchor="middle" opacity="0.85">4.9 GB</text>
+    <rect x="456" y="238" width="276" height="314" fill="#F9A825" stroke="#582B04"/>
+    <text x="594" y="326" fill="#FFFFFF" font-size="16" text-anchor="middle">target</text>
+    <text x="594" y="346" fill="#FFFFFF" font-size="12" text-anchor="middle" opacity="0.85">4.9 GB</text>
     <g fill="#FBC02D" stroke="#582B04" opacity="0.55">
-      <rect x="466" y="448" width="160" height="100"/>
-      <rect x="636" y="448" width="86" height="100"/>
+      <rect x="466" y="444" width="160" height="100"/>
+      <rect x="636" y="444" width="86" height="100"/>
     </g>
 
     <!-- file: dataset.parquet (highlighted / active) -->
-    <rect x="736" y="238" width="160" height="320" fill="#4DB6AC" stroke="#004D40"/>
-    <rect x="736" y="238" width="160" height="320" fill="#FFFFFF" opacity="0.18"/>
-    <text x="816" y="392" fill="#FFFFFF" font-size="14" text-anchor="middle">dataset.parquet</text>
-    <text x="816" y="410" fill="#FFFFFF" font-size="12" text-anchor="middle" opacity="0.85">2.6 GB</text>
+    <rect x="736" y="238" width="160" height="314" fill="#4DB6AC" stroke="#004D40"/>
+    <rect x="736" y="238" width="160" height="314" fill="#FFFFFF" opacity="0.18"/>
+    <text x="816" y="388" fill="#FFFFFF" font-size="14" text-anchor="middle">dataset.parquet</text>
+    <text x="816" y="406" fill="#FFFFFF" font-size="12" text-anchor="middle" opacity="0.85">2.6 GB</text>
   </g>
 
   <!-- Status bar -->
-  <rect x="0" y="562" width="900" height="38" fill="#333333"/>
-  <text x="12" y="586" fill="#9E9E9E" font-size="14">dataset.parquet — 2.6 GB</text>
+  <rect x="0" y="556" width="900" height="44" fill="#333333"/>
+
+  <!-- Mini disk-usage bar (far left): label + amber fill on a muted track -->
+  <text x="82" y="574" fill="#9E9E9E" font-size="11" text-anchor="middle">182.4 GB free of 494.4 GB</text>
+  <rect x="12" y="580" width="140" height="6" rx="3" fill="#454545"/>
+  <rect x="12" y="580" width="88" height="6" rx="3" fill="#F9A825"/>
+
+  <!-- Active node: name — size — % of the whole scan -->
+  <text x="176" y="583" fill="#9E9E9E" font-size="14">dataset.parquet 2.6GB 13%</text>
+
   <!-- LMB hint -->
-  <g transform="translate(740,571)">
+  <g transform="translate(740,568)">
     <rect x="0" y="0" width="13" height="20" rx="6" fill="none" stroke="#9E9E9E" stroke-width="1.4"/>
     <path d="M1.2 8 h10.6 v-2.5 a5.3 5.3 0 0 0 -5.3 -5.0 a5.3 5.3 0 0 0 -5.3 5.0 z" fill="#9E9E9E" transform="scale(0.5,1) translate(1.2,0.6)"/>
     <text x="20" y="15" fill="#9E9E9E" font-size="13">select</text>
   </g>
   <!-- RMB hint -->
-  <g transform="translate(816,571)">
+  <g transform="translate(816,568)">
     <rect x="0" y="0" width="13" height="20" rx="6" fill="none" stroke="#9E9E9E" stroke-width="1.4"/>
     <path d="M1.2 8 h10.6 v-2.5 a5.3 5.3 0 0 0 -5.3 -5.0 a5.3 5.3 0 0 0 -5.3 5.0 z" fill="#9E9E9E" transform="scale(0.5,1) translate(11.4,0.6)"/>
     <text x="20" y="15" fill="#9E9E9E" font-size="13">back</text>

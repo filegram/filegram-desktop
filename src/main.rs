@@ -42,6 +42,9 @@ const TRASH_ICON: &[u8] = include_bytes!("../assets/trash.svg");
 /// brick layout for New scan.
 const RESCAN_ICON: &[u8] = include_bytes!("../assets/rescan.svg");
 const BRICKS_ICON: &[u8] = include_bytes!("../assets/bricks.svg");
+/// An up arrow for the icon-only Go-up button next to Rescan; shown only
+/// when there is a parent to ascend to.
+const UP_ICON: &[u8] = include_bytes!("../assets/up.svg");
 /// Quick-scan folder icons on the start screen.
 const HOME_ICON: &[u8] = include_bytes!("../assets/home.svg");
 const DOWNLOADS_ICON: &[u8] = include_bytes!("../assets/downloads.svg");
@@ -139,7 +142,7 @@ enum Message {
     Scan(ScanEvent),
     BrickPressed(NodeId),
     SetActive(Option<NodeId>),
-    GoBack,
+    GoUp,
     NewScan,
     Rescan,
     Reveal(NodeId),
@@ -356,7 +359,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.active = id;
             Task::none()
         }
-        Message::GoBack => {
+        Message::GoUp => {
             if let Some(previous) = app.nav_stack.pop() {
                 app.current = previous;
                 app.active = None;
@@ -390,7 +393,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             // enforced here so no other path can desync the tree from the
             // scanner's arena. A loaded tree is required for the same
             // reason: the modal renders the target node from it.
-            if matches!(app.scan, ScanState::Done) && app.tree.is_some() {
+            if matches!(&app.scan, ScanState::Done) && app.tree.is_some() {
                 app.pending_delete = Some(id);
             }
             Task::none()
@@ -408,7 +411,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             // programs write and delete); refresh the bar when the user
             // comes back to a finished map. Mid-scan readings stay owned
             // by StartScan/Finished — the bar is hidden until then anyway.
-            if matches!(app.scan, ScanState::Done)
+            if matches!(&app.scan, ScanState::Done)
                 && let Some(tree) = &app.tree
             {
                 app.disk_usage = root_usage(tree);
@@ -450,7 +453,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             };
             // Filesystem mutation requires a finished scan: the snapshot
             // must not be edited while the scanner still produces them.
-            if !matches!(app.scan, ScanState::Done) {
+            if !matches!(&app.scan, ScanState::Done) {
                 return Task::none();
             }
             let Some(tree) = app.tree.as_mut() else {
@@ -485,6 +488,24 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 /// number.
 fn root_usage(tree: &FsTree) -> Option<disk::DiskUsage> {
     disk::usage(&tree.node(tree.root).path)
+}
+
+/// The share `part` weighs against `whole`, as a percentage string. Tiny
+/// shares keep more decimals so they don't all collapse to "0%"; a zero
+/// `whole` (an empty scan) reads as "0%". The precision thresholds apply to
+/// the value as it would print, so a 9.96% share reads "10%", never "10.0%".
+fn size_percent(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        return "0%".to_string();
+    }
+    let percent = part as f64 / whole as f64 * 100.0;
+    if (percent * 10.0).round() >= 100.0 {
+        format!("{percent:.0}%")
+    } else if (percent * 100.0).round() >= 100.0 {
+        format!("{percent:.1}%")
+    } else {
+        format!("{percent:.2}%")
+    }
 }
 
 /// Persists the manual theme and language choices together; a missing
@@ -618,9 +639,7 @@ fn idle_view(app: &App) -> Element<'_, Message> {
             text_input(s.path_placeholder, &app.path_input)
                 .on_input(Message::PathChanged)
                 .on_submit(Message::StartScan),
-            button(text(s.scan))
-                .style(chrome_button)
-                .on_press(Message::StartScan),
+            chrome_icon_button(BRICKS_ICON, s.scan, Message::StartScan),
         ]
         .spacing(8),
     ]
@@ -855,17 +874,14 @@ fn map_view(app: &App) -> Element<'_, Message> {
         return idle_view(app);
     };
     let current_path = tree.node(app.current).path.display().to_string();
-    // Equal-width side zones keep the disk-usage bar dead center between
-    // the navigation controls. The bar only appears with the final map:
-    // mid-scan readings would drift while the map is still growing.
     let s = strings(app);
-    let mut top = row![
+    let top = row![
         row![
-            button(text(s.back))
-                .style(chrome_button)
-                .on_press_maybe((!app.nav_stack.is_empty()).then_some(Message::GoBack)),
+            chrome_icon_button(HOME_ICON, s.new_scan, Message::NewScan),
             container(
-                text(format::shorten_path(&current_path, PATH_BAR_MAX_CHARS)).style(muted_text)
+                text(format::shorten_path(&current_path, PATH_BAR_MAX_CHARS))
+                    .style(muted_text)
+                    .wrapping(iced::widget::text::Wrapping::None)
             )
             .padding(8),
         ]
@@ -875,20 +891,18 @@ fn map_view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(8)
     .align_y(Center);
-    if let Some(usage_bar) = disk_usage_bar(app) {
-        top = top.push(usage_bar);
+    // The Go-up button only appears when there is a parent to ascend to;
+    // an empty navigation stack hides it rather than greying it out.
+    let mut actions = row![].spacing(8);
+    if !app.nav_stack.is_empty() {
+        actions = actions.push(chrome_icon_only_button(UP_ICON, s.go_up, Message::GoUp));
     }
+    actions = actions.push(chrome_icon_only_button(RESCAN_ICON, s.rescan, Message::Rescan));
     let bar = container(
         top.push(
-            container(
-                row![
-                    chrome_icon_button(RESCAN_ICON, s.rescan, Message::Rescan),
-                    chrome_icon_button(BRICKS_ICON, s.new_scan, Message::NewScan),
-                ]
-                .spacing(8),
-            )
-            .width(Fill)
-            .align_x(iced::Right),
+            container(actions)
+                .width(Fill)
+                .align_x(iced::Right),
         ),
     )
     .padding(8)
@@ -955,24 +969,53 @@ fn delete_dialog(app: &App, target: NodeId) -> Element<'_, Message> {
     .into()
 }
 
-/// Bottom status bar: on the left — the active node (or the current folder)
-/// with its size, on the right — mouse button hints.
+/// Bottom status bar: on the far left — the disk-usage bar of the scan
+/// root's volume, then the active node (or the current folder) with its
+/// size, on the right — mouse button hints. The usage bar only appears
+/// with the final map: mid-scan readings would drift while the map is
+/// still growing.
 fn status_bar(app: &App) -> Element<'_, Message> {
     let tree = app.tree.as_ref().expect("status_bar requires a tree");
     let node = tree.node(app.active.unwrap_or(app.current));
-    let size_label = format!("{} — {}", node.name, format::human_size(node.size));
-    container(
-        row![
-            container(text(size_label).size(14).style(muted_text)).width(Fill),
-            mouse_hint(LMB_ICON, strings(app).hint_select),
-            mouse_hint(RMB_ICON, strings(app).hint_back),
-        ]
-        .spacing(16)
-        .align_y(Center),
-    )
-    .padding(8)
-    .style(bar_style)
-    .into()
+    // The percentage the node weighs against the whole scanned tree, plus
+    // the entry count for folders (relocated here from the brick caption).
+    let percent = size_percent(node.size, tree.node(tree.root).size);
+    let size_label = if node.is_dir {
+        format!(
+            "{} | {} | {} ({})",
+            format::human_size(node.size),
+            percent,
+            node.name,
+            node.children.len(),
+        )
+    } else {
+        format!(
+            "{} | {} | {}",
+            format::human_size(node.size),
+            percent,
+            node.name,
+        )
+    };
+    let mut content = row![].spacing(16).align_y(Center);
+    if matches!(&app.scan, ScanState::Done)
+        && let Some(usage_bar) = disk_usage_bar(app)
+    {
+        content = content.push(usage_bar);
+    }
+    content =
+        content.push(container(text(size_label).size(14).style(muted_text)).width(Fill));
+    // The mouse hints only make sense while the cursor is over a brick:
+    // `active` is set on hover and cleared when the cursor leaves the map.
+    if app.active.is_some() {
+        content = content.push(mouse_hint(LMB_ICON, strings(app).hint_select));
+        if !app.nav_stack.is_empty() {
+            content = content.push(mouse_hint(RMB_ICON, strings(app).hint_go_up));
+        }
+    }
+    container(content)
+        .padding(8)
+        .style(bar_style)
+        .into()
 }
 
 /// The theme toggle: an icon button showing the mode a click switches to.
@@ -1020,26 +1063,48 @@ fn corner_footer(app: &App) -> Element<'_, Message> {
 }
 
 /// The mini disk-usage bar: how full the scan root's volume is.
+/// The label quotes the *free* space while the fill shows the *used* share —
+/// the file-manager convention (Windows Explorer, GNOME Files) users already
+/// read at a glance; the two are complements, not a mismatch.
 /// `None` when no volume has been queried yet — the bar is omitted.
 fn disk_usage_bar(app: &App) -> Option<Element<'_, Message>> {
     let usage = app.disk_usage?;
     let label = format!(
-        "{} {} / {}",
-        strings(app).disk,
-        format::human_size(usage.used),
+        "{} {} {}",
+        format::human_size(usage.total.saturating_sub(usage.used)),
+        strings(app).disk_free,
         format::human_size(usage.total)
     );
     Some(
-        row![
-            text(label).size(14).style(muted_text),
+        column![
+            text(label).size(11).style(muted_text),
             progress_bar(0.0..=1.0, usage.fraction())
                 .length(140)
-                .girth(6),
+                .girth(6)
+                .style(disk_usage_progress_style),
         ]
-        .spacing(8)
-        .align_y(Center)
+        .spacing(4)
+        .align_x(Center)
         .into(),
     )
+}
+
+/// The mini disk-usage bar: an amber fill (the folder-brick accent) on a
+/// muted track, matching the app mockup.
+fn disk_usage_progress_style(theme: &Theme) -> progress_bar::Style {
+    let track = if theme.extended_palette().is_dark {
+        Color::from_rgb8(0x45, 0x45, 0x45)
+    } else {
+        Color::from_rgb8(0xD0, 0xD0, 0xD0)
+    };
+    progress_bar::Style {
+        background: track.into(),
+        bar: Color::from_rgb8(0xF9, 0xA8, 0x25).into(),
+        border: Border {
+            radius: 3.0.into(),
+            ..Border::default()
+        },
+    }
 }
 
 /// The hover actions panel pinned to the active brick's top-right corner,
@@ -1047,7 +1112,7 @@ fn disk_usage_bar(app: &App) -> Option<Element<'_, Message>> {
 fn brick_actions(app: &App, target: NodeId, brick: Rectangle, bounds: Size) -> Element<'_, Message> {
     // Deletion needs a finished scan: removing entries mid-scan would
     // desync the tree from the scanner's arena.
-    let deletable = matches!(app.scan, ScanState::Done).then_some(target);
+    let deletable = matches!(&app.scan, ScanState::Done).then_some(target);
     let s = strings(app);
     let panel = container(
         row![
@@ -1100,6 +1165,48 @@ fn chrome_icon_button<'a>(
     .into()
 }
 
+/// An outline chrome button with only an icon (no label): used for compact
+/// top-bar actions like Go up and Rescan. A tooltip names the action, since
+/// the icon alone carries no text.
+/// An empty text keeps the line height — and thus the button height — equal to
+/// the labeled `chrome_icon_button` next to it.
+fn chrome_icon_only_button<'a>(
+    icon: &'static [u8],
+    tip: &'a str,
+    on_press: Message,
+) -> Element<'a, Message> {
+    chrome_icon_only_button_maybe(icon, tip, Some(on_press))
+}
+
+/// Like [`chrome_icon_only_button`], but with an optional action; a missing
+/// action also mutes the icon tint to match the disabled button state.
+fn chrome_icon_only_button_maybe<'a>(
+    icon: &'static [u8],
+    tip: &'a str,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    let disabled = on_press.is_none();
+    tooltip(
+        button(
+            row![
+                themed_icon_maybe_disabled(icon, disabled)
+                    .width(16)
+                    .height(16),
+                text("")
+            ]
+            .align_y(Center),
+        )
+        .style(chrome_button)
+        .on_press_maybe(on_press),
+        text(tip).size(12),
+        tooltip::Position::Bottom,
+    )
+    .style(tooltip_style)
+    .padding(8)
+    .gap(6)
+    .into()
+}
+
 /// A status bar action: an icon button with a tooltip.
 fn action_button<'a>(
     icon: &'static [u8],
@@ -1136,6 +1243,17 @@ fn mouse_hint<'a>(icon: &'static [u8], action: &'a str) -> Element<'a, Message> 
 fn themed_icon<'a>(icon: &'static [u8]) -> svg::Svg<'a> {
     svg(svg::Handle::from_memory(icon)).style(|theme: &Theme, _status| svg::Style {
         color: Some(theme.palette().text),
+    })
+}
+
+/// Like [`themed_icon`], but muted for disabled controls.
+fn themed_icon_maybe_disabled<'a>(icon: &'static [u8], disabled: bool) -> svg::Svg<'a> {
+    svg(svg::Handle::from_memory(icon)).style(move |theme: &Theme, _status| svg::Style {
+        color: Some(if disabled {
+            muted_color(theme)
+        } else {
+            theme.palette().text
+        }),
     })
 }
 
@@ -1435,6 +1553,28 @@ mod tests {
         // An empty history falls back to a usable default.
         assert_ne!(initial_path(&history::History::default()), "/scans/latest");
         assert!(!initial_path(&history::History::default()).is_empty());
+    }
+
+    #[test]
+    fn size_percent_formats_zero_and_thresholds() {
+        let cases = [
+            (0, 0, "0%"),
+            (0, 100, "0.00%"),
+            (5, 1000, "0.50%"),
+            (15, 1000, "1.5%"),
+            (95, 1000, "9.5%"),
+            (100, 1000, "10%"),
+            (999, 1000, "100%"),
+            // Rounding at the finer precision crosses a threshold: the
+            // printed value decides, so no "10.0%" or "1.00%" boundary leaks.
+            (996, 10_000, "10%"),
+            (994, 10_000, "9.9%"),
+            (996, 100_000, "1.0%"),
+            (994, 100_000, "0.99%"),
+        ];
+        for (part, whole, expected) in cases {
+            assert_eq!(size_percent(part, whole), expected);
+        }
     }
 
     #[test]
