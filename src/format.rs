@@ -124,8 +124,10 @@ mod tests {
     #[test]
     fn shorten_path_truncates_overlong_last_segment() {
         // A single super-long folder name cannot be collapsed into `..` —
-        // it is cut to the remaining budget with an ellipsis, so the label
-        // never exceeds `max_chars` and never wraps the UI.
+        // it is cut to the remaining budget with an ellipsis. With realistic
+        // budgets (the 80-char path bar) the result fits `max_chars`, so the
+        // label stops wrapping the UI; tiny budgets may still come out
+        // longer (see the contract note on `shorten_path`).
         let path = format!("/data/projects/{}", "a".repeat(100));
         let shortened = shorten_path(&path, 40);
         assert_eq!(shortened, format!("/../../{}…", "a".repeat(32)));
