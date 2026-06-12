@@ -23,12 +23,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The Linux x86_64 binary is built in package-linux below, which
+        # shares one cargo build between the standalone binary and packages.
         include:
-          - os: ubuntu-latest
-            artifact: filegram-linux-x86_64
-            binary: target/release/filegram
-            asset: filegram-linux-x86_64
-            zip: filegram-linux-x86_64.zip
           # The .dmg is already a compressed container — no extra zip.
           - os: macos-latest
             artifact: filegram-macos-universal
@@ -58,12 +55,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
 
       # On macOS the bundle script builds both architectures itself.
       - name: Build release
@@ -97,8 +88,9 @@ jobs:
             ${{ matrix.zip }}
 
   package-linux:
-    name: Package (Linux deb/rpm/AppImage)
-    # Pinned (not ubuntu-latest) to keep the AppImage glibc baseline stable.
+    name: Build & package (Linux x86_64)
+    # Pinned (not ubuntu-latest) to keep the glibc baseline of the AppImage
+    # and the standalone binary stable (and as old as practical).
     runs-on: ubuntu-22.04
 
     steps:
@@ -141,6 +133,19 @@ jobs:
 
       - name: Build release
         run: cargo build --release
+
+      - name: Create standalone binary zip
+        run: |
+          cp target/release/filegram filegram-linux-x86_64
+          zip filegram-linux-x86_64.zip filegram-linux-x86_64
+
+      - name: Upload standalone binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: filegram-linux-x86_64
+          path: |
+            filegram-linux-x86_64
+            filegram-linux-x86_64.zip
 
       - name: Build .deb package
         run: |
