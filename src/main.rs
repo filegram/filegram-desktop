@@ -561,7 +561,8 @@ fn idle_view(app: &App) -> Element<'_, Message> {
 
 /// The quick disk row right under the folder row: the root of every
 /// mounted volume, a click scans the volume whole. `None` hides the row
-/// (no volume could be listed), like an empty folder row.
+/// when `disk_roots` is empty, like an empty folder row — possible on
+/// Windows only, on Unix the list always holds at least `/`.
 fn disk_scans(app: &App) -> Option<Element<'_, Message>> {
     let buttons: Vec<Element<'_, Message>> = app
         .disk_roots
