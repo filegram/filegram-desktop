@@ -905,6 +905,7 @@ dependencies = [
  "dirs",
  "fs4",
  "iced",
+ "libc",
  "open",
  "opener",
  "rayon",

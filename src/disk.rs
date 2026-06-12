@@ -23,39 +23,173 @@ impl DiskUsage {
     }
 }
 
+/// What backs a mounted volume, as far as the icon of the quick disk
+/// row cares: the four buckets users tell apart at a glance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskKind {
+    /// A built-in fixed drive — also the fallback when the OS gives
+    /// no usable answer.
+    Internal,
+    /// Plugged-in media: a USB stick, a memory card, an external drive.
+    Removable,
+    /// A network share (SMB, NFS, SSHFS and friends).
+    Network,
+    /// An optical drive with a readable disc. Only Windows reports
+    /// these; on Unix a mounted disc falls into the other buckets —
+    /// hence the variant is dead code there.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Optical,
+}
+
+/// One entry of the quick disk row: a mounted volume root and the
+/// detected hardware kind behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskRoot {
+    pub path: PathBuf,
+    pub kind: DiskKind,
+}
+
 /// Roots of the mounted volumes, for the quick disk row on the start
 /// screen. On Unix the filesystem root `/` comes first and the extra
 /// volumes follow in name order; on Windows it is drive roots in
 /// letter order (`A:\` before `C:\` if both exist).
 #[cfg(target_os = "macos")]
-pub fn mounted_roots() -> Vec<PathBuf> {
-    let mut roots = vec![PathBuf::from("/")];
-    roots.extend(volume_roots(Path::new("/Volumes")));
+pub fn mounted_roots() -> Vec<DiskRoot> {
+    let types = fs_types();
+    let mut roots = vec![DiskRoot {
+        path: PathBuf::from("/"),
+        kind: DiskKind::Internal,
+    }];
+    roots.extend(volume_roots(Path::new("/Volumes")).into_iter().map(|path| {
+        // Anything mounted under /Volumes that is not a network share is
+        // a plugged-in drive: the boot volume only ever shows up as `/`.
+        let kind = match types.get(&path) {
+            Some(fstype) if is_network_fs(fstype) => DiskKind::Network,
+            _ => DiskKind::Removable,
+        };
+        DiskRoot { path, kind }
+    }));
     roots
 }
 
 #[cfg(target_os = "linux")]
-pub fn mounted_roots() -> Vec<PathBuf> {
-    let mut roots = vec![PathBuf::from("/")];
+pub fn mounted_roots() -> Vec<DiskRoot> {
+    let mut roots = vec![DiskRoot {
+        path: PathBuf::from("/"),
+        kind: DiskKind::Internal,
+    }];
     if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
-        roots.extend(roots_from_mounts(&mounts));
+        roots.extend(roots_from_mounts(&mounts, device_is_removable));
     }
     roots
 }
 
 #[cfg(windows)]
-pub fn mounted_roots() -> Vec<PathBuf> {
+pub fn mounted_roots() -> Vec<DiskRoot> {
     // `is_dir` filters letters without a volume behind them (and empty
     // optical drives, which exist but cannot be read).
     ('A'..='Z')
         .map(|letter| PathBuf::from(format!("{letter}:\\")))
         .filter(|root| root.is_dir())
+        .map(|path| {
+            let kind = drive_kind(&path);
+            DiskRoot { path, kind }
+        })
         .collect()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-pub fn mounted_roots() -> Vec<PathBuf> {
-    vec![PathBuf::from("/")]
+pub fn mounted_roots() -> Vec<DiskRoot> {
+    vec![DiskRoot {
+        path: PathBuf::from("/"),
+        kind: DiskKind::Internal,
+    }]
+}
+
+/// Whether a filesystem type name names a network filesystem — the
+/// mounts that live on another machine, whatever the local kernel
+/// calls them (`fuse.sshfs` on Linux, plain `smbfs` on macOS).
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn is_network_fs(fstype: &str) -> bool {
+    let fstype = fstype.strip_prefix("fuse.").unwrap_or(fstype);
+    fstype.starts_with("nfs")
+        || matches!(
+            fstype,
+            "cifs"
+                | "smbfs"
+                | "smb3"
+                | "sshfs"
+                | "davfs"
+                | "davfs2"
+                | "webdav"
+                | "afpfs"
+                | "ftp"
+                | "curlftpfs"
+                | "9p"
+        )
+}
+
+/// Filesystem type per mount point out of the kernel's cached mount
+/// list. `MNT_NOWAIT` skips refreshing the entries, so a dead network
+/// volume cannot hang the query — the same care `volume_roots` takes.
+#[cfg(target_os = "macos")]
+fn fs_types() -> std::collections::HashMap<PathBuf, String> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt;
+    let mut mounts: *mut libc::statfs = std::ptr::null_mut();
+    let count = unsafe { libc::getmntinfo(&mut mounts, libc::MNT_NOWAIT) };
+    if count <= 0 {
+        return std::collections::HashMap::new();
+    }
+    // getmntinfo hands out a buffer it owns (freed never, reused per
+    // thread), valid until the next call on this thread.
+    unsafe { std::slice::from_raw_parts(mounts, count as usize) }
+        .iter()
+        .map(|mount| {
+            let point = unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) };
+            let fstype = unsafe { CStr::from_ptr(mount.f_fstypename.as_ptr()) };
+            (
+                PathBuf::from(std::ffi::OsStr::from_bytes(point.to_bytes())),
+                fstype.to_string_lossy().into_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Whether the block device behind a mount is removable media, off the
+/// sysfs `removable` flag. The flag lives on the whole disk, so for a
+/// partition (`sdb1`) the lookup walks up to its parent (`sdb`) — the
+/// `..` of the sysfs symlink. A device outside /dev (network shares,
+/// tmpfs) is not removable.
+#[cfg(target_os = "linux")]
+fn device_is_removable(device: &str) -> bool {
+    let Some(name) = device.strip_prefix("/dev/") else {
+        return false;
+    };
+    let dir = Path::new("/sys/class/block").join(name);
+    [dir.join("removable"), dir.join("../removable")]
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .any(|flag| flag.trim() == "1")
+}
+
+/// The bucket a Windows drive root falls into, per `GetDriveTypeW`.
+#[cfg(windows)]
+fn drive_kind(root: &Path) -> DiskKind {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetDriveTypeW(root: *const u16) -> u32;
+    }
+    let wide: Vec<u16> = root.as_os_str().encode_wide().chain([0]).collect();
+    match unsafe { GetDriveTypeW(wide.as_ptr()) } {
+        2 => DiskKind::Removable, // DRIVE_REMOVABLE
+        4 => DiskKind::Network,   // DRIVE_REMOTE
+        5 => DiskKind::Optical,   // DRIVE_CDROM
+        // DRIVE_FIXED — and the unknown/error codes, where Internal is
+        // the neutral icon.
+        _ => DiskKind::Internal,
+    }
 }
 
 /// The extra volumes under `/Volumes`, sorted by name. Only real
@@ -82,16 +216,21 @@ fn volume_roots(volumes: &Path) -> Vec<PathBuf> {
 
 /// Removable/extra mount points out of `/proc/mounts` text, sorted by
 /// name: everything under (or mounted directly at) the directories
-/// desktop Linux mounts external drives into.
+/// desktop Linux mounts external drives into. The kind comes off the
+/// filesystem type (network shares) or the `removable` test on the
+/// backing device — injected, so the parser stays a pure function.
 /// Octal escapes (`\040` for a space) are decoded;
 /// bind-mount duplicates collapse into one entry.
 #[cfg(any(target_os = "linux", test))]
-fn roots_from_mounts(mounts: &str) -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = Vec::new();
-    for mount_point in mounts
+fn roots_from_mounts(mounts: &str, removable: impl Fn(&str) -> bool) -> Vec<DiskRoot> {
+    let mut roots: Vec<DiskRoot> = Vec::new();
+    for (device, mount_point, fstype) in mounts
         .lines()
-        .filter_map(|line| line.split_whitespace().nth(1))
-        .filter(|point| {
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((fields.next()?, fields.next()?, fields.next()?))
+        })
+        .filter(|(_, point, _)| {
             // The directory itself counts too (`mount /dev/sdb1 /mnt`),
             // but not a sibling like /mnt2.
             ["/media", "/run/media", "/mnt"].iter().any(|dir| {
@@ -101,12 +240,20 @@ fn roots_from_mounts(mounts: &str) -> Vec<PathBuf> {
             })
         })
     {
-        let root = PathBuf::from(unescape_mount_point(mount_point));
-        if !roots.contains(&root) {
-            roots.push(root);
+        let path = PathBuf::from(unescape_mount_point(mount_point));
+        if roots.iter().any(|root| root.path == path) {
+            continue;
         }
+        let kind = if is_network_fs(fstype) {
+            DiskKind::Network
+        } else if removable(device) {
+            DiskKind::Removable
+        } else {
+            DiskKind::Internal
+        };
+        roots.push(DiskRoot { path, kind });
     }
-    roots.sort();
+    roots.sort_by(|a, b| a.path.cmp(&b.path));
     roots
 }
 
@@ -126,10 +273,14 @@ fn unescape_mount_point(point: &str) -> String {
             && i + 3 < bytes.len()
             && bytes[i + 1].is_ascii_digit()
             && bytes[i + 1] <= b'3'
-            && bytes[i + 2..=i + 3].iter().all(|b| (b'0'..=b'7').contains(b))
+            && bytes[i + 2..=i + 3]
+                .iter()
+                .all(|b| (b'0'..=b'7').contains(b))
         {
             decoded.push(
-                (bytes[i + 1] - b'0') * 0o100 + (bytes[i + 2] - b'0') * 0o10 + (bytes[i + 3] - b'0'),
+                (bytes[i + 1] - b'0') * 0o100
+                    + (bytes[i + 2] - b'0') * 0o10
+                    + (bytes[i + 3] - b'0'),
             );
             i += 4;
         } else {
@@ -172,10 +323,16 @@ mod tests {
         // minimum — an empty drive list is legal in a restricted session —
         // only the `X:\` shape of whatever is returned.
         #[cfg(unix)]
-        assert_eq!(mounted_roots().first(), Some(&PathBuf::from("/")));
+        assert_eq!(
+            mounted_roots().first(),
+            Some(&DiskRoot {
+                path: PathBuf::from("/"),
+                kind: DiskKind::Internal,
+            })
+        );
         #[cfg(windows)]
         for root in mounted_roots() {
-            let root = root.display().to_string();
+            let root = root.path.display().to_string();
             assert!(root.len() == 3 && root.ends_with(":\\"), "{root}");
         }
     }
@@ -199,6 +356,15 @@ mod tests {
         assert_eq!(volume_roots(&dir.path().join("missing")), Vec::<PathBuf>::new());
     }
 
+    /// Mount points only — most parser tests care about which mounts
+    /// survive the filter, not what kind they get.
+    fn mount_points(mounts: &str) -> Vec<PathBuf> {
+        roots_from_mounts(mounts, |_| false)
+            .into_iter()
+            .map(|root| root.path)
+            .collect()
+    }
+
     #[test]
     fn roots_from_mounts_keep_removable_mount_points_in_name_order() {
         // Deliberately out of name order: the result must not lean on
@@ -212,11 +378,36 @@ proc /proc proc rw 0 0
 tmpfs /run/user/1000 tmpfs rw 0 0
 /dev/sdc1 /mnt/backup ext4 rw 0 0";
         assert_eq!(
-            roots_from_mounts(mounts),
+            mount_points(mounts),
             vec![
                 PathBuf::from("/media/user/USB Drive"),
                 PathBuf::from("/mnt/backup"),
                 PathBuf::from("/run/media/user/Card"),
+            ]
+        );
+    }
+
+    #[test]
+    fn roots_from_mounts_bucket_kinds_by_fstype_and_device() {
+        let mounts = "\
+/dev/sdb1 /media/user/Stick vfat rw 0 0
+/dev/sdc1 /mnt/backup ext4 rw 0 0
+//server/share /mnt/share cifs rw 0 0";
+        assert_eq!(
+            roots_from_mounts(mounts, |device| device == "/dev/sdb1"),
+            vec![
+                DiskRoot {
+                    path: PathBuf::from("/media/user/Stick"),
+                    kind: DiskKind::Removable,
+                },
+                DiskRoot {
+                    path: PathBuf::from("/mnt/backup"),
+                    kind: DiskKind::Internal,
+                },
+                DiskRoot {
+                    path: PathBuf::from("/mnt/share"),
+                    kind: DiskKind::Network,
+                },
             ]
         );
     }
@@ -228,7 +419,7 @@ tmpfs /run/user/1000 tmpfs rw 0 0
         let mounts = "\
 /dev/sdb1 /mnt ext4 rw 0 0
 /dev/sdc1 /mnt2 ext4 rw 0 0";
-        assert_eq!(roots_from_mounts(mounts), vec![PathBuf::from("/mnt")]);
+        assert_eq!(mount_points(mounts), vec![PathBuf::from("/mnt")]);
     }
 
     #[test]
@@ -237,7 +428,7 @@ tmpfs /run/user/1000 tmpfs rw 0 0
         // \011, \012 and \134 — not only the space.
         let mounts = "/dev/sdb1 /media/user/a\\011b\\012c\\134d vfat rw 0 0";
         assert_eq!(
-            roots_from_mounts(mounts),
+            mount_points(mounts),
             vec![PathBuf::from("/media/user/a\tb\nc\\d")]
         );
     }
@@ -248,9 +439,29 @@ tmpfs /run/user/1000 tmpfs rw 0 0
         // the backslash must survive as-is instead of corrupting the path.
         let mounts = "/dev/sdb1 /media/user/a\\800b\\77 vfat rw 0 0";
         assert_eq!(
-            roots_from_mounts(mounts),
+            mount_points(mounts),
             vec![PathBuf::from("/media/user/a\\800b\\77")]
         );
+    }
+
+    #[test]
+    fn network_filesystems_are_told_apart_from_local_ones() {
+        // Across both spellings: bare (macOS, kernel Linux mounts) and
+        // the FUSE prefix Linux gives userspace network filesystems.
+        for fstype in [
+            "nfs",
+            "nfs4",
+            "cifs",
+            "smbfs",
+            "sshfs",
+            "fuse.sshfs",
+            "afpfs",
+        ] {
+            assert!(is_network_fs(fstype), "{fstype} is a network filesystem");
+        }
+        for fstype in ["ext4", "vfat", "exfat", "apfs", "ntfs", "fuseblk", "btrfs"] {
+            assert!(!is_network_fs(fstype), "{fstype} is a local filesystem");
+        }
     }
 
     #[test]

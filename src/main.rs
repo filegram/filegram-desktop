@@ -42,10 +42,15 @@ const RESCAN_ICON: &[u8] = include_bytes!("../assets/rescan.svg");
 const BRICKS_ICON: &[u8] = include_bytes!("../assets/bricks.svg");
 /// Quick-scan folder icons on the start screen.
 const HOME_ICON: &[u8] = include_bytes!("../assets/home.svg");
-const DRIVE_ICON: &[u8] = include_bytes!("../assets/drive.svg");
 const DOWNLOADS_ICON: &[u8] = include_bytes!("../assets/downloads.svg");
 const DESKTOP_ICON: &[u8] = include_bytes!("../assets/desktop.svg");
 const DOCUMENTS_ICON: &[u8] = include_bytes!("../assets/documents.svg");
+/// Quick disk row icons, one per hardware kind: internal drive, plugged-in
+/// media, network share, optical disc.
+const DRIVE_ICON: &[u8] = include_bytes!("../assets/drive.svg");
+const USB_ICON: &[u8] = include_bytes!("../assets/usb.svg");
+const GLOBE_ICON: &[u8] = include_bytes!("../assets/globe.svg");
+const DISC_ICON: &[u8] = include_bytes!("../assets/disc.svg");
 /// The theme toggle in the bottom-left corner: the icon shows the mode a
 /// click switches to (the moon in light mode, the sun in dark).
 const SUN_ICON: &[u8] = include_bytes!("../assets/sun.svg");
@@ -85,7 +90,7 @@ struct App {
     /// Mounted volume roots for the quick disk row on the start screen;
     /// refreshed on window focus, so volumes mounted in the background
     /// show up.
-    disk_roots: Vec<PathBuf>,
+    disk_roots: Vec<disk::DiskRoot>,
     path_input: String,
     history: history::History,
     /// Where the history is persisted; `None` disables saving (tests).
@@ -572,7 +577,13 @@ fn disk_scans(app: &App) -> Option<Element<'_, Message>> {
     let buttons: Vec<Element<'_, Message>> = app
         .disk_roots
         .iter()
-        .map(|path| quick_scan_button(DRIVE_ICON, disk::root_label(path), path))
+        .map(|root| {
+            quick_scan_button(
+                disk_icon(root.kind),
+                disk::root_label(&root.path),
+                &root.path,
+            )
+        })
         .collect();
     (!buttons.is_empty()).then(|| {
         // The same muted header the history row wears, so the two sections
@@ -584,6 +595,17 @@ fn disk_scans(app: &App) -> Option<Element<'_, Message>> {
         .spacing(2)
         .into()
     })
+}
+
+/// The icon a quick disk row entry wears, by the hardware kind behind
+/// the volume.
+fn disk_icon(kind: disk::DiskKind) -> &'static [u8] {
+    match kind {
+        disk::DiskKind::Internal => DRIVE_ICON,
+        disk::DiskKind::Removable => USB_ICON,
+        disk::DiskKind::Network => GLOBE_ICON,
+        disk::DiskKind::Optical => DISC_ICON,
+    }
 }
 
 /// Quick scans of the standard user folders, between the scan row and the
@@ -1302,7 +1324,10 @@ mod tests {
         // unlike the usage bar, which only lives on the finished map. The
         // sentinel no OS reports proves the focus handler replaced the list.
         let mut app = test_app();
-        app.disk_roots = vec![PathBuf::from("/filegram-test-unmounted")];
+        app.disk_roots = vec![disk::DiskRoot {
+            path: PathBuf::from("/filegram-test-unmounted"),
+            kind: disk::DiskKind::Removable,
+        }];
         let _ = update(&mut app, Message::WindowFocused);
         assert_eq!(app.disk_roots, disk::mounted_roots());
     }
