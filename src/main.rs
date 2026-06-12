@@ -1071,8 +1071,9 @@ fn language_button(app: &App) -> Element<'_, Message> {
 }
 
 /// The application version in the bottom-right corner. Once the background
-/// GitHub check finds a release newer than the running build, its tag
-/// follows in parentheses as a link to the release page.
+/// GitHub check finds a release different from the running build (e.g. the
+/// stable release under a dev build), its tag follows in parentheses as a
+/// link to the release page.
 fn version_label(app: &App) -> Element<'_, Message> {
     let current = text(concat!("v", env!("CARGO_PKG_VERSION")))
         .size(14)
