@@ -632,7 +632,10 @@ impl MapState {
                 })
                 .collect();
             self.started = now;
-            self.animating = true;
+            // A change may be caption-only (the rest brick's counts drift
+            // while its rectangle stays put): repaint once, but don't run
+            // animation frames for springs that are already at rest.
+            self.animating = self.springs.iter().any(|s| !s.settled(0.0));
             return true;
         }
         if self.animating {
@@ -1098,6 +1101,23 @@ mod tests {
         let t1 = t0 + Duration::from_secs(1);
         state.retarget(NodeId(0), CANVAS, l2, t1);
         assert_rects_close(&state.bricks(t1), &[(rest, rect(100.0, 50.0))]);
+    }
+
+    #[test]
+    fn map_state_repaints_metadata_change_without_animating() {
+        // Only the rest brick's caption data changes; the geometry is
+        // already at rest. The frame repaints (the caption is baked into
+        // the cache) but no animation frames are requested.
+        let rect_a = rect(100.0, 50.0);
+        let l1 = vec![(Brick::Rest { files: 1, dirs: 0, size: 10 }, rect_a)];
+        let l2 = vec![(Brick::Rest { files: 2, dirs: 0, size: 20 }, rect_a)];
+        let mut state = MapState::default();
+        let t0 = Instant::now();
+        state.retarget(NodeId(0), CANVAS, l1, t0);
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(state.retarget(NodeId(0), CANVAS, l2.clone(), t1));
+        assert!(!state.is_animating());
+        assert_eq!(state.bricks(t1), l2);
     }
 
     #[test]
