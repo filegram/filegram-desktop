@@ -547,11 +547,11 @@ fn idle_view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(16)
     .max_width(600);
-    if let Some(disks) = disk_scans(app) {
-        content = content.push(disks);
-    }
     if let Some(quick) = quick_scans() {
         content = content.push(quick);
+    }
+    if let Some(disks) = disk_scans(app) {
+        content = content.push(disks);
     }
     if !app.history.entries().is_empty() {
         content = content.push(recent_scans(app));
@@ -559,7 +559,7 @@ fn idle_view(app: &App) -> Element<'_, Message> {
     column![center(content), corner_footer(app)].into()
 }
 
-/// The quick disk row right above the folder row: the root of every
+/// The quick disk row right under the folder row: the root of every
 /// mounted volume, a click scans the volume whole. `None` hides the row
 /// (no volume could be listed), like an empty folder row.
 fn disk_scans(app: &App) -> Option<Element<'_, Message>> {
