@@ -1063,6 +1063,9 @@ fn corner_footer(app: &App) -> Element<'_, Message> {
 }
 
 /// The mini disk-usage bar: how full the scan root's volume is.
+/// The label quotes the *free* space while the fill shows the *used* share —
+/// the file-manager convention (Windows Explorer, GNOME Files) users already
+/// read at a glance; the two are complements, not a mismatch.
 /// `None` when no volume has been queried yet — the bar is omitted.
 fn disk_usage_bar(app: &App) -> Option<Element<'_, Message>> {
     let usage = app.disk_usage?;
