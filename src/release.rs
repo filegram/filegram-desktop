@@ -8,12 +8,19 @@ use std::time::Duration;
 
 use iced::futures::channel::oneshot;
 
-const API_URL: &str = "https://api.github.com/repos/filegram/filegram-desktop/releases/latest";
+/// Repository home page from Cargo.toml (`repository`) — the single place
+/// the GitHub URL is spelled out; both URLs below derive from it.
+const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
+
+fn api_url() -> String {
+    let repo_path = REPO_URL.trim_start_matches("https://github.com/");
+    format!("https://api.github.com/repos/{repo_path}/releases/latest")
+}
 
 /// The page of the specific release the footer shows — not `/releases/latest`,
 /// which could already point to a newer release published while the app runs.
 pub fn release_url(tag: &str) -> String {
-    format!("https://github.com/filegram/filegram-desktop/releases/tag/{tag}")
+    format!("{REPO_URL}/releases/tag/{tag}")
 }
 
 /// Resolves to the latest release tag (e.g. `v0.2.2`), `None` on any
@@ -37,7 +44,7 @@ fn request_latest_tag() -> Option<String> {
         .build()
         .into();
     let mut response = agent
-        .get(API_URL)
+        .get(&api_url())
         // GitHub rejects requests without a User-Agent.
         .header("User-Agent", concat!("filegram/", env!("CARGO_PKG_VERSION")))
         .call()
@@ -60,6 +67,22 @@ fn parse_tag_name(json: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_url_derives_repo_path_from_manifest() {
+        assert_eq!(
+            api_url(),
+            "https://api.github.com/repos/filegram/filegram-desktop/releases/latest"
+        );
+    }
+
+    #[test]
+    fn release_url_points_at_the_given_tag() {
+        assert_eq!(
+            release_url("v0.2.2"),
+            "https://github.com/filegram/filegram-desktop/releases/tag/v0.2.2"
+        );
+    }
 
     #[test]
     fn parses_tag_name_from_api_response() {
