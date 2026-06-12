@@ -249,8 +249,9 @@ fn disk_roots_ticker() -> Subscription<Message> {
                     if sender.try_send(Message::DiskRootsTick).is_err() && sender.is_closed() {
                         return;
                     }
-                    // A full channel is not an exit: the tick merely was not
-                    // consumed yet, and a fresher one replaces it next round.
+                    // A full channel is not an exit: the previous tick is
+                    // still queued, this one is simply dropped, and the loop
+                    // tries again after the next sleep.
                 }
             });
         })
