@@ -418,8 +418,12 @@ impl DiskMap<'_> {
         const SIZE_RESERVE_WIDTH: f32 = 0.72;
         const GAP: f32 = 3.0;
 
-        // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
-        let full_chars = name.chars().count() + 1 + size.chars().count();
+        // Count characters once, not bytes: Cyrillic takes 2 bytes per glyph in
+        // UTF-8. Reused below for the cap and the placement, avoiding repeated
+        // O(n) UTF-8 scans of the same string every redraw.
+        let name_chars = name.chars().count();
+        let size_chars = size.chars().count();
+        let full_chars = name_chars + 1 + size_chars;
         let Some(font_size) = label_font_size(full_chars.max(1), rect) else {
             return 0.0;
         };
@@ -430,7 +434,7 @@ impl DiskMap<'_> {
         // gets at least one character beside it. `floor` keeps the cap
         // conservative — rounding could nudge it toward the edge and let the
         // size overrun the right padding.
-        let size_reserve = size.chars().count() as f32 * SIZE_RESERVE_WIDTH * SIZE_FONT;
+        let size_reserve = size_chars as f32 * SIZE_RESERVE_WIDTH * SIZE_FONT;
         let right_cap = (rect.x + rect.width - 4.0 - size_reserve).floor();
         let name_budget = right_cap - GAP - origin.x;
         let show_size = name_budget >= CHAR_WIDTH * font_size;
@@ -441,7 +445,8 @@ impl DiskMap<'_> {
         let name_avail = if show_size { name_budget } else { rect.width - 8.0 };
         let max_name_chars = (name_avail / (CHAR_WIDTH * font_size)).max(0.0) as usize;
         let name_shown: String = name.chars().take(max_name_chars).collect();
-        let shown_chars = name_shown.chars().count();
+        // `take` yields at most `max_name_chars` of the name's `name_chars`.
+        let shown_chars = name_chars.min(max_name_chars);
         frame.fill_text(Text {
             content: name_shown,
             position: origin,
