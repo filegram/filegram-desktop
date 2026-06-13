@@ -195,6 +195,19 @@ jobs:
             filegram-linux-x86_64.rpm
             filegram-linux-x86_64.AppImage
 
+  smoke-test:
+    name: Headless smoke test (Linux container)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      # ubuntu-latest ships Docker; the script builds the image and runs the
+      # binary headless under Xvfb + lavapipe (see docker/smoke.Dockerfile).
+      - name: Build and run the headless smoke test
+        run: ./scripts/smoke-test.sh
+
   dev-release:
     name: Update dev pre-release
     needs: [build, package-linux]

@@ -140,6 +140,10 @@ struct App {
     /// The deletion backend: `trash::delete` in production. Tests swap in
     /// a tempdir-local delete so nothing ever reaches the OS trash.
     delete: fn(&Path) -> std::io::Result<()>,
+    /// Smoke-test mode (the `FILEGRAM_SMOKE` env var): the window closes the
+    /// moment the first frame renders, so CI can launch the binary headless
+    /// and let a non-zero exit flag a broken wgpu/window backend.
+    smoke: bool,
 }
 
 enum ScanState {
@@ -172,6 +176,8 @@ enum Message {
     WindowFocused,
     LatestReleaseLoaded(Option<String>),
     LatestReleasePressed,
+    /// The first frame rendered in smoke-test mode — time to exit cleanly.
+    SmokeFrameRendered,
 }
 
 /// The default content of the path input: the most recent scanned path,
@@ -198,6 +204,7 @@ fn boot() -> (App, Task<Message>) {
         None => (history::History::default(), None),
     };
     let mut app = initial_app(history, history_file);
+    app.smoke = std::env::var_os("FILEGRAM_SMOKE").is_some();
     app.settings_file = settings::default_file();
     // Unlike the history, an unreadable settings file is safe to save over:
     // the next toggle or language pick rewrites the whole file anyway.
@@ -251,6 +258,7 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         settings_file: None,
         latest_release: None,
         delete: |path| trash::delete(path).map_err(std::io::Error::other),
+        smoke: false,
     }
 }
 
@@ -268,8 +276,8 @@ fn is_dark(app: &App) -> bool {
     matches!(app.theme_override.unwrap_or(app.theme_mode), Mode::Dark)
 }
 
-fn subscription(_app: &App) -> Subscription<Message> {
-    Subscription::batch([
+fn subscription(app: &App) -> Subscription<Message> {
+    let mut subs = vec![
         iced::system::theme_changes().map(Message::SystemThemeChanged),
         // There is no ready-made focus subscription, only the unfiltered
         // window::events(); listen the same way it does, for Focused alone.
@@ -277,7 +285,13 @@ fn subscription(_app: &App) -> Subscription<Message> {
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
             _ => None,
         }),
-    ])
+    ];
+    if app.smoke {
+        // `frames()` ticks once per rendered frame; the first tick means the
+        // wgpu surface drew successfully, which is all the smoke test proves.
+        subs.push(iced::window::frames().map(|_| Message::SmokeFrameRendered));
+    }
+    Subscription::batch(subs)
 }
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
@@ -476,6 +490,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 let _ = open::that_detached(release::release_url(tag));
             }
             Task::none()
+        }
+        Message::SmokeFrameRendered => {
+            // Reached only in smoke-test mode (FILEGRAM_SMOKE). The window
+            // opened and drew a frame, so wgpu is healthy; exit 0 and let CI
+            // move on. A broken backend never gets here — it panics first.
+            eprintln!("filegram: smoke test rendered a frame, exiting");
+            iced::exit()
         }
         Message::ToggleTheme => {
             let mode = if is_dark(app) { Mode::Light } else { Mode::Dark };
