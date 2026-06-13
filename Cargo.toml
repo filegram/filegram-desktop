@@ -2,7 +2,7 @@
 name = "filegram"
 version = "0.2.3-dev"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Disk space analyzer with an interactive treemap"
 license = "MIT"
 repository = "https://github.com/filegram/filegram-desktop"
