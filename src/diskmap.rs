@@ -716,9 +716,10 @@ impl MapState {
     /// level (1 — the folder's children, 2 — grandchildren inside a
     /// child-folder silhouette). Every level is the [`MapState::nested`]
     /// layout of its folder compressed into the parent silhouette, so the
-    /// whole preview stays proportional to the post-zoom picture. Levels
-    /// past [`NESTED_DEPTH`] and silhouettes too small for
-    /// [`MIN_CONTENT_SIDE`] are pruned.
+    /// whole preview stays proportional to the post-zoom picture. The
+    /// recursion stops past [`NESTED_DEPTH`], and a folder whose content
+    /// area is below [`MIN_CONTENT_SIDE`] is not descended into (its own
+    /// silhouettes still draw — only the level inside it is skipped).
     fn nested_silhouettes(
         &self,
         tree: &FsTree,
@@ -1276,7 +1277,7 @@ mod tests {
         content: Rectangle,
     ) -> Vec<(Brick, Rectangle, u8)> {
         let mut out = Vec::new();
-        state.nested_silhouettes(tree, NodeId(0), CANVAS, content, 1, &mut out);
+        state.nested_silhouettes(tree, tree.root, CANVAS, content, 1, &mut out);
         out
     }
 
