@@ -227,10 +227,25 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
 
-      # ubuntu-latest ships Docker; the script builds the image and runs the
-      # binary headless under Xvfb + lavapipe (see docker/smoke.Dockerfile).
-      - name: Build and run the headless smoke test
-        run: ./scripts/smoke-test.sh
+      - uses: docker/setup-buildx-action@v3
+
+      # Build with a persistent layer cache: cargo-chef's dependency layer
+      # (iced/wgpu — most of the build) is restored from the GitHub Actions
+      # cache, so only filegram itself recompiles. See docker/smoke.Dockerfile.
+      - name: Build the smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/smoke.Dockerfile
+          tags: filegram-smoke:latest
+          load: true
+          cache-from: type=gha,scope=smoke
+          cache-to: type=gha,scope=smoke,mode=max
+
+      # Runs the binary headless under Xvfb + lavapipe; a non-zero exit (crash,
+      # hang past the entrypoint timeout) fails the job.
+      - name: Run the headless smoke test
+        run: docker run --rm filegram-smoke:latest
 
   dev-release:
     name: Update dev pre-release

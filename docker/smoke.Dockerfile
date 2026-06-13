@@ -7,16 +7,32 @@
 # reaches that frame — it panics or aborts, so the container exits
 # non-zero and CI goes red.
 
-# ---- build stage ----------------------------------------------------------
+# ---- dependency planning (cargo-chef) -------------------------------------
 # Track stable to mirror CI's dtolnay/rust-toolchain@stable: pinning an
 # explicit Rust version here risks lagging behind what the dependency tree
 # requires and failing `cargo build --locked` at resolve time.
-FROM rust:bookworm AS build
+FROM rust:bookworm AS chef
+RUN cargo install cargo-chef --locked
 WORKDIR /src
+
+FROM chef AS planner
+COPY . .
+# A recipe of just the dependency graph; it changes only when Cargo.toml /
+# Cargo.lock do, so the heavy dependency build below stays cached across
+# source-only edits (the common case on every PR push).
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ---- build stage ----------------------------------------------------------
+FROM chef AS build
 # The same system deps the CI Linux build needs (see build.yml).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libxkbcommon-dev libwayland-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=planner /src/recipe.json recipe.json
+# Compile every dependency (iced/wgpu — the bulk of the build) into a layer
+# keyed only by the recipe; with the CI layer cache it is reused untouched
+# whenever only application code changed.
+RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release --locked
 
@@ -40,6 +56,11 @@ COPY --from=build /src/target/release/filegram /usr/local/bin/filegram
 COPY docker/smoke-entrypoint.sh /usr/local/bin/smoke-entrypoint.sh
 RUN chmod +x /usr/local/bin/smoke-entrypoint.sh
 
+# Force lavapipe (the only working "device" here) without hard-coding the
+# architecture in the ICD path: symlink the installed lvp_icd.<arch>.json to
+# a stable name, so the image works on x86_64 and arm64 hosts alike.
+RUN ln -sf "$(ls /usr/share/vulkan/icd.d/lvp_icd.*.json | head -n1)" /etc/lvp_icd.json
+
 # A tiny, deterministic tree for the smoke scan: a couple of nested dirs and
 # files of known sizes, enough to drive the scan, the tree build and the
 # treemap render (FILEGRAM_SMOKE_PATH below points the app at it).
@@ -58,7 +79,7 @@ RUN mkdir -p /run/xdg && chmod 700 /run/xdg
 # only Vulkan device, the Vulkan backend in wgpu, and winit's X11 backend.
 # FILEGRAM_SMOKE_PATH makes the app scan the fixture and render its treemap
 # before exiting, instead of leaving on the bare start screen.
-ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+ENV VK_ICD_FILENAMES=/etc/lvp_icd.json \
     WGPU_BACKEND=vulkan \
     WINIT_UNIX_BACKEND=x11 \
     LIBGL_ALWAYS_SOFTWARE=1 \

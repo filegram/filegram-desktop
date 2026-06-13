@@ -3,5 +3,4 @@
 target/
 .git/
 .github/
-.claude/
 *.md
