@@ -8,9 +8,9 @@
 # non-zero and CI goes red.
 
 # ---- build stage ----------------------------------------------------------
-# Latest stable, mirroring CI's dtolnay/rust-toolchain@stable. The MSRV in
-# Cargo.toml (1.85) is stale: iced 0.14 / wgpu 27 need rustc 1.88, so a
-# pinned 1.85 image fails `cargo build --locked` at resolve time.
+# Track stable to mirror CI's dtolnay/rust-toolchain@stable: pinning an
+# explicit Rust version here risks lagging behind what the dependency tree
+# requires and failing `cargo build --locked` at resolve time.
 FROM rust:bookworm AS build
 WORKDIR /src
 # The same system deps the CI Linux build needs (see build.yml).
