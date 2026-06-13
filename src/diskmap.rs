@@ -5,6 +5,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use iced::widget::canvas::{self, Action, Event, Frame, Path, Stroke, Text};
@@ -244,11 +245,19 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
     bricks.into_iter().zip(rects).collect()
 }
 
-/// The brick caption: name and size. The folder entry count lives in the
-/// status bar, not on the brick.
-fn brick_label(tree: &FsTree, id: NodeId) -> String {
+/// The brick caption split into its two parts: the name (drawn in the
+/// brick's text color) and the human-readable size (drawn smaller and
+/// muted). The folder entry count lives in the status bar, not on the brick.
+fn brick_caption(tree: &FsTree, id: NodeId) -> (Arc<str>, String) {
     let node = tree.node(id);
-    format!("{} {}", node.name, crate::format::human_size(node.size))
+    (node.name.clone(), crate::format::human_size(node.size))
+}
+
+/// The full caption as one string — for fitting the font and deciding
+/// whether the brick is large enough to carry a label at all.
+fn brick_label(tree: &FsTree, id: NodeId) -> String {
+    let (name, size) = brick_caption(tree, id);
+    format!("{name} {size}")
 }
 
 /// Whether the brick is large enough to fit its caption. Tiny slivers get
@@ -359,12 +368,86 @@ impl DiskMap<'_> {
         frame.fill(&path, fill);
         frame.stroke(&path, Stroke::default().with_color(stroke).with_width(1.0));
 
-        let label = brick_label(self.tree, id);
-        let font_size = self.draw_label(frame, &label, text_color, rect);
+        let (name, size) = brick_caption(self.tree, id);
+        let font_size = self.draw_brick_label(frame, &name, &size, text_color, rect);
 
         if node.is_dir {
             self.draw_nested(state, frame, palette, id, rect, font_size);
         }
+    }
+
+    /// Draws a node brick's caption on one line: the name in `color` at the
+    /// fitted size on the left, and the size smaller and muted just after it.
+    /// The name font is fitted to the full "name size" caption so the
+    /// panel-visibility decision in [`has_label`] stays consistent. Returns the
+    /// name font size.
+    ///
+    /// The size follows the name but is never drawn past the right edge. We
+    /// can't measure the name (shaping text inside the canvas draw corrupts the
+    /// glyph renderer), so its end is *estimated*; the estimate errs cumulatively
+    /// with length, but the size only hugs *short* names (long ones reach the
+    /// edge first), where the error — and any overlap risk — is small. The
+    /// estimate uses a slightly wider per-char width than the fit ([`CHAR_WIDTH`])
+    /// as a safety margin against painting over the name's tail.
+    fn draw_brick_label(
+        &self,
+        frame: &mut Frame,
+        name: &str,
+        size: &str,
+        color: Color,
+        rect: Rectangle,
+    ) -> f32 {
+        /// Per-char width for placing the size after the name — a touch wider
+        /// than the fit [`CHAR_WIDTH`] so the (estimated) name end clears the
+        /// real glyphs without leaving a big gap.
+        const NAME_HUG_WIDTH: f32 = 0.64;
+        const GAP: f32 = 3.0;
+
+        // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
+        let full_chars = name.chars().count() + 1 + size.chars().count();
+        let Some(font_size) = label_font_size(full_chars.max(1), rect) else {
+            return 0.0;
+        };
+        let origin = label_origin(rect);
+
+        // The right-edge cap: the size never goes past here, so the name is
+        // clipped to leave room for it. Show the size only if the name still
+        // gets at least one character beside it.
+        let right_cap = (rect.x + rect.width - 4.0 - estimated_width(size, SIZE_FONT)).round();
+        let name_budget = right_cap - GAP - origin.x;
+        let show_size = name_budget >= CHAR_WIDTH * font_size;
+
+        let name_avail = if show_size { name_budget } else { rect.width - 4.0 };
+        let max_name_chars = (name_avail / (CHAR_WIDTH * font_size)).max(0.0) as usize;
+        let name_shown: String = name.chars().take(max_name_chars).collect();
+        frame.fill_text(Text {
+            content: name_shown.clone(),
+            position: origin,
+            color,
+            size: Pixels(font_size),
+            shaping: iced::widget::text::Shaping::Advanced,
+            ..Text::default()
+        });
+
+        if show_size {
+            // Hug the name's estimated end, but never past the right cap.
+            let after_name =
+                origin.x + name_shown.chars().count() as f32 * NAME_HUG_WIDTH * font_size + GAP;
+            let size_x = after_name.min(right_cap).round();
+            frame.fill_text(Text {
+                content: size.to_string(),
+                // Baseline-align with the name: a glyph's ascent is ≈ 0.8 of
+                // its font size, so dropping the top by 0.8 of the size
+                // difference lines the baselines up; round to a whole pixel for
+                // atlas stability (see [`label_origin`]).
+                position: Point::new(size_x, origin.y + ((font_size - SIZE_FONT) * 0.8).round()),
+                color: muted(color),
+                size: Pixels(SIZE_FONT),
+                shaping: iced::widget::text::Shaping::Advanced,
+                ..Text::default()
+            });
+        }
+        font_size
     }
 
     /// Brick label; the font size is fitted per brick rather than globally
@@ -459,6 +542,28 @@ fn label_font_size(char_count: usize, rect: Rectangle) -> Option<f32> {
     // Down to an even integer: fewer distinct font sizes — a more stable atlas.
     let font_size = (fit.clamp(MIN_FONT, MAX_FONT) / 2.0).floor() * 2.0;
     (rect.height >= font_size + 8.0 && rect.width >= 2.0 * font_size).then_some(font_size)
+}
+
+/// Font size of the size caption — small and fixed, so it reads as the lesser
+/// part of the label.
+const SIZE_FONT: f32 = 10.0;
+
+/// A muted variant of a label color: same hue, lower opacity, so it reads as
+/// less prominent over the brick fill in either theme.
+fn muted(color: Color) -> Color {
+    Color {
+        a: color.a * 0.6,
+        ..color
+    }
+}
+
+/// Estimated width (px) of `content` at `font_size` from the average glyph
+/// width [`CHAR_WIDTH`]. Coarse for proportional fonts, but used only for the
+/// short size string and the name clip below — never for inline placement that
+/// would need a real measurement. (Measuring with `iced`'s text shaper inside
+/// the canvas draw corrupts the glyph renderer, so we deliberately do not.)
+fn estimated_width(content: &str, font_size: f32) -> f32 {
+    content.chars().count() as f32 * CHAR_WIDTH * font_size
 }
 
 /// Stiffness of the brick spring, s⁻¹: a critically damped spring crosses
