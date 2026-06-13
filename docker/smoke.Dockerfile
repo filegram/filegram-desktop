@@ -8,7 +8,10 @@
 # non-zero and CI goes red.
 
 # ---- build stage ----------------------------------------------------------
-FROM rust:1.85-bookworm AS build
+# Latest stable, mirroring CI's dtolnay/rust-toolchain@stable. The MSRV in
+# Cargo.toml (1.85) is stale: iced 0.14 / wgpu 27 need rustc 1.88, so a
+# pinned 1.85 image fails `cargo build --locked` at resolve time.
+FROM rust:bookworm AS build
 WORKDIR /src
 # The same system deps the CI Linux build needs (see build.yml).
 RUN apt-get update && apt-get install -y --no-install-recommends \
