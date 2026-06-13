@@ -411,6 +411,11 @@ impl DiskMap<'_> {
         /// than the fit [`CHAR_WIDTH`] so the (estimated) name end clears the
         /// real glyphs without leaving a big gap.
         const NAME_HUG_WIDTH: f32 = 0.64;
+        /// Per-char width for *reserving* the size's space at the right edge —
+        /// deliberately generous (the size's unit letters, `MB`/`GB`/`TB`, run
+        /// wider than the average [`CHAR_WIDTH`]) so the cap always leaves
+        /// enough room and the size never paints into the right padding.
+        const SIZE_RESERVE_WIDTH: f32 = 0.72;
         const GAP: f32 = 3.0;
 
         // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
@@ -425,7 +430,8 @@ impl DiskMap<'_> {
         // gets at least one character beside it. `floor` keeps the cap
         // conservative — rounding could nudge it toward the edge and let the
         // size overrun the right padding.
-        let right_cap = (rect.x + rect.width - 4.0 - estimated_width(&size, SIZE_FONT)).floor();
+        let size_reserve = size.chars().count() as f32 * SIZE_RESERVE_WIDTH * SIZE_FONT;
+        let right_cap = (rect.x + rect.width - 4.0 - size_reserve).floor();
         let name_budget = right_cap - GAP - origin.x;
         let show_size = name_budget >= CHAR_WIDTH * font_size;
 
@@ -570,15 +576,6 @@ fn muted(color: Color) -> Color {
         a: color.a * 0.6,
         ..color
     }
-}
-
-/// Estimated width (px) of `content` at `font_size` from the average glyph
-/// width [`CHAR_WIDTH`]. Coarse for proportional fonts, but used only for the
-/// short size string and the name clip below — never for inline placement that
-/// would need a real measurement. (Measuring with `iced`'s text shaper inside
-/// the canvas draw corrupts the glyph renderer, so we deliberately do not.)
-fn estimated_width(content: &str, font_size: f32) -> f32 {
-    content.chars().count() as f32 * CHAR_WIDTH * font_size
 }
 
 /// Stiffness of the brick spring, s⁻¹: a critically damped spring crosses
