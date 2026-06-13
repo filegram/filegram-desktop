@@ -411,6 +411,11 @@ impl DiskMap<'_> {
             width: rect.width - 1.0 - 8.0,
             height: rect.height - (4.0 + font_size + 4.0),
         };
+        // A tiny brick previews nothing: skip the recursion outright. The
+        // same guard inside `nested_silhouettes` covers the deeper levels.
+        if content.width < MIN_CONTENT_SIDE || content.height < MIN_CONTENT_SIDE {
+            return;
+        }
         let mut silhouettes = Vec::new();
         state.nested_silhouettes(self.tree, dir, frame.size(), content, 1, &mut silhouettes);
         for (brick, silhouette, level) in silhouettes {
