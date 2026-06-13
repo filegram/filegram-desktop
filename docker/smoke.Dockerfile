@@ -48,6 +48,12 @@ RUN mkdir -p /smoke-fixture/sub \
     && head -c 4096  /dev/zero > /smoke-fixture/small.bin \
     && head -c 8192  /dev/zero > /smoke-fixture/sub/nested.bin
 
+# A private runtime dir: the XDG spec wants 0700, but /tmp is world-writable
+# (1777), which Wayland/XDG probes may reject or warn about — and winit can
+# still probe Wayland even with X11 forced. A dedicated 0700 dir keeps the
+# container deterministic.
+RUN mkdir -p /run/xdg && chmod 700 /run/xdg
+
 # There is no GPU and no Wayland compositor in here: force lavapipe as the
 # only Vulkan device, the Vulkan backend in wgpu, and winit's X11 backend.
 # FILEGRAM_SMOKE_PATH makes the app scan the fixture and render its treemap
@@ -56,7 +62,7 @@ ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
     WGPU_BACKEND=vulkan \
     WINIT_UNIX_BACKEND=x11 \
     LIBGL_ALWAYS_SOFTWARE=1 \
-    XDG_RUNTIME_DIR=/tmp \
+    XDG_RUNTIME_DIR=/run/xdg \
     FILEGRAM_SMOKE=1 \
     FILEGRAM_SMOKE_PATH=/smoke-fixture
 
