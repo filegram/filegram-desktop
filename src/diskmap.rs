@@ -91,6 +91,17 @@ fn palette(theme: &iced::Theme) -> &'static BrickPalette {
     }
 }
 
+/// The color a brick's caption is drawn in (folder vs file). Lets overlays
+/// drawn over a brick — e.g. the hover action icons — match the label text.
+pub fn brick_text_color(theme: &iced::Theme, is_dir: bool) -> Color {
+    let palette = palette(theme);
+    if is_dir {
+        palette.folder_text
+    } else {
+        palette.file_text
+    }
+}
+
 /// Margin between the canvas edges and the brick area.
 const MAP_MARGIN: f32 = 4.0;
 const CORNER_RADIUS: f32 = 8.0;
