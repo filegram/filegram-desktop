@@ -428,11 +428,15 @@ impl DiskMap<'_> {
         let name_budget = right_cap - GAP - origin.x;
         let show_size = name_budget >= CHAR_WIDTH * font_size;
 
-        let name_avail = if show_size { name_budget } else { rect.width - 4.0 };
+        // Width available to the name, measured from `origin.x` like
+        // `name_budget`: when the size is hidden the name runs to the right
+        // padding (the brick width less the 4 px pad on each side).
+        let name_avail = if show_size { name_budget } else { rect.width - 8.0 };
         let max_name_chars = (name_avail / (CHAR_WIDTH * font_size)).max(0.0) as usize;
         let name_shown: String = name.chars().take(max_name_chars).collect();
+        let shown_chars = name_shown.chars().count();
         frame.fill_text(Text {
-            content: name_shown.clone(),
+            content: name_shown,
             position: origin,
             color,
             size: Pixels(font_size),
@@ -442,8 +446,7 @@ impl DiskMap<'_> {
 
         if show_size {
             // Hug the name's estimated end, but never past the right cap.
-            let after_name =
-                origin.x + name_shown.chars().count() as f32 * NAME_HUG_WIDTH * font_size + GAP;
+            let after_name = origin.x + shown_chars as f32 * NAME_HUG_WIDTH * font_size + GAP;
             let size_x = after_name.min(right_cap).round();
             frame.fill_text(Text {
                 content: size.to_string(),
