@@ -410,6 +410,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             // scan back onto the screen.
             app.cancel.store(true, Ordering::Relaxed);
             app.scan = ScanState::Idle;
+            // Drop the (potentially large) tree and its cached geometry: the
+            // start screen does not use them, so holding on while the user
+            // pauses there would waste memory. A fresh scan rebuilds both.
+            app.tree = None;
+            app.cache.clear();
             Task::none()
         }
         Message::Rescan => {
@@ -1069,7 +1074,7 @@ fn delete_dialog(app: &App, target: NodeId) -> Element<'_, Message> {
 
 /// Bottom status bar: on the left — the active node (or the current folder)
 /// with its size, on the right — mouse button hints. The disk-usage gauge
-/// lives in the top bar of the finished map instead.
+/// lives in the top bar instead (shared by the scan and finished-map screens).
 fn status_bar(app: &App) -> Element<'_, Message> {
     let tree = app.tree.as_ref().expect("status_bar requires a tree");
     let node = tree.node(app.active.unwrap_or(app.current));
@@ -1386,7 +1391,7 @@ const SPINNER_PERIOD_SECS: f32 = 0.9;
 /// full-circle track.
 const SPINNER_ARC: f32 = std::f32::consts::TAU * 0.75;
 
-/// An indeterminate loading spinner shown next to the file counter while a
+/// An indeterminate loading spinner shown inside the Cancel button while a
 /// scan runs. Its own tiny canvas so it can repaint — and keep requesting the
 /// next frame — every frame, independent of the map's animation state.
 struct Spinner;
@@ -1410,8 +1415,11 @@ impl canvas::Program<Message> for Spinner {
     ) -> Option<canvas::Action<Message>> {
         if let canvas::Event::Window(iced::window::Event::RedrawRequested(now)) = event {
             let start = *state.start.get_or_insert(*now);
-            state.angle =
-                now.duration_since(start).as_secs_f32() / SPINNER_PERIOD_SECS * std::f32::consts::TAU;
+            // Wrapped into a single turn so the angle stays small however long
+            // the scan runs — an unbounded f32 would lose precision and stutter.
+            state.angle = (now.duration_since(start).as_secs_f32() / SPINNER_PERIOD_SECS
+                * std::f32::consts::TAU)
+                .rem_euclid(std::f32::consts::TAU);
             // Keep spinning for as long as the spinner is on screen.
             return Some(canvas::Action::request_redraw());
         }
