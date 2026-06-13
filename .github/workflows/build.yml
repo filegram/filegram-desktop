@@ -195,6 +195,30 @@ jobs:
             filegram-linux-x86_64.rpm
             filegram-linux-x86_64.AppImage
 
+  test:
+    name: Unit tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-ubuntu-latest
+
+      # Compiling the crate (and iced) for the tests needs the same X/Wayland
+      # dev libraries the Linux build does.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
+
+      - name: Run tests
+        run: cargo test --locked
+
   smoke-test:
     name: Headless smoke test (Linux container)
     runs-on: ubuntu-latest
