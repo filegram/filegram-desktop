@@ -380,7 +380,7 @@ impl DiskMap<'_> {
         frame.stroke(&path, Stroke::default().with_color(stroke).with_width(1.0));
 
         let (name, size) = brick_caption(self.tree, id);
-        let font_size = self.draw_brick_label(frame, &name, &size, text_color, rect);
+        let font_size = self.draw_brick_label(frame, &name, size, text_color, rect);
 
         if node.is_dir {
             self.draw_nested(state, frame, palette, id, rect, font_size);
@@ -404,7 +404,7 @@ impl DiskMap<'_> {
         &self,
         frame: &mut Frame,
         name: &str,
-        size: &str,
+        size: String,
         color: Color,
         rect: Rectangle,
     ) -> f32 {
@@ -423,8 +423,10 @@ impl DiskMap<'_> {
 
         // The right-edge cap: the size never goes past here, so the name is
         // clipped to leave room for it. Show the size only if the name still
-        // gets at least one character beside it.
-        let right_cap = (rect.x + rect.width - 4.0 - estimated_width(size, SIZE_FONT)).round();
+        // gets at least one character beside it. `floor` keeps the cap
+        // conservative — rounding could nudge it toward the edge and let the
+        // size overrun the right padding.
+        let right_cap = (rect.x + rect.width - 4.0 - estimated_width(&size, SIZE_FONT)).floor();
         let name_budget = right_cap - GAP - origin.x;
         let show_size = name_budget >= CHAR_WIDTH * font_size;
 
@@ -449,7 +451,7 @@ impl DiskMap<'_> {
             let after_name = origin.x + shown_chars as f32 * NAME_HUG_WIDTH * font_size + GAP;
             let size_x = after_name.min(right_cap).round();
             frame.fill_text(Text {
-                content: size.to_string(),
+                content: size,
                 // Baseline-align with the name: a glyph's ascent is ≈ 0.8 of
                 // its font size, so dropping the top by 0.8 of the size
                 // difference lines the baselines up; round to a whole pixel for
