@@ -5,7 +5,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 use iced::widget::canvas::{self, Action, Event, Frame, Path, Stroke, Text};
@@ -259,9 +258,9 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
 /// The brick caption split into its two parts: the name (drawn in the
 /// brick's text color) and the human-readable size (drawn smaller and
 /// muted). The folder entry count lives in the status bar, not on the brick.
-fn brick_caption(tree: &FsTree, id: NodeId) -> (Arc<str>, String) {
+fn brick_caption(tree: &FsTree, id: NodeId) -> (&str, String) {
     let node = tree.node(id);
-    (node.name.clone(), crate::format::human_size(node.size))
+    (&node.name, crate::format::human_size(node.size))
 }
 
 /// The full caption as one string — for fitting the font and deciding
@@ -380,7 +379,7 @@ impl DiskMap<'_> {
         frame.stroke(&path, Stroke::default().with_color(stroke).with_width(1.0));
 
         let (name, size) = brick_caption(self.tree, id);
-        let font_size = self.draw_brick_label(frame, &name, size, text_color, rect);
+        let font_size = self.draw_brick_label(frame, name, size, text_color, rect);
 
         if node.is_dir {
             self.draw_nested(state, frame, palette, id, rect, font_size);
