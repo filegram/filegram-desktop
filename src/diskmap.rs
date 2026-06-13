@@ -394,7 +394,7 @@ impl DiskMap<'_> {
     }
 
     /// Draws a node brick's caption: the name in `color` at the fitted size in
-    /// the geometric center of the brick, and — on bricks at least two
+    /// the geometric center of the brick, and — on bricks at least three
     /// name-font lines tall — the size small and muted in the top-left corner.
     /// For a folder, `files` carries its file count, appended to the size line
     /// (`"1.2 MB · 42 files"`) when the combined text fits the brick width.
@@ -462,8 +462,9 @@ impl DiskMap<'_> {
         // measure inside the draw corrupts the renderer) and round the
         // top-left origin to whole pixels, keeping `Text`'s default Left/Top.
         let max_name_chars = ((rect.width - 8.0) / (CHAR_WIDTH * font_size)).max(0.0) as usize;
-        let name_shown: String = name.chars().take(max_name_chars).collect();
-        let shown_chars = name.chars().count().min(max_name_chars);
+        // Reuse `name_chars` rather than re-scanning the UTF-8 every redraw.
+        let shown_chars = name_chars.min(max_name_chars);
+        let name_shown: String = name.chars().take(shown_chars).collect();
         let name_w = shown_chars as f32 * CHAR_WIDTH * font_size;
         frame.fill_text(Text {
             content: name_shown,
