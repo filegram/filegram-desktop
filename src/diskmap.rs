@@ -140,17 +140,19 @@ pub enum Brick {
 /// is below this fraction goes into the rest tail.
 const REST_SHARE: f32 = 0.05;
 
+/// "N word" with a naive English plural (an "s" suffix unless N == 1).
+fn plural(n: u64, word: &str) -> String {
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+}
+
 /// The rest brick caption: combined size and the collapsed entry counts.
 fn rest_label(files: usize, dirs: usize, size: u64) -> String {
-    let plural = |n: usize, word: &str| {
-        format!("{n} {word}{}", if n == 1 { "" } else { "s" })
-    };
     let mut parts = Vec::new();
     if files > 0 {
-        parts.push(plural(files, "file"));
+        parts.push(plural(files as u64, "file"));
     }
     if dirs > 0 {
-        parts.push(plural(dirs, "folder"));
+        parts.push(plural(dirs as u64, "folder"));
     }
     format!(
         "… {} ({})",
@@ -378,102 +380,102 @@ impl DiskMap<'_> {
         frame.fill(&path, fill);
         frame.stroke(&path, Stroke::default().with_color(stroke).with_width(1.0));
 
-        let (name, size) = brick_caption(self.tree, id);
-        let font_size = self.draw_brick_label(frame, name, size, text_color, rect);
-
+        // Silhouettes first so the caption (size in the corner, name centered)
+        // draws on top of them.
         if node.is_dir {
-            self.draw_nested(state, frame, palette, id, rect, font_size);
+            self.draw_nested(state, frame, palette, id, rect);
         }
+
+        let (name, size) = brick_caption(self.tree, id);
+        // Folders carry their file count beside the size when it fits; files
+        // have no count to show.
+        let files = node.is_dir.then_some(node.files);
+        self.draw_brick_label(frame, name, size, files, text_color, rect);
     }
 
-    /// Draws a node brick's caption on one line: the name in `color` at the
-    /// fitted size on the left, and the size smaller and muted just after it.
+    /// Draws a node brick's caption: the name in `color` at the fitted size in
+    /// the geometric center of the brick, and — on bricks at least two
+    /// name-font lines tall — the size small and muted in the top-left corner.
+    /// For a folder, `files` carries its file count, appended to the size line
+    /// (`"1.2 MB · 42 files"`) when the combined text fits the brick width.
     /// The name font is fitted to the full "name size" caption so the
-    /// panel-visibility decision in [`has_label`] stays consistent. Returns the
-    /// name font size.
+    /// panel-visibility decision in [`has_label`] stays consistent. The caption
+    /// draws over the nested silhouettes, which now fill the brick to its top.
     ///
-    /// The size follows the name but is never drawn past the right edge. We
-    /// can't measure the name (shaping text inside the canvas draw corrupts the
-    /// glyph renderer), so its end is *estimated*; the estimate errs cumulatively
-    /// with length, but the size only hugs *short* names (long ones reach the
-    /// edge first), where the error — and any overlap risk — is small. The
-    /// estimate uses a slightly wider per-char width than the fit ([`CHAR_WIDTH`])
-    /// as a safety margin against painting over the name's tail.
+    /// The name is centered by an *estimated* offset rounded to whole pixels,
+    /// not by [`Text`]'s own alignment (which lands glyphs on fractional pixels
+    /// and shreds the glyph atlas) nor by a real measurement (shaping text to
+    /// measure it inside the canvas draw corrupts the renderer). The fit already
+    /// guarantees the *full* caption clears the brick width, so the shorter name
+    /// alone always fits; the truncation below is only a defensive guard.
     fn draw_brick_label(
         &self,
         frame: &mut Frame,
         name: &str,
         size: String,
+        files: Option<u64>,
         color: Color,
         rect: Rectangle,
-    ) -> f32 {
-        /// Per-char width for placing the size after the name — a touch wider
-        /// than the fit [`CHAR_WIDTH`] so the (estimated) name end clears the
-        /// real glyphs without leaving a big gap.
-        const NAME_HUG_WIDTH: f32 = 0.64;
-        /// Per-char width for *reserving* the size's space at the right edge —
-        /// deliberately generous (the size's unit letters, `MB`/`GB`/`TB`, run
-        /// wider than the average [`CHAR_WIDTH`]) so the cap always leaves
-        /// enough room and the size never paints into the right padding.
-        const SIZE_RESERVE_WIDTH: f32 = 0.72;
-        const GAP: f32 = 3.0;
-
-        // Count characters once, not bytes: Cyrillic takes 2 bytes per glyph in
-        // UTF-8. Reused below for the cap and the placement, avoiding repeated
-        // O(n) UTF-8 scans of the same string every redraw.
+    ) {
+        // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in
+        // UTF-8. The font is fitted to the full caption so a brick draws a
+        // label exactly when `has_label` (which measures the same string) does.
         let name_chars = name.chars().count();
         let size_chars = size.chars().count();
         let full_chars = name_chars + 1 + size_chars;
         let Some(font_size) = label_font_size(full_chars.max(1), rect) else {
-            return 0.0;
+            return;
         };
-        let origin = label_origin(rect);
 
-        // The right-edge cap: the size never goes past here, so the name is
-        // clipped to leave room for it. Show the size only if the name still
-        // gets at least one character beside it. `floor` keeps the cap
-        // conservative — rounding could nudge it toward the edge and let the
-        // size overrun the right padding.
-        let size_reserve = size_chars as f32 * SIZE_RESERVE_WIDTH * SIZE_FONT;
-        let right_cap = (rect.x + rect.width - 4.0 - size_reserve).floor();
-        let name_budget = right_cap - GAP - origin.x;
-        let show_size = name_budget >= CHAR_WIDTH * font_size;
-
-        // Width available to the name, measured from `origin.x` like
-        // `name_budget`: when the size is hidden the name runs to the right
-        // padding (the brick width less the 4 px pad on each side).
-        let name_avail = if show_size { name_budget } else { rect.width - 8.0 };
-        let max_name_chars = (name_avail / (CHAR_WIDTH * font_size)).max(0.0) as usize;
-        let name_shown: String = name.chars().take(max_name_chars).collect();
-        // `take` yields at most `max_name_chars` of the name's `name_chars`.
-        let shown_chars = name_chars.min(max_name_chars);
-        frame.fill_text(Text {
-            content: name_shown,
-            position: origin,
-            color,
-            size: Pixels(font_size),
-            shaping: iced::widget::text::Shaping::Advanced,
-            ..Text::default()
-        });
-
-        if show_size {
-            // Hug the name's estimated end, but never past the right cap.
-            let after_name = origin.x + shown_chars as f32 * NAME_HUG_WIDTH * font_size + GAP;
-            let size_x = after_name.min(right_cap).round();
+        // Size: top-left corner, small and muted — the lesser part of the label.
+        // Dropped on short bricks (height below three name-font lines), where it
+        // would crowd the centered name.
+        if rect.height >= 3.0 * font_size {
+            // For a folder, append the file count when the widened line still
+            // clears the brick width (4 px pad each side); estimate the width
+            // like elsewhere — measuring by shaping inside the draw is unsafe.
+            let size_line = match files {
+                Some(n) => {
+                    let with_files = format!("{size} · {}", plural(n, "file"));
+                    let fits = with_files.chars().count() as f32 * CHAR_WIDTH * SIZE_FONT
+                        <= rect.width - 8.0;
+                    if fits { with_files } else { size }
+                }
+                None => size,
+            };
             frame.fill_text(Text {
-                content: size,
-                // Baseline-align with the name: a glyph's ascent is ≈ 0.8 of
-                // its font size, so dropping the top by 0.8 of the size
-                // difference lines the baselines up; round to a whole pixel for
-                // atlas stability (see [`label_origin`]).
-                position: Point::new(size_x, origin.y + ((font_size - SIZE_FONT) * 0.8).round()),
+                content: size_line,
+                position: label_origin(rect),
                 color: muted(color),
                 size: Pixels(SIZE_FONT),
                 shaping: iced::widget::text::Shaping::Advanced,
                 ..Text::default()
             });
         }
-        font_size
+
+        // Name: centered in the brick. Centering is done by hand — `Text`'s own
+        // `Alignment::Center` subtracts the shaped width/2 from the position,
+        // landing glyphs on fractional pixels; that splits each letter across
+        // subpixel bins and overflows the glyph atlas (text turns to mush, see
+        // [`label_origin`] and [`label_font_size`]). Instead we *estimate* the
+        // name width ([`CHAR_WIDTH`] per char, like elsewhere — shaping to
+        // measure inside the draw corrupts the renderer) and round the
+        // top-left origin to whole pixels, keeping `Text`'s default Left/Top.
+        let max_name_chars = ((rect.width - 8.0) / (CHAR_WIDTH * font_size)).max(0.0) as usize;
+        let name_shown: String = name.chars().take(max_name_chars).collect();
+        let shown_chars = name.chars().count().min(max_name_chars);
+        let name_w = shown_chars as f32 * CHAR_WIDTH * font_size;
+        frame.fill_text(Text {
+            content: name_shown,
+            position: Point::new(
+                (rect.x + (rect.width - name_w) / 2.0).round(),
+                (rect.y + (rect.height - font_size) / 2.0).round(),
+            ),
+            color,
+            size: Pixels(font_size),
+            shaping: iced::widget::text::Shaping::Advanced,
+            ..Text::default()
+        });
     }
 
     /// Brick label; the font size is fitted per brick rather than globally
@@ -511,14 +513,16 @@ impl DiskMap<'_> {
         palette: &BrickPalette,
         dir: NodeId,
         rect: Rectangle,
-        font_size: f32,
     ) {
-        // Insets for the header: top += 4 + textSize + 4; left += 1; right −= 8.
+        // The silhouettes fill the brick to its top edge (as they already do at
+        // the bottom): the size line and centered name float over them rather
+        // than reserving a header band. Horizontal frame only — left += 1,
+        // right −= 8.
         let content = Rectangle {
             x: rect.x + 1.0,
-            y: rect.y + 4.0 + font_size + 4.0,
+            y: rect.y,
             width: rect.width - 1.0 - 8.0,
-            height: rect.height - (4.0 + font_size + 4.0),
+            height: rect.height,
         };
         // A tiny brick previews nothing: skip the recursion outright. The
         // same guard inside `nested_silhouettes` covers the deeper levels.
