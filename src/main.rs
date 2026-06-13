@@ -14,6 +14,7 @@ mod treemap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use iced::theme::{Mode, Palette};
 use iced::widget::{
@@ -33,6 +34,11 @@ use scanner::ScanEvent;
 /// Maximum number of characters in the path bar above the map (then `/../` compression).
 const PATH_BAR_MAX_CHARS: usize = 80;
 
+/// Fixed content height of the bottom bars, sized to the mouse-hint icon so
+/// the bar — and the map canvas above it — keeps a constant size whether or
+/// not the hints are shown; a fluctuating canvas size snaps the zoom tween.
+const BAR_CONTENT_HEIGHT: f32 = 20.0;
+
 /// Mouse icons for the status bar hints: the pressed button is filled.
 const LMB_ICON: &[u8] = include_bytes!("../assets/lmb.svg");
 const RMB_ICON: &[u8] = include_bytes!("../assets/rmb.svg");
@@ -43,6 +49,10 @@ const TRASH_ICON: &[u8] = include_bytes!("../assets/trash.svg");
 /// brick layout for Select folder.
 const RESCAN_ICON: &[u8] = include_bytes!("../assets/rescan.svg");
 const BRICKS_ICON: &[u8] = include_bytes!("../assets/bricks.svg");
+/// A stacked-layers glyph next to the file counter, and a pie-chart glyph
+/// next to the collected size, in the scan tally.
+const LAYERS_ICON: &[u8] = include_bytes!("../assets/layers.svg");
+const SIZE_ICON: &[u8] = include_bytes!("../assets/pie-chart.svg");
 /// An up arrow for the icon-only Go-up button next to Rescan; shown only
 /// when there is a parent to ascend to.
 const UP_ICON: &[u8] = include_bytes!("../assets/up.svg");
@@ -335,7 +345,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                         app.cache.clear();
                     }
                 }
-                ScanEvent::Finished(tree) => {
+                // A late finish after the scan was abandoned (NewScan → Idle)
+                // is ignored: only a still-running scan settles into the map.
+                ScanEvent::Finished(tree) if matches!(app.scan, ScanState::Running { .. }) => {
                     // NodeIds are stable across snapshots: keep any navigation
                     // made during the scan.
                     if app.tree.is_none() {
@@ -348,6 +360,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     app.scan = ScanState::Done;
                     app.cache.clear();
                 }
+                ScanEvent::Finished(_) => {}
             }
             Task::none()
         }
@@ -384,7 +397,16 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::NewScan => {
+            // Reachable mid-scan now that the top bar is shared: stop the
+            // in-flight scan so a late Finished cannot drag the abandoned
+            // scan back onto the screen.
+            app.cancel.store(true, Ordering::Relaxed);
             app.scan = ScanState::Idle;
+            // Drop the (potentially large) tree and its cached geometry: the
+            // start screen does not use them, so holding on while the user
+            // pauses there would waste memory. A fresh scan rebuilds both.
+            app.tree = None;
+            app.cache.clear();
             Task::none()
         }
         Message::Rescan => {
@@ -882,63 +904,101 @@ fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Mess
         )
         .into();
     }
-    let bar = container(
+    // The same top bar as the finished map (Select-folder, current path and
+    // disk-usage gauge). The trailing slot holds the live tally (file count
+    // and collected size) before a Cancel button that carries the spinner.
+    let tree = app.tree.as_ref().expect("running_view map branch requires a tree");
+    let total = tree.node(tree.root).size;
+    let bar = map_top_bar(
+        app,
         row![
-            scan_label(s.scanning_files, files, 16.0),
-            container(text(format::shorten_path(current, PATH_BAR_MAX_CHARS)).style(muted_text))
-                .width(Fill)
-                .padding(8),
-            button(text(s.cancel))
-                .style(chrome_button)
-                .on_press(Message::CancelScan),
+            scan_stats(files, total),
+            button(
+                row![spinner(), text(s.cancel)]
+                    .spacing(8)
+                    .align_y(Center)
+            )
+            .style(chrome_button)
+            .on_press(Message::CancelScan),
         ]
-        .spacing(8)
-        .align_y(Center),
-    )
-    .padding(8)
-    .style(bar_style);
-    column![bar, map_canvas(app), status_bar(app)].into()
+        .spacing(16)
+        .align_y(Center)
+        .into(),
+    );
+    // The folder being scanned right now fills the bottom bar, vertically
+    // centered within the fixed bar height.
+    let mut footer = row![
+        container(text(format::shorten_path(current, PATH_BAR_MAX_CHARS)).style(muted_text))
+            .width(Fill)
+            .height(Fill)
+            .align_y(Center),
+    ]
+    .spacing(16)
+    .height(BAR_CONTENT_HEIGHT)
+    .align_y(Center);
+    // The same mouse hints as the finished map: the growing map is already
+    // navigable mid-scan, so a hovered brick can be entered or ascended from.
+    footer = footer.extend(mouse_hints(app));
+    let footer = container(footer).padding(8).style(bar_style);
+    column![bar, map_canvas(app), footer].into()
+}
+
+/// The top bar shared by the growing-scan and finished-map screens: the
+/// Select-folder button and current-folder path on the left, the disk-usage
+/// gauge centered between equal-width side zones, and the navigation buttons
+/// on the right — the Go-up button (only with a parent to ascend to) followed
+/// by a screen-specific `trailing` action (Rescan on the map, Cancel mid-scan).
+fn map_top_bar<'a>(app: &'a App, trailing: Element<'a, Message>) -> Element<'a, Message> {
+    let tree = app.tree.as_ref().expect("map_top_bar requires a tree");
+    let current_path = tree.node(app.current).path.display().to_string();
+    let s = strings(app);
+    let mut top = row![row![
+        chrome_icon_button(HOME_ICON, s.new_scan, Message::NewScan),
+        container(
+            text(format::shorten_path(&current_path, PATH_BAR_MAX_CHARS))
+                .style(muted_text)
+                .wrapping(iced::widget::text::Wrapping::None)
+        )
+        .padding(8),
+    ]
+    .spacing(8)
+    .align_y(Center)
+    .width(Fill)]
+    .spacing(8)
+    .align_y(Center);
+    if let Some(usage_bar) = disk_usage_bar(app) {
+        top = top.push(usage_bar);
+    }
+    let mut actions = row![].spacing(8);
+    if !app.nav_stack.is_empty() {
+        actions = actions.push(chrome_icon_only_button(UP_ICON, s.go_up, Message::GoUp));
+    }
+    actions = actions.push(trailing);
+    container(top.push(container(actions).width(Fill).align_x(iced::Right)))
+        .padding(8)
+        .style(bar_style)
+        .into()
 }
 
 fn map_view(app: &App) -> Element<'_, Message> {
     let Some(tree) = &app.tree else {
         return idle_view(app);
     };
-    let current_path = tree.node(app.current).path.display().to_string();
     let s = strings(app);
-    let top = row![
+    // The scan tally stays in the top bar after the scan, before Rescan, so
+    // the file count and collected size don't vanish with the final map. Both
+    // come from the tree root, so they stay consistent after deletions.
+    let root = tree.node(tree.root);
+    let bar = map_top_bar(
+        app,
         row![
-            chrome_icon_button(HOME_ICON, s.new_scan, Message::NewScan),
-            container(
-                text(format::shorten_path(&current_path, PATH_BAR_MAX_CHARS))
-                    .style(muted_text)
-                    .wrapping(iced::widget::text::Wrapping::None)
-            )
-            .padding(8),
+            scan_stats(root.files, root.size),
+            chrome_icon_only_button(RESCAN_ICON, s.rescan, Message::Rescan),
         ]
-        .spacing(8)
+        .spacing(16)
         .align_y(Center)
-        .width(Fill),
-    ]
-    .spacing(8)
-    .align_y(Center);
-    // The Go-up button only appears when there is a parent to ascend to;
-    // an empty navigation stack hides it rather than greying it out.
-    let mut actions = row![].spacing(8);
-    if !app.nav_stack.is_empty() {
-        actions = actions.push(chrome_icon_only_button(UP_ICON, s.go_up, Message::GoUp));
-    }
-    actions = actions.push(chrome_icon_only_button(RESCAN_ICON, s.rescan, Message::Rescan));
-    let bar = container(
-        top.push(
-            container(actions)
-                .width(Fill)
-                .align_x(iced::Right),
-        ),
-    )
-    .padding(8)
-    .style(bar_style);
-
+        .into(),
+    );
     let content = column![bar, map_canvas(app), status_bar(app)];
     // The confirmation dialog covers the whole window with an opaque dimmed
     // backdrop; a click outside the card cancels.
@@ -1000,11 +1060,9 @@ fn delete_dialog(app: &App, target: NodeId) -> Element<'_, Message> {
     .into()
 }
 
-/// Bottom status bar: on the far left — the disk-usage bar of the scan
-/// root's volume, then the active node (or the current folder) with its
-/// size, on the right — mouse button hints. The usage bar only appears
-/// with the final map: mid-scan readings would drift while the map is
-/// still growing.
+/// Bottom status bar: on the left — the active node (or the current folder)
+/// with its size, on the right — mouse button hints. The disk-usage gauge
+/// lives in the top bar instead (shared by the scan and finished-map screens).
 fn status_bar(app: &App) -> Element<'_, Message> {
     let tree = app.tree.as_ref().expect("status_bar requires a tree");
     let node = tree.node(app.active.unwrap_or(app.current));
@@ -1027,22 +1085,17 @@ fn status_bar(app: &App) -> Element<'_, Message> {
             node.name,
         )
     };
-    let mut content = row![].spacing(16).align_y(Center);
-    if matches!(&app.scan, ScanState::Done)
-        && let Some(usage_bar) = disk_usage_bar(app)
-    {
-        content = content.push(usage_bar);
-    }
-    content =
-        content.push(container(text(size_label).size(14).style(muted_text)).width(Fill));
+    // A fixed content height (the mouse-hint icon's) keeps the bar — and so
+    // the map canvas above it — the exact same size whether or not the hints
+    // are shown. Without it the bar would shrink the moment a navigation
+    // clears `active`, resizing the canvas and snapping the zoom transition.
+    let mut content = row![container(text(size_label).size(14).style(muted_text)).width(Fill)]
+        .spacing(16)
+        .height(BAR_CONTENT_HEIGHT)
+        .align_y(Center);
     // The mouse hints only make sense while the cursor is over a brick:
     // `active` is set on hover and cleared when the cursor leaves the map.
-    if app.active.is_some() {
-        content = content.push(mouse_hint(LMB_ICON, strings(app).hint_select));
-        if !app.nav_stack.is_empty() {
-            content = content.push(mouse_hint(RMB_ICON, strings(app).hint_go_up));
-        }
-    }
+    content = content.extend(mouse_hints(app));
     container(content)
         .padding(8)
         .style(bar_style)
@@ -1288,11 +1341,34 @@ fn mouse_hint<'a>(icon: &'static [u8], action: &'a str) -> Element<'a, Message> 
     .into()
 }
 
+/// The LMB/RMB mouse hints for the bottom bars: present only while a brick is
+/// hovered (`active`), with the Go-up hint gated on having a parent to ascend
+/// to. Shared by the scan footer and the status bar so the two cannot drift.
+fn mouse_hints(app: &App) -> Vec<Element<'_, Message>> {
+    if app.active.is_none() {
+        return Vec::new();
+    }
+    let s = strings(app);
+    let mut hints = vec![mouse_hint(LMB_ICON, s.hint_select)];
+    if !app.nav_stack.is_empty() {
+        hints.push(mouse_hint(RMB_ICON, s.hint_go_up));
+    }
+    hints
+}
+
 /// An embedded SVG icon tinted with the theme's text color.
 /// `Svg` is invariant over its lifetime, so the caller picks it.
 fn themed_icon<'a>(icon: &'static [u8]) -> svg::Svg<'a> {
     svg(svg::Handle::from_memory(icon)).style(|theme: &Theme, _status| svg::Style {
         color: Some(theme.palette().text),
+    })
+}
+
+/// Like [`themed_icon`], but tinted with the muted caption color so the icon
+/// matches an adjacent [`muted_text`] label (e.g. the file counter).
+fn muted_icon<'a>(icon: &'static [u8]) -> svg::Svg<'a> {
+    svg(svg::Handle::from_memory(icon)).style(|theme: &Theme, _status| svg::Style {
+        color: Some(muted_color(theme)),
     })
 }
 
@@ -1305,6 +1381,113 @@ fn themed_icon_maybe_disabled<'a>(icon: &'static [u8], disabled: bool) -> svg::S
             theme.palette().text
         }),
     })
+}
+
+/// One full turn of the loading spinner, in seconds.
+const SPINNER_PERIOD_SECS: f32 = 0.9;
+/// The lit sweep of the spinner ring: a 270° arc that rotates over the muted
+/// full-circle track.
+const SPINNER_ARC: f32 = std::f32::consts::TAU * 0.75;
+
+/// An indeterminate loading spinner shown inside the Cancel button while a
+/// scan runs. Its own tiny canvas so it can repaint — and keep requesting the
+/// next frame — every frame, independent of the map's animation state.
+struct Spinner;
+
+#[derive(Default)]
+struct SpinnerState {
+    /// The first frame's timestamp; the rotation is measured from it.
+    start: Option<Instant>,
+    angle: f32,
+}
+
+impl canvas::Program<Message> for Spinner {
+    type State = SpinnerState;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &canvas::Event,
+        _bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        if let canvas::Event::Window(iced::window::Event::RedrawRequested(now)) = event {
+            let start = *state.start.get_or_insert(*now);
+            // Wrapped into a single turn so the angle stays small however long
+            // the scan runs — an unbounded f32 would lose precision and stutter.
+            state.angle = (now.duration_since(start).as_secs_f32() / SPINNER_PERIOD_SECS
+                * std::f32::consts::TAU)
+                .rem_euclid(std::f32::consts::TAU);
+            // Keep spinning for as long as the spinner is on screen.
+            return Some(canvas::Action::request_redraw());
+        }
+        None
+    }
+
+    fn draw(
+        &self,
+        state: &Self::State,
+        renderer: &iced::Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let center = frame.center();
+        let width = 2.0;
+        let radius = (bounds.width.min(bounds.height) - width) / 2.0;
+        let lit = muted_color(theme);
+        // The faint full-circle track under the lit, rotating arc.
+        frame.stroke(
+            &canvas::Path::circle(center, radius),
+            canvas::Stroke::default()
+                .with_color(Color { a: 0.25, ..lit })
+                .with_width(width),
+        );
+        let arc = canvas::Path::new(|b| {
+            b.arc(canvas::path::Arc {
+                center,
+                radius,
+                start_angle: iced::Radians(state.angle),
+                end_angle: iced::Radians(state.angle + SPINNER_ARC),
+            });
+        });
+        frame.stroke(
+            &arc,
+            canvas::Stroke::default()
+                .with_color(lit)
+                .with_width(width)
+                .with_line_cap(canvas::LineCap::Round),
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
+/// The loading spinner sized to sit inside the Cancel button.
+fn spinner<'a>() -> Element<'a, Message> {
+    canvas(Spinner).width(16).height(16).into()
+}
+
+/// The top-bar scan tally: the file count after a stacked-layers glyph, the
+/// collected size after a pie-chart glyph, both in the muted chrome style and
+/// monospace so the figures don't jitter. Shared by the running-scan and
+/// finished-map screens so the numbers stay on screen after the scan ends.
+fn scan_stats<'a>(files: u64, total: u64) -> Element<'a, Message> {
+    let stat = |icon: &'static [u8], value: String| {
+        row![
+            muted_icon(icon).width(16).height(16),
+            text(value).size(14).font(Font::MONOSPACE).style(muted_text),
+        ]
+        .spacing(6)
+        .align_y(Center)
+    };
+    row![
+        stat(LAYERS_ICON, files.to_string()),
+        stat(SIZE_ICON, format::human_size(total)),
+    ]
+    .spacing(12)
+    .align_y(Center)
+    .into()
 }
 
 /// The map canvas with the hover actions panel stacked on top of the active
