@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn file_count_aggregates_to_root() {
-        // root → sub → a; root also holds b. Two files, three dirs/nodes.
+        // root → sub → a; root also holds b. 4 nodes: 2 dirs + 2 files.
         let tree = FsTree::from_arena(&[
             dir(0, "root"),
             dir(0, "sub"),

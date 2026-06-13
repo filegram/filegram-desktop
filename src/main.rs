@@ -938,12 +938,7 @@ fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Mess
     .align_y(Center);
     // The same mouse hints as the finished map: the growing map is already
     // navigable mid-scan, so a hovered brick can be entered or ascended from.
-    if app.active.is_some() {
-        footer = footer.push(mouse_hint(LMB_ICON, s.hint_select));
-        if !app.nav_stack.is_empty() {
-            footer = footer.push(mouse_hint(RMB_ICON, s.hint_go_up));
-        }
-    }
+    footer = footer.extend(mouse_hints(app));
     let footer = container(footer).padding(8).style(bar_style);
     column![bar, map_canvas(app), footer].into()
 }
@@ -1100,12 +1095,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         .align_y(Center);
     // The mouse hints only make sense while the cursor is over a brick:
     // `active` is set on hover and cleared when the cursor leaves the map.
-    if app.active.is_some() {
-        content = content.push(mouse_hint(LMB_ICON, strings(app).hint_select));
-        if !app.nav_stack.is_empty() {
-            content = content.push(mouse_hint(RMB_ICON, strings(app).hint_go_up));
-        }
-    }
+    content = content.extend(mouse_hints(app));
     container(content)
         .padding(8)
         .style(bar_style)
@@ -1349,6 +1339,21 @@ fn mouse_hint<'a>(icon: &'static [u8], action: &'a str) -> Element<'a, Message> 
     .spacing(6)
     .align_y(Center)
     .into()
+}
+
+/// The LMB/RMB mouse hints for the bottom bars: present only while a brick is
+/// hovered (`active`), with the Go-up hint gated on having a parent to ascend
+/// to. Shared by the scan footer and the status bar so the two cannot drift.
+fn mouse_hints(app: &App) -> Vec<Element<'_, Message>> {
+    if app.active.is_none() {
+        return Vec::new();
+    }
+    let s = strings(app);
+    let mut hints = vec![mouse_hint(LMB_ICON, s.hint_select)];
+    if !app.nav_stack.is_empty() {
+        hints.push(mouse_hint(RMB_ICON, s.hint_go_up));
+    }
+    hints
 }
 
 /// An embedded SVG icon tinted with the theme's text color.
