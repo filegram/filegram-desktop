@@ -2070,4 +2070,51 @@ mod tests {
         assert_eq!(app.pending_delete, None);
         app.cancel.store(true, Ordering::Relaxed);
     }
+
+    /// The full "press Scan" flow at the application level: `StartScan`, then
+    /// the scan events fed back exactly as the iced runtime would, then the
+    /// resulting tree is asserted — the file/dir counts and the aggregate size
+    /// must match the directory that was scanned.
+    #[test]
+    fn pressing_scan_yields_the_correct_tree() {
+        use iced::futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        // root/{a.bin=100, b.bin=200, sub/{c.bin=300, d.bin=50, deep/{e.bin=10}}}
+        std::fs::write(dir.path().join("a.bin"), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.path().join("b.bin"), vec![0u8; 200]).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/c.bin"), vec![0u8; 300]).unwrap();
+        std::fs::write(dir.path().join("sub/d.bin"), vec![0u8; 50]).unwrap();
+        std::fs::create_dir(dir.path().join("sub/deep")).unwrap();
+        std::fs::write(dir.path().join("sub/deep/e.bin"), vec![0u8; 10]).unwrap();
+
+        let mut app = test_app();
+        app.path_input = dir.path().display().to_string();
+
+        // The button press: StartScan launches the scan and flips to Running.
+        let _ = update(&mut app, Message::StartScan);
+        assert!(matches!(app.scan, ScanState::Running { .. }));
+
+        // Drive that scan to completion and feed every event back through
+        // update, exactly as the iced runtime does with the StartScan task.
+        let events = iced::futures::executor::block_on(
+            scanner::start_scan(PathBuf::from(&app.path_input), app.cancel.clone())
+                .collect::<Vec<_>>(),
+        );
+        for event in events {
+            let _ = update(&mut app, Message::Scan(event));
+        }
+
+        assert!(matches!(app.scan, ScanState::Done), "scan finished");
+        let tree = app.tree.as_ref().expect("a tree after the scan");
+        assert_eq!(app.current, tree.root, "navigation starts at the scan root");
+
+        let files = tree.nodes.iter().filter(|n| !n.is_dir).count();
+        let dirs = tree.nodes.iter().filter(|n| n.is_dir).count();
+        assert_eq!(files, 5, "a, b, c, d, e");
+        assert_eq!(dirs, 3, "root, sub, deep");
+        // 100+200+300+50+10 file bytes + one DIR_ENTRY_SIZE per directory.
+        assert_eq!(tree.node(tree.root).size, 660 + fs_tree::DIR_ENTRY_SIZE * 3);
+    }
 }
