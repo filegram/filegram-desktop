@@ -10,6 +10,7 @@ mod release;
 mod scanner;
 mod settings;
 mod treemap;
+mod ui;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
@@ -19,17 +20,20 @@ use std::time::Instant;
 use iced::theme::{Mode, Palette};
 use iced::widget::{
     button, canvas, center, column, container, mouse_area, opaque, progress_bar, responsive, row,
-    scrollable, stack, svg, text, text_input, tooltip,
+    stack, text,
 };
-use iced::{
-    Border, Center, Color, Element, Fill, Font, Padding, Rectangle, Shadow, Size, Subscription,
-    Task, Theme, Vector,
-};
+use iced::{Center, Color, Element, Fill, Font, Rectangle, Size, Subscription, Task, Theme};
 
 use diskmap::DiskMap;
 use fs_tree::{FsTree, NodeId};
 use i18n::Lang;
 use scanner::ScanEvent;
+use ui::brick::brick_actions;
+use ui::chrome::{
+    bar_style, chrome_button, chrome_icon_button, chrome_icon_only_button,
+    disk_usage_progress_style, muted_color, muted_icon, muted_text, themed_icon,
+};
+use ui::start::idle_view;
 
 /// Maximum number of characters in the path bar above the map (then `/../` compression).
 const PATH_BAR_MAX_CHARS: usize = 80;
@@ -72,11 +76,6 @@ const DISC_ICON: &[u8] = include_bytes!("../assets/disc.svg");
 /// click switches to (the moon in light mode, the sun in dark).
 const SUN_ICON: &[u8] = include_bytes!("../assets/sun.svg");
 const MOON_ICON: &[u8] = include_bytes!("../assets/moon.svg");
-
-/// Approximate outer size of the hover actions panel (two icon buttons),
-/// used to clamp its position inside the canvas.
-const ACTIONS_WIDTH: f32 = 58.0;
-const ACTIONS_HEIGHT: f32 = 30.0;
 
 /// The light-minimal chrome: an off-white window, dark gray text, an amber
 /// accent matching the folder bricks. The dark mode uses the stock `Theme::Dark`.
@@ -270,18 +269,31 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
     }
 }
 
-fn theme(app: &App) -> Theme {
-    if is_dark(app) {
-        Theme::Dark
-    } else {
-        LIGHT_THEME.clone()
+impl App {
+    pub(crate) fn theme(&self) -> Theme {
+        if self.is_dark() {
+            Theme::Dark
+        } else {
+            LIGHT_THEME.clone()
+        }
     }
-}
 
-/// The effective mode: the manual choice when there is one, the system
-/// preference otherwise (`Mode::None` renders light).
-fn is_dark(app: &App) -> bool {
-    matches!(app.theme_override.unwrap_or(app.theme_mode), Mode::Dark)
+    /// The effective mode: the manual choice when there is one, the system
+    /// preference otherwise (`Mode::None` renders light).
+    pub(crate) fn is_dark(&self) -> bool {
+        matches!(self.theme_override.unwrap_or(self.theme_mode), Mode::Dark)
+    }
+
+    /// The effective language: the manual pick when there is one, the system
+    /// locale otherwise.
+    pub(crate) fn lang(&self) -> Lang {
+        self.lang_override.unwrap_or(self.system_lang)
+    }
+
+    /// The string table of the effective language.
+    pub(crate) fn strings(&self) -> &'static i18n::Strings {
+        self.lang().strings()
+    }
 }
 
 fn subscription(app: &App) -> Subscription<Message> {
@@ -512,7 +524,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             iced::exit()
         }
         Message::ToggleTheme => {
-            let mode = if is_dark(app) { Mode::Light } else { Mode::Dark };
+            let mode = if app.is_dark() { Mode::Light } else { Mode::Dark };
             app.theme_override = Some(mode);
             save_settings(app);
             Task::none()
@@ -521,7 +533,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.lang_menu_open = !app.lang_menu_open;
             // The menu opens short — unless the current language only
             // lives in the full list, which would otherwise be invisible.
-            app.lang_menu_expanded = !Lang::PRIMARY.contains(&lang(app));
+            app.lang_menu_expanded = !Lang::PRIMARY.contains(&app.lang());
             Task::none()
         }
         Message::LanguageMenuExpanded => {
@@ -611,302 +623,12 @@ fn save_settings(app: &App) {
     }
 }
 
-/// The effective language: the menu pick when there is one, the system
-/// locale otherwise.
-fn lang(app: &App) -> Lang {
-    app.lang_override.unwrap_or(app.system_lang)
-}
-
-/// The string table of the effective language.
-fn strings(app: &App) -> &'static i18n::Strings {
-    lang(app).strings()
-}
-
-/// An outline chrome button from the light-minimal mockup: transparent fill,
-/// a thin gray border, the regular text color.
-fn chrome_button(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
-    let border_color = if palette.is_dark {
-        Color::from_rgb8(0x55, 0x55, 0x55)
-    } else {
-        Color::from_rgb8(0xCC, 0xCC, 0xCC)
-    };
-    let background = matches!(
-        status,
-        button::Status::Hovered | button::Status::Pressed
-    )
-    .then(|| palette.background.weak.color.into());
-    let text_color = if matches!(status, button::Status::Disabled) {
-        muted_color(theme)
-    } else {
-        palette.background.base.text
-    };
-    button::Style {
-        background,
-        text_color,
-        border: Border {
-            color: border_color,
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        ..button::Style::default()
-    }
-}
-
-/// Top and status bars: a surface lifted from the window background.
-fn bar_style(theme: &Theme) -> container::Style {
-    let background = if theme.extended_palette().is_dark {
-        Color::from_rgb8(0x33, 0x33, 0x33)
-    } else {
-        Color::WHITE
-    };
-    container::Style {
-        background: Some(background.into()),
-        ..container::Style::default()
-    }
-}
-
-/// The floating hint of an action button: a card lifted above the panel
-/// with a thin border and a soft shadow.
-fn tooltip_style(theme: &Theme) -> container::Style {
-    let is_dark = theme.extended_palette().is_dark;
-    let (background, border_color) = if is_dark {
-        (
-            Color::from_rgb8(0x3A, 0x3A, 0x3A),
-            Color::from_rgb8(0x55, 0x55, 0x55),
-        )
-    } else {
-        (Color::WHITE, Color::from_rgb8(0xCC, 0xCC, 0xCC))
-    };
-    container::Style {
-        background: Some(background.into()),
-        text_color: Some(theme.extended_palette().background.base.text),
-        border: Border {
-            color: border_color,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        shadow: Shadow {
-            color: Color::from_rgba8(0x00, 0x00, 0x00, 0.25),
-            offset: Vector::new(0.0, 2.0),
-            blur_radius: 8.0,
-        },
-        ..container::Style::default()
-    }
-}
-
-/// Secondary chrome text: the path bar, the status bar labels.
-fn muted_text(theme: &Theme) -> text::Style {
-    text::Style {
-        color: Some(muted_color(theme)),
-    }
-}
-
-fn muted_color(theme: &Theme) -> Color {
-    if theme.extended_palette().is_dark {
-        Color::from_rgb8(0xAA, 0xAA, 0xAA)
-    } else {
-        Color::from_rgb8(0x77, 0x77, 0x77)
-    }
-}
-
 fn view(app: &App) -> Element<'_, Message> {
     match &app.scan {
         ScanState::Idle => idle_view(app),
         ScanState::Running { current, files } => running_view(app, current, *files),
         ScanState::Done => map_view(app),
     }
-}
-
-fn idle_view(app: &App) -> Element<'_, Message> {
-    let s = strings(app);
-    let mut content = column![
-        text(s.app_title).size(28),
-        row![
-            text_input(s.path_placeholder, &app.path_input)
-                .on_input(Message::PathChanged)
-                .on_submit(Message::StartScan),
-            chrome_icon_button(BRICKS_ICON, s.scan, Message::StartScan),
-        ]
-        .spacing(8),
-    ]
-    .spacing(16)
-    .max_width(600);
-    if let Some(quick) = quick_scans(s) {
-        content = content.push(quick);
-    }
-    if let Some(disks) = disk_scans(app) {
-        content = content.push(disks);
-    }
-    if !app.history.entries().is_empty() {
-        content = content.push(recent_scans(app));
-    }
-    let screen = column![center(content), corner_footer(app)];
-    if !app.lang_menu_open {
-        return screen.into();
-    }
-    stack![screen, language_menu_overlay(app)].into()
-}
-
-/// The language popup pinned above the footer's globe button: a card with
-/// the short list and a trailing "…" that expands it to every language,
-/// native names, the current one highlighted. The transparent backdrop
-/// closes the menu on a click anywhere else.
-fn language_menu_overlay(app: &App) -> Element<'_, Message> {
-    let current = lang(app);
-    let listed: &[Lang] = if app.lang_menu_expanded {
-        &Lang::ALL
-    } else {
-        &Lang::PRIMARY
-    };
-    let mut entries = column(listed.iter().map(|&lang| {
-        let style = if lang == current {
-            button::primary
-        } else {
-            button::text
-        };
-        // A name never wraps: a two-line entry would break the menu rhythm;
-        // the card is sized so the longest name fits next to the scrollbar.
-        button(
-            text(lang.native_name())
-                .size(14)
-                .wrapping(iced::widget::text::Wrapping::None),
-        )
-        .width(Fill)
-        .padding(Padding {
-            top: 4.0,
-            right: 10.0,
-            bottom: 4.0,
-            left: 10.0,
-        })
-        .style(style)
-        .on_press(Message::LanguagePicked(lang))
-        .into()
-    }))
-    .spacing(2);
-    if !app.lang_menu_expanded {
-        entries = entries.push(
-            button(text("…").size(14).width(Fill).align_x(Center))
-                .width(Fill)
-                .padding(Padding {
-                    top: 4.0,
-                    right: 10.0,
-                    bottom: 4.0,
-                    left: 10.0,
-                })
-                .style(button::text)
-                .on_press(Message::LanguageMenuExpanded),
-        );
-    }
-    let card = container(scrollable(entries).width(250))
-        .style(tooltip_style)
-        .padding(4)
-        .max_height(560);
-    opaque(
-        mouse_area(
-            container(opaque(card))
-                .width(Fill)
-                .height(Fill)
-                .align_y(iced::Bottom)
-                .padding(Padding {
-                    left: 8.0,
-                    bottom: 44.0,
-                    ..Padding::ZERO
-                }),
-        )
-        .on_press(Message::LanguageMenuToggled),
-    )
-}
-
-/// The quick disk row right under the folder row: the root of every
-/// mounted volume, a click scans the volume whole. `None` hides the row
-/// when `disk_roots` is empty, like an empty folder row — possible on
-/// Windows only, on Unix the list always holds at least `/`.
-fn disk_scans(app: &App) -> Option<Element<'_, Message>> {
-    let buttons: Vec<Element<'_, Message>> = app
-        .disk_roots
-        .iter()
-        .map(|root| {
-            quick_scan_button(
-                disk_icon(root.kind),
-                disk::root_label(&root.path),
-                &root.path,
-            )
-        })
-        .collect();
-    (!buttons.is_empty()).then(|| {
-        // The same muted header the history row wears, so the two sections
-        // under the folder shortcuts read alike.
-        column![
-            text(strings(app).disks).size(14).style(muted_text),
-            row(buttons).spacing(8).wrap(),
-        ]
-        .spacing(2)
-        .into()
-    })
-}
-
-/// The icon a quick disk row entry wears, by the hardware kind behind
-/// the volume.
-fn disk_icon(kind: disk::DiskKind) -> &'static [u8] {
-    match kind {
-        disk::DiskKind::Internal => DRIVE_ICON,
-        disk::DiskKind::Removable => USB_ICON,
-        disk::DiskKind::Network => GLOBE_ICON,
-        disk::DiskKind::Optical => DISC_ICON,
-    }
-}
-
-/// Quick scans of the standard user folders, between the scan row and the
-/// history: a click scans the folder exactly like a history entry. A folder
-/// the OS cannot locate is omitted; `None` when none can be, so the idle
-/// screen does not reserve a blank gap for an empty row.
-fn quick_scans<'a>(s: &'static i18n::Strings) -> Option<Element<'a, Message>> {
-    let folders: [(&[u8], &str, Option<PathBuf>); 4] = [
-        (HOME_ICON, s.home, dirs::home_dir()),
-        (DOWNLOADS_ICON, s.downloads, dirs::download_dir()),
-        (DESKTOP_ICON, s.desktop, dirs::desktop_dir()),
-        (DOCUMENTS_ICON, s.documents, dirs::document_dir()),
-    ];
-    let buttons: Vec<Element<'a, Message>> = folders
-        .into_iter()
-        .filter_map(|(icon, name, path)| {
-            path.map(|path| quick_scan_button(icon, name.to_string(), &path))
-        })
-        .collect();
-    (!buttons.is_empty()).then(|| row(buttons).spacing(8).into())
-}
-
-/// One entry of the quick rows: an icon with a short name; a click scans
-/// the path exactly like a history entry.
-fn quick_scan_button<'a>(icon: &'static [u8], name: String, path: &Path) -> Element<'a, Message> {
-    // Normalized the way StartScan will see it: a path that normalizes to
-    // blank (a mount point with a line break) gets no on_press, so the
-    // button cannot fire a scan of "".
-    let path = history::normalize(&path.display().to_string()).to_string();
-    button(
-        row![themed_icon(icon).width(16).height(16), text(name).size(14)]
-            .spacing(6)
-            .align_y(Center),
-    )
-    .style(button::text)
-    .padding(4)
-    .on_press_maybe((!path.is_empty()).then(|| Message::HistoryPicked(path)))
-    .into()
-}
-
-/// The scan history under the path input: a click rescans the path.
-fn recent_scans(app: &App) -> Element<'_, Message> {
-    column![text(strings(app).recent_scans).size(14).style(muted_text)]
-        .spacing(2)
-        .extend(app.history.entries().iter().map(|path| {
-            button(text(format::shorten_path(path, PATH_BAR_MAX_CHARS)).size(14))
-                .style(button::text)
-                .padding(4)
-                .on_press(Message::HistoryPicked(path.clone()))
-                .into()
-        }))
-        .into()
 }
 
 /// The scan progress label. Monospace digits keep the width a function of the
@@ -924,7 +646,7 @@ fn scan_label<'a>(label: &'static str, files: u64, size: f32) -> Element<'a, Mes
 /// Scan screen: a counter until the first snapshot, after that the map grows
 /// right as the scan proceeds (navigating it already works: NodeIds are stable).
 fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Message> {
-    let s = strings(app);
+    let s = app.strings();
     if app.tree.is_none() {
         return center(
             column![
@@ -985,7 +707,7 @@ fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Mess
 fn map_top_bar<'a>(app: &'a App, trailing: Element<'a, Message>) -> Element<'a, Message> {
     let tree = app.tree.as_ref().expect("map_top_bar requires a tree");
     let current_path = tree.node(app.current).path.display().to_string();
-    let s = strings(app);
+    let s = app.strings();
     let mut top = row![row![
         chrome_icon_button(HOME_ICON, s.new_scan, Message::NewScan),
         container(
@@ -1018,7 +740,7 @@ fn map_view(app: &App) -> Element<'_, Message> {
     let Some(tree) = &app.tree else {
         return idle_view(app);
     };
-    let s = strings(app);
+    let s = app.strings();
     // The scan tally stays in the top bar after the scan, before Rescan, so
     // the file count and collected size don't vanish with the final map. Both
     // come from the tree root, so they stay consistent after deletions.
@@ -1065,7 +787,7 @@ fn map_view(app: &App) -> Element<'_, Message> {
 fn delete_dialog(app: &App, target: NodeId) -> Element<'_, Message> {
     let tree = app.tree.as_ref().expect("delete_dialog requires a tree");
     let node = tree.node(target);
-    let s = strings(app);
+    let s = app.strings();
     let kind = if node.is_dir { s.folder } else { s.file };
     container(
         column![
@@ -1136,69 +858,6 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-/// The theme toggle: an icon button showing the mode a click switches to.
-fn theme_toggle(app: &App) -> Element<'_, Message> {
-    let s = strings(app);
-    let (icon, tip) = if is_dark(app) {
-        (SUN_ICON, s.light_theme)
-    } else {
-        (MOON_ICON, s.dark_theme)
-    };
-    action_button(themed_icon(icon), tip, Some(Message::ToggleTheme))
-}
-
-/// The language menu trigger: the same square icon button as the theme
-/// toggle, a globe with the localized "Language" hint.
-fn language_button(app: &App) -> Element<'_, Message> {
-    action_button(
-        themed_icon(GLOBE_ICON),
-        strings(app).language,
-        Some(Message::LanguageMenuToggled),
-    )
-}
-
-/// The application version in the bottom-right corner. Once the background
-/// GitHub check finds a release different from the running build (e.g. the
-/// stable release under a dev build), its tag follows in parentheses as a
-/// link to the release page.
-fn version_label(app: &App) -> Element<'_, Message> {
-    let current = text(concat!("v", env!("CARGO_PKG_VERSION")))
-        .size(14)
-        .style(muted_text);
-    let Some(tag) = &app.latest_release else {
-        return current.into();
-    };
-    row![
-        current,
-        mouse_area(
-            text(format!("({tag})"))
-                .size(14)
-                .style(|theme: &Theme| text::Style {
-                    color: Some(theme.palette().primary),
-                })
-        )
-        .interaction(iced::mouse::Interaction::Pointer)
-        .on_press(Message::LatestReleasePressed),
-    ]
-    .spacing(4)
-    .into()
-}
-
-/// The bottom corners of the start screen: the theme toggle and the
-/// language menu on the left, the version on the right. The map screens
-/// stay free of chrome.
-fn corner_footer(app: &App) -> Element<'_, Message> {
-    row![
-        theme_toggle(app),
-        language_button(app),
-        container(version_label(app)).width(Fill).align_x(iced::Right),
-    ]
-    .spacing(2)
-    .padding(8)
-    .align_y(Center)
-    .into()
-}
-
 /// The mini disk-usage bar: how full the scan root's volume is.
 /// The label quotes the *free* space while the fill shows the *used* share —
 /// the file-manager convention (Windows Explorer, GNOME Files) users already
@@ -1209,7 +868,7 @@ fn disk_usage_bar(app: &App) -> Option<Element<'_, Message>> {
     let label = format!(
         "{} {} {}",
         format::human_size(usage.total.saturating_sub(usage.used)),
-        strings(app).disk_free,
+        app.strings().disk_free,
         format::human_size(usage.total)
     );
     Some(
@@ -1224,148 +883,6 @@ fn disk_usage_bar(app: &App) -> Option<Element<'_, Message>> {
         .align_x(Center)
         .into(),
     )
-}
-
-/// The mini disk-usage bar: an amber fill (the folder-brick accent) on a
-/// muted track, matching the app mockup.
-fn disk_usage_progress_style(theme: &Theme) -> progress_bar::Style {
-    let track = if theme.extended_palette().is_dark {
-        Color::from_rgb8(0x45, 0x45, 0x45)
-    } else {
-        Color::from_rgb8(0xD0, 0xD0, 0xD0)
-    };
-    progress_bar::Style {
-        background: track.into(),
-        bar: Color::from_rgb8(0xF9, 0xA8, 0x25).into(),
-        border: Border {
-            radius: 3.0.into(),
-            ..Border::default()
-        },
-    }
-}
-
-/// The hover actions panel pinned to the active brick's top-right corner,
-/// clamped to the canvas bounds.
-fn brick_actions(app: &App, target: NodeId, brick: Rectangle, bounds: Size) -> Element<'_, Message> {
-    // Deletion needs a finished scan: removing entries mid-scan would
-    // desync the tree from the scanner's arena.
-    let deletable = matches!(&app.scan, ScanState::Done).then_some(target);
-    let s = strings(app);
-    // Tint the icons like the brick's caption so they read as part of it.
-    let is_dir = app.tree.as_ref().is_some_and(|tree| tree.node(target).is_dir);
-    let panel = container(
-        row![
-            action_button(
-                brick_icon(FOLDER_ICON, is_dir),
-                s.open_in_file_manager,
-                Some(Message::Reveal(target)),
-            ),
-            action_button(
-                brick_icon(TRASH_ICON, is_dir),
-                s.trash_tip,
-                deletable.map(Message::DeleteRequested),
-            ),
-        ]
-        .spacing(2),
-    )
-    .padding(2);
-    let x = (brick.x + brick.width - ACTIONS_WIDTH)
-        .max(brick.x)
-        .min(bounds.width - ACTIONS_WIDTH)
-        .max(0.0);
-    let y = brick.y.min(bounds.height - ACTIONS_HEIGHT).max(0.0);
-    container(panel)
-        .padding(Padding {
-            top: y,
-            left: x,
-            ..Padding::ZERO
-        })
-        .into()
-}
-
-/// An outline chrome button with a leading icon: the Rescan / Select folder pair.
-fn chrome_icon_button<'a>(
-    icon: &'static [u8],
-    label: &'a str,
-    on_press: Message,
-) -> Element<'a, Message> {
-    // A label never wraps: a two-line button would outgrow its row; long
-    // translations must shorten instead.
-    button(
-        row![
-            themed_icon(icon).width(16).height(16),
-            text(label).wrapping(iced::widget::text::Wrapping::None),
-        ]
-        .spacing(6)
-        .align_y(Center),
-    )
-    .style(chrome_button)
-    .on_press(on_press)
-    .into()
-}
-
-/// An outline chrome button with only an icon (no label): used for compact
-/// top-bar actions like Go up and Rescan. A tooltip names the action, since
-/// the icon alone carries no text.
-/// An empty text keeps the line height — and thus the button height — equal to
-/// the labeled `chrome_icon_button` next to it.
-fn chrome_icon_only_button<'a>(
-    icon: &'static [u8],
-    tip: &'a str,
-    on_press: Message,
-) -> Element<'a, Message> {
-    chrome_icon_only_button_maybe(icon, tip, Some(on_press))
-}
-
-/// Like [`chrome_icon_only_button`], but with an optional action; a missing
-/// action also mutes the icon tint to match the disabled button state.
-fn chrome_icon_only_button_maybe<'a>(
-    icon: &'static [u8],
-    tip: &'a str,
-    on_press: Option<Message>,
-) -> Element<'a, Message> {
-    let disabled = on_press.is_none();
-    tooltip(
-        button(
-            row![
-                themed_icon_maybe_disabled(icon, disabled)
-                    .width(16)
-                    .height(16),
-                text("")
-            ]
-            .align_y(Center),
-        )
-        .style(chrome_button)
-        .on_press_maybe(on_press),
-        text(tip).size(12),
-        tooltip::Position::Bottom,
-    )
-    .style(tooltip_style)
-    .padding(8)
-    .gap(6)
-    .into()
-}
-
-/// A status bar action: an icon button with a tooltip. The caller supplies the
-/// styled icon, so e.g. the hover actions over a brick can tint it to match the
-/// brick's caption text (see [`brick_icon`]) rather than the bar text.
-fn action_button<'a>(
-    icon: svg::Svg<'a>,
-    tip: &'a str,
-    on_press: Option<Message>,
-) -> Element<'a, Message> {
-    tooltip(
-        button(icon.width(18).height(18))
-            .padding(4)
-            .style(button::text)
-            .on_press_maybe(on_press),
-        text(tip).size(12),
-        tooltip::Position::Top,
-    )
-    .style(tooltip_style)
-    .padding(8)
-    .gap(6)
-    .into()
 }
 
 /// A mouse button hint: a mouse icon with the pressed button filled, plus the action.
@@ -1386,47 +903,12 @@ fn mouse_hints(app: &App) -> Vec<Element<'_, Message>> {
     if app.active.is_none() {
         return Vec::new();
     }
-    let s = strings(app);
+    let s = app.strings();
     let mut hints = vec![mouse_hint(LMB_ICON, s.hint_select)];
     if !app.nav_stack.is_empty() {
         hints.push(mouse_hint(RMB_ICON, s.hint_go_up));
     }
     hints
-}
-
-/// An embedded SVG icon tinted with the theme's text color.
-/// `Svg` is invariant over its lifetime, so the caller picks it.
-fn themed_icon<'a>(icon: &'static [u8]) -> svg::Svg<'a> {
-    svg(svg::Handle::from_memory(icon)).style(|theme: &Theme, _status| svg::Style {
-        color: Some(theme.palette().text),
-    })
-}
-
-/// Like [`themed_icon`], but tinted with a brick's caption color so an icon
-/// drawn over the brick (the hover actions) matches its label text.
-fn brick_icon<'a>(icon: &'static [u8], is_dir: bool) -> svg::Svg<'a> {
-    svg(svg::Handle::from_memory(icon)).style(move |theme: &Theme, _status| svg::Style {
-        color: Some(diskmap::brick_text_color(theme, is_dir)),
-    })
-}
-
-/// Like [`themed_icon`], but tinted with the muted caption color so the icon
-/// matches an adjacent [`muted_text`] label (e.g. the file counter).
-fn muted_icon<'a>(icon: &'static [u8]) -> svg::Svg<'a> {
-    svg(svg::Handle::from_memory(icon)).style(|theme: &Theme, _status| svg::Style {
-        color: Some(muted_color(theme)),
-    })
-}
-
-/// Like [`themed_icon`], but muted for disabled controls.
-fn themed_icon_maybe_disabled<'a>(icon: &'static [u8], disabled: bool) -> svg::Svg<'a> {
-    svg(svg::Handle::from_memory(icon)).style(move |theme: &Theme, _status| svg::Style {
-        color: Some(if disabled {
-            muted_color(theme)
-        } else {
-            theme.palette().text
-        }),
-    })
 }
 
 /// One full turn of the loading spinner, in seconds.
@@ -1573,7 +1055,7 @@ fn map_canvas(app: &App) -> Element<'_, Message> {
 fn main() -> iced::Result {
     iced::application(boot, update, view)
         .title("Filegram")
-        .theme(theme)
+        .theme(App::theme)
         .subscription(subscription)
         .window(iced::window::Settings {
             size: Size::new(1024.0, 768.0),
@@ -1744,9 +1226,9 @@ mod tests {
     fn theme_follows_system_mode() {
         let mut app = test_app();
         let _ = update(&mut app, Message::SystemThemeChanged(Mode::Dark));
-        assert_eq!(theme(&app), Theme::Dark);
+        assert_eq!(app.theme(), Theme::Dark);
         let _ = update(&mut app, Message::SystemThemeChanged(Mode::Light));
-        assert_eq!(theme(&app), *LIGHT_THEME);
+        assert_eq!(app.theme(), *LIGHT_THEME);
     }
 
     #[test]
@@ -1755,9 +1237,9 @@ mod tests {
         // toggle lands on dark.
         let mut app = test_app();
         let _ = update(&mut app, Message::ToggleTheme);
-        assert_eq!(theme(&app), Theme::Dark);
+        assert_eq!(app.theme(), Theme::Dark);
         let _ = update(&mut app, Message::ToggleTheme);
-        assert_eq!(theme(&app), *LIGHT_THEME);
+        assert_eq!(app.theme(), *LIGHT_THEME);
     }
 
     #[test]
@@ -1779,7 +1261,7 @@ mod tests {
         assert!(app.lang_menu_open);
         let _ = update(&mut app, Message::LanguagePicked(Lang::RuRu));
         assert!(!app.lang_menu_open);
-        assert_eq!(strings(&app).scan, "Сканировать");
+        assert_eq!(app.strings().scan, "Сканировать");
     }
 
     #[test]
@@ -1830,9 +1312,9 @@ mod tests {
     fn strings_follow_system_until_overridden() {
         let mut app = test_app();
         app.system_lang = Lang::DeDe;
-        assert_eq!(strings(&app).scan, "Scannen");
+        assert_eq!(app.strings().scan, "Scannen");
         let _ = update(&mut app, Message::LanguagePicked(Lang::Tr));
-        assert_eq!(strings(&app).scan, "Tara");
+        assert_eq!(app.strings().scan, "Tara");
     }
 
     #[test]
@@ -1840,10 +1322,10 @@ mod tests {
         let mut app = test_app();
         let _ = update(&mut app, Message::SystemThemeChanged(Mode::Light));
         let _ = update(&mut app, Message::ToggleTheme);
-        assert_eq!(theme(&app), Theme::Dark);
+        assert_eq!(app.theme(), Theme::Dark);
         // The OS flipping its preference must not undo the user's choice.
         let _ = update(&mut app, Message::SystemThemeChanged(Mode::Light));
-        assert_eq!(theme(&app), Theme::Dark);
+        assert_eq!(app.theme(), Theme::Dark);
     }
 
     #[test]
