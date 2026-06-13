@@ -1,0 +1,6 @@
+# The build stage compiles from clean source; the host's target/ would
+# only bloat the context (and carries the wrong architecture anyway).
+target/
+.git/
+.github/
+*.md

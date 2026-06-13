@@ -140,6 +140,10 @@ struct App {
     /// The deletion backend: `trash::delete` in production. Tests swap in
     /// a tempdir-local delete so nothing ever reaches the OS trash.
     delete: fn(&Path) -> std::io::Result<()>,
+    /// Smoke-test mode (the `FILEGRAM_SMOKE` env var): the window closes the
+    /// moment the first frame renders, so CI can launch the binary headless
+    /// and let a non-zero exit flag a broken wgpu/window backend.
+    smoke: bool,
 }
 
 enum ScanState {
@@ -172,6 +176,8 @@ enum Message {
     WindowFocused,
     LatestReleaseLoaded(Option<String>),
     LatestReleasePressed,
+    /// The first frame rendered in smoke-test mode — time to exit cleanly.
+    SmokeFrameRendered,
 }
 
 /// The default content of the path input: the most recent scanned path,
@@ -198,6 +204,7 @@ fn boot() -> (App, Task<Message>) {
         None => (history::History::default(), None),
     };
     let mut app = initial_app(history, history_file);
+    app.smoke = std::env::var_os("FILEGRAM_SMOKE").is_some();
     app.settings_file = settings::default_file();
     // Unlike the history, an unreadable settings file is safe to save over:
     // the next toggle or language pick rewrites the whole file anyway.
@@ -213,15 +220,23 @@ fn boot() -> (App, Task<Message>) {
         .unwrap_or_default();
     app.theme_override = saved.theme;
     app.lang_override = saved.lang;
-    (
-        app,
-        Task::batch([
-            iced::system::theme().map(Message::SystemThemeChanged),
-            // The release check starts immediately but runs entirely in the
-            // background: the window opens without waiting for the network.
-            Task::perform(release::fetch_latest_tag(), Message::LatestReleaseLoaded),
-        ]),
-    )
+    let mut tasks = vec![
+        iced::system::theme().map(Message::SystemThemeChanged),
+        // The release check starts immediately but runs entirely in the
+        // background: the window opens without waiting for the network.
+        Task::perform(release::fetch_latest_tag(), Message::LatestReleaseLoaded),
+    ];
+    // In smoke mode, an optional scan target (`FILEGRAM_SMOKE_PATH`) drives
+    // the full flow — the very `StartScan` the "Scan" button emits — so CI
+    // exercises the scan, the tree build and the treemap render, not just the
+    // start screen's first frame. Unset leaves the plain start-up smoke.
+    if app.smoke
+        && let Some(path) = std::env::var_os("FILEGRAM_SMOKE_PATH")
+    {
+        app.path_input = path.to_string_lossy().into_owned();
+        tasks.push(Task::done(Message::StartScan));
+    }
+    (app, Task::batch(tasks))
 }
 
 /// The initial application state. `boot` feeds it the persisted history;
@@ -251,6 +266,7 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         settings_file: None,
         latest_release: None,
         delete: |path| trash::delete(path).map_err(std::io::Error::other),
+        smoke: false,
     }
 }
 
@@ -268,8 +284,8 @@ fn is_dark(app: &App) -> bool {
     matches!(app.theme_override.unwrap_or(app.theme_mode), Mode::Dark)
 }
 
-fn subscription(_app: &App) -> Subscription<Message> {
-    Subscription::batch([
+fn subscription(app: &App) -> Subscription<Message> {
+    let mut subs = vec![
         iced::system::theme_changes().map(Message::SystemThemeChanged),
         // There is no ready-made focus subscription, only the unfiltered
         // window::events(); listen the same way it does, for Focused alone.
@@ -277,7 +293,13 @@ fn subscription(_app: &App) -> Subscription<Message> {
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
             _ => None,
         }),
-    ])
+    ];
+    if app.smoke {
+        // `frames()` ticks once per rendered frame; the first tick means the
+        // wgpu surface drew successfully, which is all the smoke test proves.
+        subs.push(iced::window::frames().map(|_| Message::SmokeFrameRendered));
+    }
+    Subscription::batch(subs)
 }
 
 fn update(app: &mut App, message: Message) -> Task<Message> {
@@ -476,6 +498,18 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 let _ = open::that_detached(release::release_url(tag));
             }
             Task::none()
+        }
+        Message::SmokeFrameRendered => {
+            // Reached only in smoke-test mode (FILEGRAM_SMOKE). The window
+            // opened and drew a frame, so wgpu is healthy. When a scan is
+            // under way (FILEGRAM_SMOKE_PATH), keep going until it finishes so
+            // the treemap — not just the start screen — gets drawn first.
+            if matches!(app.scan, ScanState::Running { .. }) {
+                return Task::none();
+            }
+            // A broken backend never gets here — it panics first.
+            eprintln!("filegram: smoke test rendered a frame, exiting");
+            iced::exit()
         }
         Message::ToggleTheme => {
             let mode = if is_dark(app) { Mode::Light } else { Mode::Dark };
@@ -2035,5 +2069,52 @@ mod tests {
         let _ = update(&mut app, Message::StartScan);
         assert_eq!(app.pending_delete, None);
         app.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// The full "press Scan" flow at the application level: `StartScan`, then
+    /// the scan events fed back exactly as the iced runtime would, then the
+    /// resulting tree is asserted — the file/dir counts and the aggregate size
+    /// must match the directory that was scanned.
+    #[test]
+    fn pressing_scan_yields_the_correct_tree() {
+        use iced::futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        // root/{a.bin=100, b.bin=200, sub/{c.bin=300, d.bin=50, deep/{e.bin=10}}}
+        std::fs::write(dir.path().join("a.bin"), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.path().join("b.bin"), vec![0u8; 200]).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/c.bin"), vec![0u8; 300]).unwrap();
+        std::fs::write(dir.path().join("sub/d.bin"), vec![0u8; 50]).unwrap();
+        std::fs::create_dir(dir.path().join("sub/deep")).unwrap();
+        std::fs::write(dir.path().join("sub/deep/e.bin"), vec![0u8; 10]).unwrap();
+
+        let mut app = test_app();
+        app.path_input = dir.path().display().to_string();
+
+        // The button press: StartScan launches the scan and flips to Running.
+        let _ = update(&mut app, Message::StartScan);
+        assert!(matches!(app.scan, ScanState::Running { .. }));
+
+        // Drive that scan to completion and feed every event back through
+        // update, exactly as the iced runtime does with the StartScan task.
+        let events = iced::futures::executor::block_on(
+            scanner::start_scan(PathBuf::from(&app.path_input), app.cancel.clone())
+                .collect::<Vec<_>>(),
+        );
+        for event in events {
+            let _ = update(&mut app, Message::Scan(event));
+        }
+
+        assert!(matches!(app.scan, ScanState::Done), "scan finished");
+        let tree = app.tree.as_ref().expect("a tree after the scan");
+        assert_eq!(app.current, tree.root, "navigation starts at the scan root");
+
+        let files = tree.nodes.iter().filter(|n| !n.is_dir).count();
+        let dirs = tree.nodes.iter().filter(|n| n.is_dir).count();
+        assert_eq!(files, 5, "a, b, c, d, e");
+        assert_eq!(dirs, 3, "root, sub, deep");
+        // 100+200+300+50+10 file bytes + one DIR_ENTRY_SIZE per directory.
+        assert_eq!(tree.node(tree.root).size, 660 + fs_tree::DIR_ENTRY_SIZE * 3);
     }
 }

@@ -303,6 +303,36 @@ mod tests {
         assert_eq!(names, vec!["sub", "b.bin", "a.bin"]);
     }
 
+    /// A multi-level tree with known contents: the scan must find every file
+    /// and directory and aggregate the exact total size, not just the root's
+    /// direct children.
+    #[test]
+    fn scan_counts_files_and_dirs_recursively() {
+        let dir = tempfile::tempdir().unwrap();
+        // root/{a.bin=100, b.bin=200, sub/{c.bin=300, d.bin=50, deep/{e.bin=10}}}
+        fs::write(dir.path().join("a.bin"), vec![0u8; 100]).unwrap();
+        fs::write(dir.path().join("b.bin"), vec![0u8; 200]).unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/c.bin"), vec![0u8; 300]).unwrap();
+        fs::write(dir.path().join("sub/d.bin"), vec![0u8; 50]).unwrap();
+        fs::create_dir(dir.path().join("sub/deep")).unwrap();
+        fs::write(dir.path().join("sub/deep/e.bin"), vec![0u8; 10]).unwrap();
+
+        let events = run_scan(dir.path().to_path_buf(), false);
+        let Some(ScanEvent::Finished(tree)) = events.last() else {
+            panic!("expected Finished, got {:?}", events.last());
+        };
+
+        let files = tree.nodes.iter().filter(|n| !n.is_dir).count();
+        let dirs = tree.nodes.iter().filter(|n| n.is_dir).count();
+        assert_eq!(files, 5, "a, b, c, d, e");
+        assert_eq!(dirs, 3, "root, sub, deep");
+
+        // Total = every file byte (100+200+300+50+10) + one DIR_ENTRY_SIZE per
+        // directory (root, sub, deep); the root size carries the whole tree.
+        assert_eq!(tree.node(tree.root).size, 660 + DIR_ENTRY_SIZE * 3);
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinks_are_skipped() {
