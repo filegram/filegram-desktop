@@ -220,15 +220,23 @@ fn boot() -> (App, Task<Message>) {
         .unwrap_or_default();
     app.theme_override = saved.theme;
     app.lang_override = saved.lang;
-    (
-        app,
-        Task::batch([
-            iced::system::theme().map(Message::SystemThemeChanged),
-            // The release check starts immediately but runs entirely in the
-            // background: the window opens without waiting for the network.
-            Task::perform(release::fetch_latest_tag(), Message::LatestReleaseLoaded),
-        ]),
-    )
+    let mut tasks = vec![
+        iced::system::theme().map(Message::SystemThemeChanged),
+        // The release check starts immediately but runs entirely in the
+        // background: the window opens without waiting for the network.
+        Task::perform(release::fetch_latest_tag(), Message::LatestReleaseLoaded),
+    ];
+    // In smoke mode, an optional scan target (`FILEGRAM_SMOKE_PATH`) drives
+    // the full flow — the very `StartScan` the "Scan" button emits — so CI
+    // exercises the scan, the tree build and the treemap render, not just the
+    // start screen's first frame. Unset leaves the plain start-up smoke.
+    if app.smoke
+        && let Some(path) = std::env::var_os("FILEGRAM_SMOKE_PATH")
+    {
+        app.path_input = path.to_string_lossy().into_owned();
+        tasks.push(Task::done(Message::StartScan));
+    }
+    (app, Task::batch(tasks))
 }
 
 /// The initial application state. `boot` feeds it the persisted history;
@@ -493,8 +501,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::SmokeFrameRendered => {
             // Reached only in smoke-test mode (FILEGRAM_SMOKE). The window
-            // opened and drew a frame, so wgpu is healthy; exit 0 and let CI
-            // move on. A broken backend never gets here — it panics first.
+            // opened and drew a frame, so wgpu is healthy. When a scan is
+            // under way (FILEGRAM_SMOKE_PATH), keep going until it finishes so
+            // the treemap — not just the start screen — gets drawn first.
+            if matches!(app.scan, ScanState::Running { .. }) {
+                return Task::none();
+            }
+            // A broken backend never gets here — it panics first.
             eprintln!("filegram: smoke test rendered a frame, exiting");
             iced::exit()
         }

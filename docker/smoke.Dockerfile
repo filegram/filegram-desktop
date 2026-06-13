@@ -40,13 +40,24 @@ COPY --from=build /src/target/release/filegram /usr/local/bin/filegram
 COPY docker/smoke-entrypoint.sh /usr/local/bin/smoke-entrypoint.sh
 RUN chmod +x /usr/local/bin/smoke-entrypoint.sh
 
+# A tiny, deterministic tree for the smoke scan: a couple of nested dirs and
+# files of known sizes, enough to drive the scan, the tree build and the
+# treemap render (FILEGRAM_SMOKE_PATH below points the app at it).
+RUN mkdir -p /smoke-fixture/sub \
+    && head -c 16384 /dev/zero > /smoke-fixture/big.bin \
+    && head -c 4096  /dev/zero > /smoke-fixture/small.bin \
+    && head -c 8192  /dev/zero > /smoke-fixture/sub/nested.bin
+
 # There is no GPU and no Wayland compositor in here: force lavapipe as the
 # only Vulkan device, the Vulkan backend in wgpu, and winit's X11 backend.
+# FILEGRAM_SMOKE_PATH makes the app scan the fixture and render its treemap
+# before exiting, instead of leaving on the bare start screen.
 ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
     WGPU_BACKEND=vulkan \
     WINIT_UNIX_BACKEND=x11 \
     LIBGL_ALWAYS_SOFTWARE=1 \
     XDG_RUNTIME_DIR=/tmp \
-    FILEGRAM_SMOKE=1
+    FILEGRAM_SMOKE=1 \
+    FILEGRAM_SMOKE_PATH=/smoke-fixture
 
 ENTRYPOINT ["/usr/local/bin/smoke-entrypoint.sh"]
