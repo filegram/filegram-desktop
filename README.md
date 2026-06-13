@@ -36,7 +36,7 @@ For other platforms, build from source below.
 
 ## Building from source
 
-Requires Rust 1.85 or newer.
+Requires Rust 1.88 or newer.
 
 ```sh
 cargo build --release
