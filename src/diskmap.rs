@@ -30,6 +30,11 @@ struct BrickPalette {
     nested_folder_fill: Color,
     nested_file_fill: Color,
     nested_rest_fill: Color,
+    /// Level-2 silhouettes are background detail: paler than level 1 so
+    /// they barely tint the folder silhouette they sit on.
+    nested_deep_folder_fill: Color,
+    nested_deep_file_fill: Color,
+    nested_deep_rest_fill: Color,
     highlight: Color,
 }
 
@@ -45,10 +50,14 @@ const DARK_PALETTE: BrickPalette = BrickPalette {
     rest_fill: Color::from_rgb8(0x3C, 0x3C, 0x3C),
     rest_stroke: Color::from_rgb8(0x75, 0x75, 0x75),
     rest_text: Color::from_rgb8(0xB0, 0xB0, 0xB0),
-    nested_folder_fill: Color::from_rgb8(0xFB, 0xC0, 0x2D),
-    // ARGB #4080CBC4 from the original: alpha 0x40 ≈ 0.25.
-    nested_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.25),
-    nested_rest_fill: Color::from_rgba8(0x9E, 0x9E, 0x9E, 0.25),
+    nested_folder_fill: Color::from_rgba8(0xFB, 0xC0, 0x2D, 0.35),
+    // From the original's ARGB #4080CBC4 (alpha ≈ 0.25), toned down.
+    nested_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.105),
+    nested_rest_fill: Color::from_rgba8(0x9E, 0x9E, 0x9E, 0.105),
+    // Barely-there shading that almost blends into the folder silhouette.
+    nested_deep_folder_fill: Color::from_rgba8(0x58, 0x2B, 0x04, 0.028),
+    nested_deep_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.028),
+    nested_deep_rest_fill: Color::from_rgba8(0x9E, 0x9E, 0x9E, 0.028),
     highlight: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.5),
 };
 
@@ -64,9 +73,12 @@ const LIGHT_PALETTE: BrickPalette = BrickPalette {
     rest_fill: Color::from_rgb8(0xBD, 0xBD, 0xBD),
     rest_stroke: Color::from_rgb8(0x61, 0x61, 0x61),
     rest_text: Color::from_rgb8(0x42, 0x42, 0x42),
-    nested_folder_fill: Color::from_rgb8(0xFF, 0xEC, 0xB3),
-    nested_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.4),
-    nested_rest_fill: Color::from_rgba8(0x75, 0x75, 0x75, 0.3),
+    nested_folder_fill: Color::from_rgba8(0xFF, 0xEC, 0xB3, 0.42),
+    nested_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.175),
+    nested_rest_fill: Color::from_rgba8(0x75, 0x75, 0x75, 0.14),
+    nested_deep_folder_fill: Color::from_rgba8(0xBA, 0x75, 0x17, 0.028),
+    nested_deep_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.035),
+    nested_deep_rest_fill: Color::from_rgba8(0x75, 0x75, 0x75, 0.028),
     highlight: Color::from_rgba8(0x00, 0x00, 0x00, 0.25),
 };
 
@@ -90,6 +102,13 @@ const CHAR_WIDTH: f32 = 0.6;
 const MIN_CONTENT_SIDE: f32 = 12.0;
 /// Margin of a nested silhouette (left and bottom).
 const SILHOUETTE_MARGIN: f32 = 6.0;
+/// How deep the nested preview goes: a folder brick shows its children and,
+/// inside child-folder silhouettes, grandchildren.
+const NESTED_DEPTH: u8 = 2;
+/// Silhouette corner radius as a fraction of its shorter side, capped at
+/// [`CORNER_RADIUS`]: rounding stays proportional like the original — tiny
+/// tiles stay sharp, large ones round off.
+const NESTED_CORNER_FRACTION: f32 = 0.15;
 
 pub struct DiskMap<'a> {
     pub tree: &'a FsTree,
@@ -238,6 +257,18 @@ pub fn has_label(tree: &FsTree, id: NodeId, rect: Rectangle) -> bool {
     label_font_size(brick_label(tree, id).chars().count(), rect).is_some()
 }
 
+/// The content area inside a folder silhouette: inset on the top and the
+/// right so the deeper level leaves the parent's fill visible as a frame
+/// (the left and bottom gaps come from the children's own margins).
+fn silhouette_content(r: Rectangle) -> Rectangle {
+    Rectangle {
+        x: r.x,
+        y: r.y + SILHOUETTE_MARGIN,
+        width: (r.width - SILHOUETTE_MARGIN).max(0.0),
+        height: (r.height - SILHOUETTE_MARGIN).max(0.0),
+    }
+}
+
 /// The brick area: the canvas inset by [`MAP_MARGIN`] on every side.
 fn map_bounds(size: Size) -> Rectangle {
     Rectangle {
@@ -358,9 +389,12 @@ impl DiskMap<'_> {
         font_size
     }
 
-    /// Nested second-level silhouettes: colored rectangles without text,
-    /// laid out by [`MapState::nested`] so they preview the post-zoom
-    /// level.
+    /// Nested silhouettes: colored rectangles without text, laid out by
+    /// [`MapState::nested_silhouettes`] so they preview the post-zoom levels
+    /// to [`NESTED_DEPTH`]. Full depth is drawn every frame, including
+    /// mid-flight: the silhouettes are pure geometry (no glyph atlas) and
+    /// the [`level1`] part is memoized, so they scale with an animating
+    /// brick instead of vanishing and snapping back at rest.
     fn draw_nested(
         &self,
         state: &MapState,
@@ -377,22 +411,38 @@ impl DiskMap<'_> {
             width: rect.width - 1.0 - 8.0,
             height: rect.height - (4.0 + font_size + 4.0),
         };
+        // A tiny brick previews nothing: skip the recursion outright. The
+        // same guard inside `nested_silhouettes` covers the deeper levels.
         if content.width < MIN_CONTENT_SIDE || content.height < MIN_CONTENT_SIDE {
             return;
         }
-        for (brick, r) in state.nested(self.tree, dir, frame.size(), content) {
-            let silhouette = Rectangle {
-                x: r.x + SILHOUETTE_MARGIN,
-                y: r.y,
-                width: (r.width - SILHOUETTE_MARGIN).max(0.0),
-                height: (r.height - SILHOUETTE_MARGIN).max(0.0),
+        let mut silhouettes = Vec::new();
+        state.nested_silhouettes(self.tree, dir, frame.size(), content, 1, &mut silhouettes);
+        for (brick, silhouette, level) in silhouettes {
+            let (folder, file, rest) = if level == 1 {
+                (
+                    palette.nested_folder_fill,
+                    palette.nested_file_fill,
+                    palette.nested_rest_fill,
+                )
+            } else {
+                (
+                    palette.nested_deep_folder_fill,
+                    palette.nested_deep_file_fill,
+                    palette.nested_deep_rest_fill,
+                )
             };
             let fill = match brick {
-                Brick::Rest { .. } => palette.nested_rest_fill,
-                Brick::Node(id) if self.tree.node(id).is_dir => palette.nested_folder_fill,
-                Brick::Node(_) => palette.nested_file_fill,
+                Brick::Rest { .. } => rest,
+                Brick::Node(id) if self.tree.node(id).is_dir => folder,
+                Brick::Node(_) => file,
             };
-            frame.fill_rectangle(silhouette.position(), silhouette.size(), fill);
+            // Corners scale with the silhouette like the original.
+            let radius =
+                (silhouette.width.min(silhouette.height) * NESTED_CORNER_FRACTION).min(CORNER_RADIUS);
+            let path =
+                Path::rounded_rectangle(silhouette.position(), silhouette.size(), radius.into());
+            frame.fill(&path, fill);
         }
     }
 }
@@ -659,6 +709,53 @@ impl MapState {
             .iter()
             .map(|&(brick, rect)| (brick, map_rect(rect, bounds, content)))
             .collect()
+    }
+
+    /// The silhouettes of a folder preview, in paint order (a folder before
+    /// its contents): the previewed brick, its rectangle, and the nesting
+    /// level (1 — the folder's children, 2 — grandchildren inside a
+    /// child-folder silhouette). Every level is the [`MapState::nested`]
+    /// layout of its folder compressed into the parent silhouette, so the
+    /// whole preview stays proportional to the post-zoom picture. The
+    /// recursion stops past [`NESTED_DEPTH`], and a folder whose content
+    /// area is below [`MIN_CONTENT_SIDE`] is not descended into (its own
+    /// silhouettes still draw — only the level inside it is skipped).
+    fn nested_silhouettes(
+        &self,
+        tree: &FsTree,
+        dir: NodeId,
+        canvas: Size,
+        content: Rectangle,
+        level: u8,
+        out: &mut Vec<(Brick, Rectangle, u8)>,
+    ) {
+        if level > NESTED_DEPTH
+            || content.width < MIN_CONTENT_SIDE
+            || content.height < MIN_CONTENT_SIDE
+        {
+            return;
+        }
+        for (brick, r) in self.nested(tree, dir, canvas, content) {
+            let silhouette = Rectangle {
+                x: r.x + SILHOUETTE_MARGIN,
+                y: r.y,
+                width: (r.width - SILHOUETTE_MARGIN).max(0.0),
+                height: (r.height - SILHOUETTE_MARGIN).max(0.0),
+            };
+            out.push((brick, silhouette, level));
+            if let Brick::Node(id) = brick
+                && tree.node(id).is_dir
+            {
+                self.nested_silhouettes(
+                    tree,
+                    id,
+                    canvas,
+                    silhouette_content(silhouette),
+                    level + 1,
+                    out,
+                );
+            }
+        }
     }
 
     /// The rectangle pair (`from`, `to`) of a zoom transition: every spring
@@ -1161,6 +1258,88 @@ mod tests {
             state.nested(&tree, dir, resized, content),
             nested_layout(&tree, dir, resized, content)
         );
+    }
+
+    /// The silhouette margins, as applied to a [`MapState::nested`] rect.
+    fn with_margin(r: Rectangle) -> Rectangle {
+        Rectangle {
+            x: r.x + SILHOUETTE_MARGIN,
+            y: r.y,
+            width: (r.width - SILHOUETTE_MARGIN).max(0.0),
+            height: (r.height - SILHOUETTE_MARGIN).max(0.0),
+        }
+    }
+
+    /// The full-depth silhouettes of `nested_tree`'s root preview.
+    fn root_silhouettes(
+        state: &MapState,
+        tree: &FsTree,
+        content: Rectangle,
+    ) -> Vec<(Brick, Rectangle, u8)> {
+        let mut out = Vec::new();
+        state.nested_silhouettes(tree, tree.root, CANVAS, content, 1, &mut out);
+        out
+    }
+
+    #[test]
+    fn nested_silhouettes_recurse_into_folder_silhouettes() {
+        // Root previews "sub" and "c" at level 1; inside the "sub"
+        // silhouette, its own files appear at level 2, laid out as the
+        // nested layout of "sub" compressed into that silhouette.
+        let tree = nested_tree();
+        let state = MapState::default();
+        let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(400.0, 250.0));
+        let out = root_silhouettes(&state, &tree, content);
+        let level1: Vec<Brick> = out
+            .iter()
+            .filter(|&&(_, _, level)| level == 1)
+            .map(|&(brick, _, _)| brick)
+            .collect();
+        assert_eq!(level1, [Brick::Node(NodeId(1)), Brick::Node(NodeId(4))], "{out:?}");
+        let &(_, sub_rect, _) = out
+            .iter()
+            .find(|&&(brick, _, _)| brick == Brick::Node(NodeId(1)))
+            .unwrap();
+        let expected: Vec<(Brick, Rectangle, u8)> = state
+            .nested(&tree, NodeId(1), CANVAS, silhouette_content(sub_rect))
+            .into_iter()
+            .map(|(brick, r)| (brick, with_margin(r), 2))
+            .collect();
+        let level2: Vec<(Brick, Rectangle, u8)> =
+            out.into_iter().filter(|&(_, _, level)| level == 2).collect();
+        assert_eq!(level2, expected);
+        assert_eq!(level2.len(), 2, "{level2:?}");
+    }
+
+    #[test]
+    fn nested_silhouettes_paint_a_folder_before_its_contents() {
+        // Paint order: a level-2 silhouette goes after its level-1 folder,
+        // on top of it — never before.
+        let tree = nested_tree();
+        let state = MapState::default();
+        let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(400.0, 250.0));
+        let out = root_silhouettes(&state, &tree, content);
+        let sub = out
+            .iter()
+            .position(|&(brick, _, _)| brick == Brick::Node(NodeId(1)))
+            .unwrap();
+        for (i, &(_, _, level)) in out.iter().enumerate() {
+            if level == 2 {
+                assert!(i > sub, "{out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn nested_silhouettes_skip_grandchildren_in_tiny_silhouettes() {
+        // The content fits level 1, but the "sub" silhouette inside it is
+        // narrower than MIN_CONTENT_SIDE — recursion prunes level 2.
+        let tree = nested_tree();
+        let state = MapState::default();
+        let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(20.0, 14.0));
+        let out = root_silhouettes(&state, &tree, content);
+        assert!(!out.is_empty());
+        assert!(out.iter().all(|&(_, _, level)| level == 1), "{out:?}");
     }
 
     #[test]
