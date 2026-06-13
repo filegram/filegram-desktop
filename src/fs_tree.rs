@@ -37,6 +37,10 @@ pub struct FsNode {
     /// For folders — the subtree aggregate (including their own 4096).
     pub size: u64,
     pub is_dir: bool,
+    /// Number of files (non-directory nodes) in this node's subtree: a file
+    /// counts as 1, a directory as the sum of its descendants. The root's
+    /// value is the whole tree's file count, kept in sync by [`remove_child`].
+    pub files: u64,
     /// Sorted by `size` in descending order.
     pub children: Vec<NodeId>,
 }
@@ -73,6 +77,16 @@ impl FsTree {
             sizes[arena[i].parent] += sizes[i];
         }
 
+        // File counts aggregate the same way: each file contributes 1, each
+        // directory 0, summed up the same reverse pass.
+        let mut files: Vec<u64> = arena
+            .iter()
+            .map(|n| if n.is_dir { 0 } else { 1 })
+            .collect();
+        for i in (1..arena.len()).rev() {
+            files[arena[i].parent] += files[i];
+        }
+
         let mut children: Vec<Vec<NodeId>> = vec![Vec::new(); arena.len()];
         for (i, node) in arena.iter().enumerate().skip(1) {
             children[node.parent].push(NodeId(i));
@@ -84,12 +98,14 @@ impl FsTree {
         let nodes = arena
             .iter()
             .zip(sizes)
+            .zip(files)
             .zip(children)
-            .map(|((scan, size), kids)| FsNode {
+            .map(|(((scan, size), files), kids)| FsNode {
                 name: scan.name.clone(),
                 path: scan.path.clone(),
                 size,
                 is_dir: scan.is_dir,
+                files,
                 children: kids,
             })
             .collect();
@@ -122,12 +138,16 @@ impl FsTree {
             return false;
         };
         let removed = self.nodes[child.0].size;
+        let removed_files = self.nodes[child.0].files;
         self.nodes[parent.0].children.remove(position);
         // Saturating: a broken ancestor list must clamp at zero, not wrap
         // around in release builds and corrupt every size above it.
         self.nodes[parent.0].size = self.nodes[parent.0].size.saturating_sub(removed);
+        self.nodes[parent.0].files = self.nodes[parent.0].files.saturating_sub(removed_files);
         for &ancestor in ancestors {
             self.nodes[ancestor.0].size = self.nodes[ancestor.0].size.saturating_sub(removed);
+            self.nodes[ancestor.0].files =
+                self.nodes[ancestor.0].files.saturating_sub(removed_files);
         }
         true
     }
@@ -205,6 +225,36 @@ mod tests {
         let first = tree.node(root.children[0]);
         assert!(first.is_dir);
         assert_eq!(first.size, DIR_ENTRY_SIZE + 500);
+    }
+
+    #[test]
+    fn file_count_aggregates_to_root() {
+        // root → sub → a; root also holds b. Two files, three dirs/nodes.
+        let tree = FsTree::from_arena(&[
+            dir(0, "root"),
+            dir(0, "sub"),
+            file(1, "a", 500),
+            file(0, "b", 50),
+        ]);
+        assert_eq!(tree.node(tree.root).files, 2);
+        // The subfolder holds exactly its one file; a leaf file counts as 1.
+        assert_eq!(tree.node(NodeId(1)).files, 1);
+        assert_eq!(tree.node(NodeId(2)).files, 1);
+    }
+
+    #[test]
+    fn remove_child_updates_file_count() {
+        // root → sub → a(file); root also holds top(file). Removing the
+        // subfolder drops its one file from the root's count.
+        let mut tree = FsTree::from_arena(&[
+            dir(0, "root"),
+            dir(0, "sub"),
+            file(1, "a", 500),
+            file(0, "top", 50),
+        ]);
+        assert_eq!(tree.node(tree.root).files, 2);
+        assert!(tree.remove_child(tree.root, NodeId(1), &[]));
+        assert_eq!(tree.node(tree.root).files, 1);
     }
 
     #[test]

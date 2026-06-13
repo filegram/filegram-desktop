@@ -101,10 +101,6 @@ struct App {
     /// The node awaiting trash confirmation in the modal dialog.
     pending_delete: Option<NodeId>,
     scan: ScanState,
-    /// The exact file count of the finished tree, kept so the tally stays on
-    /// screen after the scan (the live `ScanState::Running.files` is gone by
-    /// then). Set on `Finished`; `0` until the first scan completes.
-    scanned_files: u64,
     /// The volume of the scan root, for the mini disk-usage bar; `None`
     /// hides the bar (no scan yet, or the OS query failed).
     disk_usage: Option<disk::DiskUsage>,
@@ -239,7 +235,6 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         active: None,
         pending_delete: None,
         scan: ScanState::Idle,
-        scanned_files: 0,
         disk_usage: None,
         disk_roots: disk::mounted_roots(),
         path_input: initial_path(&history),
@@ -361,9 +356,6 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     // A long scan leaves the start-of-scan reading stale;
                     // re-query the volume so the bar matches the final map.
                     app.disk_usage = root_usage(&tree);
-                    // The exact file count for the tally; the throttled live
-                    // counter may have stopped a few files short of the total.
-                    app.scanned_files = tree.nodes.iter().filter(|node| !node.is_dir).count() as u64;
                     app.tree = Some(tree);
                     app.scan = ScanState::Done;
                     app.cache.clear();
@@ -999,12 +991,13 @@ fn map_view(app: &App) -> Element<'_, Message> {
     };
     let s = strings(app);
     // The scan tally stays in the top bar after the scan, before Rescan, so
-    // the file count and collected size don't vanish with the final map.
-    let total = tree.node(tree.root).size;
+    // the file count and collected size don't vanish with the final map. Both
+    // come from the tree root, so they stay consistent after deletions.
+    let root = tree.node(tree.root);
     let bar = map_top_bar(
         app,
         row![
-            scan_stats(app.scanned_files, total),
+            scan_stats(root.files, root.size),
             chrome_icon_only_button(RESCAN_ICON, s.rescan, Message::Rescan),
         ]
         .spacing(16)
