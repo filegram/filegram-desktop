@@ -1144,14 +1144,14 @@ fn theme_toggle(app: &App) -> Element<'_, Message> {
     } else {
         (MOON_ICON, s.dark_theme)
     };
-    action_button(icon, tip, Some(Message::ToggleTheme))
+    action_button(themed_icon(icon), tip, Some(Message::ToggleTheme))
 }
 
 /// The language menu trigger: the same square icon button as the theme
 /// toggle, a globe with the localized "Language" hint.
 fn language_button(app: &App) -> Element<'_, Message> {
     action_button(
-        GLOBE_ICON,
+        themed_icon(GLOBE_ICON),
         strings(app).language,
         Some(Message::LanguageMenuToggled),
     )
@@ -1251,15 +1251,17 @@ fn brick_actions(app: &App, target: NodeId, brick: Rectangle, bounds: Size) -> E
     // desync the tree from the scanner's arena.
     let deletable = matches!(&app.scan, ScanState::Done).then_some(target);
     let s = strings(app);
+    // Tint the icons like the brick's caption so they read as part of it.
+    let is_dir = app.tree.as_ref().is_some_and(|tree| tree.node(target).is_dir);
     let panel = container(
         row![
             action_button(
-                FOLDER_ICON,
+                brick_icon(FOLDER_ICON, is_dir),
                 s.open_in_file_manager,
                 Some(Message::Reveal(target)),
             ),
             action_button(
-                TRASH_ICON,
+                brick_icon(TRASH_ICON, is_dir),
                 s.trash_tip,
                 deletable.map(Message::DeleteRequested),
             ),
@@ -1344,14 +1346,16 @@ fn chrome_icon_only_button_maybe<'a>(
     .into()
 }
 
-/// A status bar action: an icon button with a tooltip.
+/// A status bar action: an icon button with a tooltip. The caller supplies the
+/// styled icon, so e.g. the hover actions over a brick can tint it to match the
+/// brick's caption text (see [`brick_icon`]) rather than the bar text.
 fn action_button<'a>(
-    icon: &'static [u8],
+    icon: svg::Svg<'a>,
     tip: &'a str,
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
     tooltip(
-        button(themed_icon(icon).width(18).height(18))
+        button(icon.width(18).height(18))
             .padding(4)
             .style(button::text)
             .on_press_maybe(on_press),
@@ -1395,6 +1399,14 @@ fn mouse_hints(app: &App) -> Vec<Element<'_, Message>> {
 fn themed_icon<'a>(icon: &'static [u8]) -> svg::Svg<'a> {
     svg(svg::Handle::from_memory(icon)).style(|theme: &Theme, _status| svg::Style {
         color: Some(theme.palette().text),
+    })
+}
+
+/// Like [`themed_icon`], but tinted with a brick's caption color so an icon
+/// drawn over the brick (the hover actions) matches its label text.
+fn brick_icon<'a>(icon: &'static [u8], is_dir: bool) -> svg::Svg<'a> {
+    svg(svg::Handle::from_memory(icon)).style(move |theme: &Theme, _status| svg::Style {
+        color: Some(diskmap::brick_text_color(theme, is_dir)),
     })
 }
 
