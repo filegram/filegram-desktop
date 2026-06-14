@@ -31,7 +31,8 @@ use scanner::ScanEvent;
 use ui::brick::brick_actions;
 use ui::chrome::{
     bar_style, chrome_button, chrome_icon_button, chrome_icon_only_button,
-    disk_usage_progress_style, muted_color, muted_icon, muted_text, themed_icon,
+    chrome_icon_only_button_maybe, disk_usage_progress_style, muted_color, muted_icon, muted_text,
+    themed_icon,
 };
 use ui::start::idle_view;
 
@@ -660,26 +661,23 @@ fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Mess
         )
         .into();
     }
-    // The same top bar as the finished map (Select-folder, current path and
-    // disk-usage gauge). The trailing slot holds the live tally (file count
-    // and collected size) before a Cancel button that carries the spinner.
+    // The same top bar as the finished map (current path and disk-usage
+    // gauge), but mid-scan the leading slot holds a Cancel button carrying the
+    // spinner — there's no new scan to start while one is running — and the
+    // trailing slot holds just the live tally (file count and collected size).
     let tree = app.tree.as_ref().expect("running_view map branch requires a tree");
     let total = tree.node(tree.root).size;
     let bar = map_top_bar(
         app,
-        row![
-            scan_stats(files, total),
-            button(
-                row![spinner(), text(s.cancel)]
-                    .spacing(8)
-                    .align_y(Center)
-            )
-            .style(chrome_button)
-            .on_press(Message::CancelScan),
-        ]
-        .spacing(16)
-        .align_y(Center)
+        button(
+            row![spinner(), text(s.cancel)]
+                .spacing(8)
+                .align_y(Center),
+        )
+        .style(chrome_button)
+        .on_press(Message::CancelScan)
         .into(),
+        scan_stats(files, total).into(),
     );
     // The folder being scanned right now fills the bottom bar, vertically
     // centered within the fixed bar height.
@@ -699,41 +697,55 @@ fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Mess
     column![bar, map_canvas(app), footer].into()
 }
 
-/// The top bar shared by the growing-scan and finished-map screens: the
-/// Select-folder button and current-folder path on the left, the disk-usage
-/// gauge centered between equal-width side zones, and the navigation buttons
-/// on the right — the Go-up button (only with a parent to ascend to) followed
-/// by a screen-specific `trailing` action (Rescan on the map, Cancel mid-scan).
-fn map_top_bar<'a>(app: &'a App, trailing: Element<'a, Message>) -> Element<'a, Message> {
+/// The top bar shared by the growing-scan and finished-map screens. Left zone:
+/// the screen-specific `leading` controls (Select-folder and Rescan on the
+/// map, Cancel mid-scan), the Go-up button (always shown, disabled at the root
+/// with no parent to ascend to), and the current-folder path. Right zone: the
+/// screen-specific `trailing` action (the live tally on both screens) followed
+/// by the disk-usage gauge pinned to the far right.
+fn map_top_bar<'a>(
+    app: &'a App,
+    leading: Element<'a, Message>,
+    trailing: Element<'a, Message>,
+) -> Element<'a, Message> {
     let tree = app.tree.as_ref().expect("map_top_bar requires a tree");
     let current_path = tree.node(app.current).path.display().to_string();
-    let s = app.strings();
-    let mut top = row![row![
-        chrome_icon_button(HOME_ICON, s.new_scan, Message::NewScan),
+    // Left zone: leading controls, then the Go-up button — always shown,
+    // disabled (no action) at the root with no parent to ascend to — then the
+    // current path.
+    let left = row![
+        leading,
+        chrome_icon_only_button_maybe(
+            UP_ICON,
+            app.strings().go_up,
+            (!app.nav_stack.is_empty()).then_some(Message::GoUp),
+        ),
         container(
             text(format::shorten_path(&current_path, PATH_BAR_MAX_CHARS))
                 .style(muted_text)
-                .wrapping(iced::widget::text::Wrapping::None)
+                .wrapping(iced::widget::text::Wrapping::None),
         )
         .padding(8),
     ]
     .spacing(8)
-    .align_y(Center)
-    .width(Fill)]
-    .spacing(8)
     .align_y(Center);
+    // Right zone: the screen-specific trailing action (the live tally on both
+    // screens), then the free-space gauge pinned to the far right. The tally
+    // and gauge sit a generous gap apart (3× the usual chrome spacing).
+    let mut actions = row![trailing].spacing(24).align_y(Center);
     if let Some(usage_bar) = disk_usage_bar(app) {
-        top = top.push(usage_bar);
+        actions = actions.push(usage_bar);
     }
-    let mut actions = row![].spacing(8);
-    if !app.nav_stack.is_empty() {
-        actions = actions.push(chrome_icon_only_button(UP_ICON, s.go_up, Message::GoUp));
-    }
-    actions = actions.push(trailing);
-    container(top.push(container(actions).width(Fill).align_x(iced::Right)))
-        .padding(8)
-        .style(bar_style)
-        .into()
+    container(
+        row![left.width(Fill)]
+            .push(container(actions).width(Fill).align_x(iced::Right))
+            .spacing(8)
+            .align_y(Center),
+    )
+    // A wider right inset keeps the free-space gauge off the window edge.
+    .padding(iced::Padding::new(8.0).right(16.0))
+    .style(bar_style)
+    .into()
 }
 
 fn map_view(app: &App) -> Element<'_, Message> {
@@ -741,19 +753,21 @@ fn map_view(app: &App) -> Element<'_, Message> {
         return idle_view(app);
     };
     let s = app.strings();
-    // The scan tally stays in the top bar after the scan, before Rescan, so
-    // the file count and collected size don't vanish with the final map. Both
-    // come from the tree root, so they stay consistent after deletions.
+    // The scan tally stays in the top bar after the scan, so the file count
+    // and collected size don't vanish with the final map. It comes from the
+    // tree root, so it stays consistent after deletions. Select-folder and
+    // Rescan sit together in the left zone.
     let root = tree.node(tree.root);
     let bar = map_top_bar(
         app,
         row![
-            scan_stats(root.files, root.size),
+            chrome_icon_button(HOME_ICON, s.new_scan, Message::NewScan),
             chrome_icon_only_button(RESCAN_ICON, s.rescan, Message::Rescan),
         ]
-        .spacing(16)
+        .spacing(8)
         .align_y(Center)
         .into(),
+        scan_stats(root.files, root.size).into(),
     );
     let content = column![bar, map_canvas(app), status_bar(app)];
     // The confirmation dialog covers the whole window with an opaque dimmed
