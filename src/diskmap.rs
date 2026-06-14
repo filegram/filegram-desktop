@@ -768,6 +768,25 @@ struct ZoomDraw {
 /// a full-map distance to within half a pixel in ≈0.35 s. Higher — snappier.
 const STIFFNESS: f32 = 25.0;
 
+/// The opening reveal is dramatised: for the first [`WARP_WINDOW`] real
+/// seconds of the scan the spring clock runs [`WARP_FACTOR`]× slower, so the
+/// bricks drift out of the centre in slow motion before snapping to normal
+/// speed. Past the window real time resumes one-to-one.
+const WARP_FACTOR: f32 = 5.0;
+const WARP_WINDOW: f32 = 3.0;
+
+/// Warped spring-clock seconds for `secs` real seconds since the reveal began:
+/// the first [`WARP_WINDOW`] seconds are stretched [`WARP_FACTOR`]×, the rest
+/// pass one-to-one. Monotonic and continuous, so the springs' seamless
+/// rebasing still holds across the boundary.
+fn warp(secs: f32) -> f32 {
+    if secs <= WARP_WINDOW {
+        secs / WARP_FACTOR
+    } else {
+        WARP_WINDOW / WARP_FACTOR + (secs - WARP_WINDOW)
+    }
+}
+
 /// A critically damped spring: the value and its velocity `t` seconds after
 /// starting at (`pos`, `velocity`) and heading to `target`. Closed form —
 /// evaluating at `t1 + t2` equals evaluating at `t1`, rebasing, and
@@ -923,6 +942,11 @@ pub struct MapState {
     springs: Vec<BrickSpring>,
     /// When the spring states were last rebased.
     started: Instant,
+    /// When the opening reveal began (the first layout ever shown), anchoring
+    /// the [`warp`] slow-motion window. `None` until then — the spring clock
+    /// runs unwarped. Past the window [`warp`] is the identity, so it stays
+    /// `Some` without distorting any later animation.
+    reveal_started: Option<Instant>,
     animating: bool,
     /// Whether the running animation is a zoom transition (drives the caption
     /// scale/fade and silhouette vivify); a scan snapshot or deletion is not.
@@ -961,6 +985,7 @@ impl Default for MapState {
             theme_dark: Cell::new(None),
             springs: Vec::new(),
             started: Instant::now(),
+            reveal_started: None,
             animating: false,
             zoom: false,
             zooming_into: None,
@@ -982,9 +1007,20 @@ impl MapState {
                 .all(|(s, &(brick, rect))| s.brick == brick && s.target == rect)
     }
 
-    /// Seconds since the springs were last rebased.
+    /// Warped spring-clock seconds since the springs were last rebased. While
+    /// the opening reveal's slow-motion window is open ([`reveal_started`]),
+    /// both `started` and `now` are mapped through [`warp`] before
+    /// subtracting, so every spring evaluated this frame shares one warped
+    /// clock — the reveal and any scan-snapshot slides riding alongside it run
+    /// the same [`WARP_FACTOR`]× slower for the first [`WARP_WINDOW`] seconds.
     fn elapsed(&self, now: Instant) -> f32 {
-        now.duration_since(self.started).as_secs_f32()
+        match self.reveal_started {
+            Some(origin) => {
+                warp(now.duration_since(origin).as_secs_f32())
+                    - warp(self.started.duration_since(origin).as_secs_f32())
+            }
+            None => now.duration_since(self.started).as_secs_f32(),
+        }
     }
 
     /// Whether the springs describe this level at this canvas size.
@@ -1126,6 +1162,11 @@ impl MapState {
             let frames = (self.size == size)
                 .then(|| self.zoom_frames(level, &layout, zoom, now))
                 .flatten();
+            // The very first layout ever shown (no previous level): the bricks
+            // are born as points at the centre of the map and spring out to
+            // their slots — an opening reveal. A later snap (resize, navigation
+            // to an unrelated level) already has springs and lands instantly.
+            let first_ever = self.level.is_none();
             self.level = Some(level);
             self.size = size;
             if let Some((from, to)) = frames {
@@ -1142,6 +1183,30 @@ impl MapState {
                     .collect();
                 self.started = now;
                 self.zoom = true;
+                self.zooming_into = None;
+                self.animating = self.springs.iter().any(|s| !s.settled(0.0));
+                return true;
+            }
+            if first_ever && !layout.is_empty() {
+                // Every brick starts as a zero-size point at the map centre and
+                // springs out to its slot. A plain geometry tween (no zoom
+                // scale/fade), like a scan snapshot growing a new brick.
+                let centre = map_bounds(size).center();
+                self.springs = layout
+                    .into_iter()
+                    .map(|(brick, target)| BrickSpring {
+                        brick,
+                        motion: Motion::resting(Rectangle::new(centre, Size::ZERO)),
+                        target,
+                        normal: target,
+                    })
+                    .collect();
+                self.started = now;
+                // Open the slow-motion window: the reveal (and any scan
+                // snapshots arriving in its first seconds) drift out in slow
+                // motion.
+                self.reveal_started = Some(now);
+                self.zoom = false;
                 self.zooming_into = None;
                 self.animating = self.springs.iter().any(|s| !s.settled(0.0));
                 return true;
@@ -1884,6 +1949,26 @@ mod tests {
 
     const CANVAS: Size = Size::new(800.0, 500.0);
 
+    /// A settled baseline at `level` on the [`CANVAS`], established *without*
+    /// the opening reveal — the springs sit at rest on `layout` and the
+    /// slow-motion [`warp`] never anchors. Spring-dynamics tests use this so
+    /// their clock stays one-to-one; the reveal itself is covered separately.
+    fn seed(state: &mut MapState, level: NodeId, layout: &Layout, now: Instant) {
+        state.level = Some(level);
+        state.size = CANVAS;
+        state.springs = layout
+            .iter()
+            .map(|&(brick, rect)| BrickSpring {
+                brick,
+                motion: Motion::resting(rect),
+                target: rect,
+                normal: rect,
+            })
+            .collect();
+        state.started = now;
+        state.animating = false;
+    }
+
     /// Component-wise comparison with a tolerance: spring evaluation goes
     /// through `exp`, exact f32 equality would be brittle.
     fn assert_rects_close(actual: &[(Brick, Rectangle)], expected: &[(Brick, Rectangle)]) {
@@ -1902,13 +1987,25 @@ mod tests {
     }
 
     #[test]
-    fn map_state_snaps_on_first_layout() {
+    fn map_state_reveals_first_layout_from_centre() {
+        // The opening reveal: the very first layout is born as points at the
+        // centre of the map and springs out to its slots.
         let (l1, _) = spring_layouts();
         let mut state = MapState::default();
         let now = Instant::now();
         assert!(state.retarget_snap(NodeId(0), CANVAS, l1.clone(), now));
-        assert!(!state.is_animating());
-        assert_eq!(state.bricks(now), l1);
+        assert!(state.is_animating());
+        // At t0 every brick is a zero-size point at the map centre.
+        let centre = map_bounds(CANVAS).center();
+        for (_, r) in state.bricks(now) {
+            assert!(r.width < 0.01 && r.height < 0.01, "{r:?}");
+            assert!((r.center().x - centre.x).abs() < 0.01, "{r:?}");
+            assert!((r.center().y - centre.y).abs() < 0.01, "{r:?}");
+        }
+        // Once settled the bricks reach their slots. The slow-motion window
+        // stretches the spring clock, so the reveal takes several real seconds.
+        state.retarget_snap(NodeId(0), CANVAS, l1.clone(), now + Duration::from_secs(4));
+        assert_eq!(state.bricks(now + Duration::from_secs(4)), l1);
     }
 
     #[test]
@@ -1916,7 +2013,7 @@ mod tests {
         let (l1, l2) = spring_layouts();
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget_snap(NodeId(0), CANVAS, l1.clone(), t0);
+        seed(&mut state, NodeId(0), &l1, t0);
         let t1 = t0 + Duration::from_secs(1);
         assert!(state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1));
         assert!(state.is_animating());
@@ -1958,7 +2055,7 @@ mod tests {
         let (l1, l2) = spring_layouts();
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget_snap(NodeId(0), CANVAS, l1, t0);
+        seed(&mut state, NodeId(0), &l1, t0);
         state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t0 + Duration::from_secs(1));
         // The frame the spring settles on still redraws (the cache holds
         // the last in-flight frame), the next one is clean.
@@ -1998,7 +2095,7 @@ mod tests {
         let l3 = vec![(Brick::Node(NodeId(1)), rect(300.0, 200.0))];
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget_snap(NodeId(0), CANVAS, l1.clone(), t0);
+        seed(&mut state, NodeId(0), &l1, t0);
         let t1 = t0 + Duration::from_secs(1);
         state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1);
         // A new snapshot lands mid-flight: the bricks continue from where
@@ -2027,7 +2124,7 @@ mod tests {
         ];
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget_snap(NodeId(0), CANVAS, l1, t0);
+        seed(&mut state, NodeId(0), &l1, t0);
         let t1 = t0 + Duration::from_secs(1);
         state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1);
         // The just-discovered brick starts as a point at the center of its
@@ -2071,7 +2168,7 @@ mod tests {
         )];
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget_snap(NodeId(0), CANVAS, l1, t0);
+        seed(&mut state, NodeId(0), &l1, t0);
         let t1 = t0 + Duration::from_secs(1);
         state.retarget_snap(NodeId(0), CANVAS, l2, t1);
         assert_rects_close(&state.bricks(t1), &[(rest, rect(100.0, 50.0))]);
@@ -2087,7 +2184,7 @@ mod tests {
         let l2 = vec![(Brick::Rest { files: 2, dirs: 0, size: 20 }, rect_a)];
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget_snap(NodeId(0), CANVAS, l1, t0);
+        seed(&mut state, NodeId(0), &l1, t0);
         let t1 = t0 + Duration::from_secs(1);
         assert!(state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1));
         assert!(!state.is_animating());
@@ -2120,7 +2217,9 @@ mod tests {
             .collect();
         let mut state = MapState::default();
         let now = Instant::now();
-        state.retarget_snap(tree.root, CANVAS, parked.clone(), now);
+        // `parked` is the at-rest drawn layout; retarget to `target` and probe
+        // mid-flight.
+        seed(&mut state, tree.root, &parked, now);
         state.retarget_snap(tree.root, CANVAS, target.clone(), now);
         assert!(state.is_animating());
         // The probe sits inside the *drawn* rectangle of the first brick
@@ -2138,8 +2237,8 @@ mod tests {
         let (l1, _) = spring_layouts();
         let mut state = MapState::default();
         let now = Instant::now();
-        state.retarget_snap(NodeId(0), CANVAS, l1.clone(), now);
-        // The same layout again (an ordinary redraw): nothing to repaint.
+        seed(&mut state, NodeId(0), &l1, now);
+        // The same layout again (an ordinary idle redraw): nothing to repaint.
         assert!(!state.retarget_snap(NodeId(0), CANVAS, l1, now + Duration::from_secs(1)));
     }
 
@@ -2228,7 +2327,7 @@ mod tests {
         let mut state = MapState::default();
         let t0 = Instant::now();
         let root_layout = level1(&tree, NodeId(0), CANVAS);
-        state.retarget_snap(NodeId(0), CANVAS, root_layout.clone(), t0);
+        seed(&mut state, NodeId(0), &root_layout, t0);
         // Click into "sub" (NodeId 1).
         assert!(state.zoom_in(&tree, NodeId(0), NodeId(1), CANVAS, t0));
         assert!(state.is_animating());
@@ -2276,7 +2375,7 @@ mod tests {
         let parent = halves_layout(folder, Brick::Node(NodeId(4)));
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget_snap(NodeId(1), CANVAS, children, t0);
+        seed(&mut state, NodeId(1), &children, t0);
         let t1 = t0 + Duration::from_secs(1);
         assert!(state.retarget(NodeId(0), CANVAS, parent.clone(), Zoom::Out, t1));
         assert!(state.is_animating());
