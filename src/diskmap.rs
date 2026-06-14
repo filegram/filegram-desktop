@@ -327,14 +327,45 @@ impl DiskMap<'_> {
         frame: &mut Frame,
         palette: &BrickPalette,
         bricks: &[(Brick, Rectangle)],
+        draws: &[Option<ZoomDraw>],
+        underlay: &[(Brick, Rectangle)],
     ) {
         frame.fill_rectangle(Point::ORIGIN, frame.size(), palette.map_background);
-        for &(brick, rect) in bricks {
-            match brick {
-                Brick::Node(id) => self.draw_brick(state, frame, palette, id, rect),
-                Brick::Rest { files, dirs, size } => {
-                    self.draw_rest(frame, palette, files, dirs, size, rect);
-                }
+        // A zoom blows bricks far past the screen: an off-screen brick is not
+        // worth filling, and — crucially — drawing its caption would rasterize
+        // huge glyphs at many sizes into iced's glyph atlas, overflowing it and
+        // breaking *other* text (`AtlasFull` is silently ignored).
+        let view = Rectangle::new(Point::ORIGIN, frame.size());
+        // The zoom-in underlay: the real child level grown into the pivot,
+        // drawn beneath the dissolving parent bricks so the commit is seamless.
+        for &(brick, rect) in underlay {
+            if view.intersects(&rect) {
+                self.draw_one(state, frame, palette, brick, rect, None);
+            }
+        }
+        for (i, &(brick, rect)) in bricks.iter().enumerate() {
+            if !view.intersects(&rect) {
+                continue;
+            }
+            let zoom = draws.get(i).copied().flatten();
+            self.draw_one(state, frame, palette, brick, rect, zoom);
+        }
+    }
+
+    /// One brick, node or rest tail, with an optional zoom fade/scale.
+    fn draw_one(
+        &self,
+        state: &MapState,
+        frame: &mut Frame,
+        palette: &BrickPalette,
+        brick: Brick,
+        rect: Rectangle,
+        zoom: Option<ZoomDraw>,
+    ) {
+        match brick {
+            Brick::Node(id) => self.draw_brick(state, frame, palette, id, rect, zoom),
+            Brick::Rest { files, dirs, size } => {
+                self.draw_rest(frame, palette, (files, dirs, size), rect, zoom);
             }
         }
     }
@@ -344,18 +375,22 @@ impl DiskMap<'_> {
         &self,
         frame: &mut Frame,
         palette: &BrickPalette,
-        files: usize,
-        dirs: usize,
-        size: u64,
+        counts: (usize, usize, u64),
         rect: Rectangle,
+        zoom: Option<ZoomDraw>,
     ) {
+        let (files, dirs, size) = counts;
+        let bare = zoom.map_or(0.0, |z| z.bare);
         let path = Path::rounded_rectangle(rect.position(), rect.size(), CORNER_RADIUS.into());
-        frame.fill(&path, palette.rest_fill);
+        frame.fill(&path, fade_color(palette.rest_fill, 1.0 - bare));
         frame.stroke(
             &path,
-            Stroke::default().with_color(palette.rest_stroke).with_width(1.0),
+            Stroke::default()
+                .with_color(fade_color(palette.rest_stroke, 1.0 - bare))
+                .with_width(1.0),
         );
-        self.draw_label(frame, &rest_label(files, dirs, size), palette.rest_text, rect);
+        let cap = zoom.map(|z| (z.scale, z.caption));
+        self.draw_label(frame, &rest_label(files, dirs, size), palette.rest_text, rect, cap);
     }
 
     fn draw_brick(
@@ -365,6 +400,7 @@ impl DiskMap<'_> {
         palette: &BrickPalette,
         id: NodeId,
         rect: Rectangle,
+        zoom: Option<ZoomDraw>,
     ) {
         let node = self.tree.node(id);
         let (fill, stroke, text_color) = if node.is_dir {
@@ -376,21 +412,32 @@ impl DiskMap<'_> {
         } else {
             (palette.file_fill, palette.file_stroke, palette.file_text)
         };
+        // Bare the fill toward the background as a zoom-in pivot dissolves (and,
+        // for zoom-out, while it is still blown up): the child squares (real
+        // underlay or vivid silhouettes) read instead of a flat folder color.
+        let bare = zoom.map_or(0.0, |z| z.bare);
         let path = Path::rounded_rectangle(rect.position(), rect.size(), CORNER_RADIUS.into());
-        frame.fill(&path, fill);
-        frame.stroke(&path, Stroke::default().with_color(stroke).with_width(1.0));
+        frame.fill(&path, fade_color(fill, 1.0 - bare));
+        frame.stroke(
+            &path,
+            Stroke::default()
+                .with_color(fade_color(stroke, 1.0 - bare))
+                .with_width(1.0),
+        );
 
         // Silhouettes first so the caption (size in the corner, name centered)
         // draws on top of them.
         if node.is_dir {
-            self.draw_nested(state, frame, palette, id, rect);
+            let lift = zoom.map_or((0.0, 1.0), |z| (z.vivid, z.silhouette));
+            self.draw_nested(state, frame, palette, id, rect, lift);
         }
 
         let (name, size) = brick_caption(self.tree, id);
         // Folders carry their file count beside the size when it fits; files
         // have no count to show.
         let files = node.is_dir.then_some(node.files);
-        self.draw_brick_label(frame, name, size, files, text_color, rect);
+        let cap = zoom.map(|z| (z.scale, z.caption));
+        self.draw_brick_label(frame, (name, size, files), text_color, rect, cap);
     }
 
     /// Draws a node brick's caption: the name in `color` at the fitted size in
@@ -411,21 +458,32 @@ impl DiskMap<'_> {
     fn draw_brick_label(
         &self,
         frame: &mut Frame,
-        name: &str,
-        size: String,
-        files: Option<u64>,
+        caption: (&str, String, Option<u64>),
         color: Color,
         rect: Rectangle,
+        zoom: Option<(f32, f32)>,
     ) {
+        let (name, size, files) = caption;
+        // A zoom blows the caption up (scale) and fades it (alpha): a zoom-in
+        // pivot grows its name and dissolves it; a zoom-out brick fades its name
+        // back in at slot size. `(1.0, 1.0)` at rest — exactly the static label.
+        let (scale, alpha) = zoom.unwrap_or((1.0, 1.0));
+        // Skip a near-invisible caption outright: it would still rasterize its
+        // (possibly huge) glyphs into the atlas for nothing.
+        if alpha <= 0.01 {
+            return;
+        }
         // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in
         // UTF-8. The font is fitted to the full caption so a brick draws a
         // label exactly when `has_label` (which measures the same string) does.
         let name_chars = name.chars().count();
         let size_chars = size.chars().count();
         let full_chars = name_chars + 1 + size_chars;
-        let Some(font_size) = label_font_size(full_chars.max(1), rect) else {
+        let Some(font_size) = zoom_label_font_size(full_chars.max(1), rect, scale) else {
             return;
         };
+        let name_color = fade_color(color, alpha);
+        let size_color = fade_color(muted(color), alpha);
 
         // Size: top-left corner, small and muted — the lesser part of the label.
         // Dropped on short bricks (height below three name-font lines), where it
@@ -446,7 +504,7 @@ impl DiskMap<'_> {
             frame.fill_text(Text {
                 content: size_line,
                 position: label_origin(rect),
-                color: muted(color),
+                color: size_color,
                 size: Pixels(SIZE_FONT),
                 shaping: iced::widget::text::Shaping::Advanced,
                 ..Text::default()
@@ -472,7 +530,7 @@ impl DiskMap<'_> {
                 (rect.x + (rect.width - name_w) / 2.0).round(),
                 (rect.y + (rect.height - font_size) / 2.0).round(),
             ),
-            color,
+            color: name_color,
             size: Pixels(font_size),
             shaping: iced::widget::text::Shaping::Advanced,
             ..Text::default()
@@ -480,12 +538,24 @@ impl DiskMap<'_> {
     }
 
     /// Brick label; the font size is fitted per brick rather than globally
-    /// (fixes a bug of the original). Returns the font size used.
-    fn draw_label(&self, frame: &mut Frame, label: &str, color: Color, rect: Rectangle) -> f32 {
+    /// (fixes a bug of the original). `zoom` is the caption's `(scale, alpha)`
+    /// during a transition, `None` at rest.
+    fn draw_label(
+        &self,
+        frame: &mut Frame,
+        label: &str,
+        color: Color,
+        rect: Rectangle,
+        zoom: Option<(f32, f32)>,
+    ) {
+        let (scale, alpha) = zoom.unwrap_or((1.0, 1.0));
+        if alpha <= 0.01 {
+            return;
+        }
         // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
         let char_count = label.chars().count().max(1);
-        let Some(font_size) = label_font_size(char_count, rect) else {
-            return 0.0;
+        let Some(font_size) = zoom_label_font_size(char_count, rect, scale) else {
+            return;
         };
         // If even the minimum size does not fit, truncate the text to the width.
         let max_chars = (rect.width / (CHAR_WIDTH * font_size)) as usize;
@@ -493,12 +563,11 @@ impl DiskMap<'_> {
         frame.fill_text(Text {
             content,
             position: label_origin(rect),
-            color,
+            color: fade_color(color, alpha),
             size: Pixels(font_size),
             shaping: iced::widget::text::Shaping::Advanced,
             ..Text::default()
         });
-        font_size
     }
 
     /// Nested silhouettes: colored rectangles without text, laid out by
@@ -514,7 +583,12 @@ impl DiskMap<'_> {
         palette: &BrickPalette,
         dir: NodeId,
         rect: Rectangle,
+        lift: (f32, f32),
     ) {
+        let (vivid, alpha) = lift;
+        if alpha <= 0.01 {
+            return;
+        }
         // The silhouettes fill the brick to its top edge (as they already do at
         // the bottom): the size line and centered name float over them rather
         // than reserving a header band. Horizontal frame only — left += 1,
@@ -530,9 +604,18 @@ impl DiskMap<'_> {
         if content.width < MIN_CONTENT_SIDE || content.height < MIN_CONTENT_SIDE {
             return;
         }
+        // A zoom blows bricks far past the screen: only the on-screen part of
+        // the preview is worth laying out and filling.
+        let view = Rectangle::new(Point::ORIGIN, frame.size());
+        if !view.intersects(&content) {
+            return;
+        }
         let mut silhouettes = Vec::new();
         state.nested_silhouettes(self.tree, dir, frame.size(), content, 1, &mut silhouettes);
         for (brick, silhouette, level) in silhouettes {
+            if !view.intersects(&silhouette) {
+                continue;
+            }
             let (folder, file, rest) = if level == 1 {
                 (
                     palette.nested_folder_fill,
@@ -546,17 +629,29 @@ impl DiskMap<'_> {
                     palette.nested_deep_rest_fill,
                 )
             };
-            let fill = match brick {
+            let preview = match brick {
                 Brick::Rest { .. } => rest,
                 Brick::Node(id) if self.tree.node(id).is_dir => folder,
                 Brick::Node(_) => file,
+            };
+            // Vivify the top level toward the real child colors as the level
+            // "opens up"; deeper levels stay faint previews.
+            let fill = if level == 1 {
+                let real = match brick {
+                    Brick::Rest { .. } => palette.rest_fill,
+                    Brick::Node(id) if self.tree.node(id).is_dir => palette.folder_fill,
+                    Brick::Node(_) => palette.file_fill,
+                };
+                lerp_color(preview, real, vivid)
+            } else {
+                preview
             };
             // Corners scale with the silhouette like the original.
             let radius =
                 (silhouette.width.min(silhouette.height) * NESTED_CORNER_FRACTION).min(CORNER_RADIUS);
             let path =
                 Path::rounded_rectangle(silhouette.position(), silhouette.size(), radius.into());
-            frame.fill(&path, fill);
+            frame.fill(&path, fade_color(fill, alpha));
         }
     }
 }
@@ -567,11 +662,20 @@ impl DiskMap<'_> {
 /// every brick and every progressive-scan snapshot — overflow iced's glyph
 /// atlas (`PrepareError::AtlasFull` is silently ignored, text breaks).
 fn label_font_size(char_count: usize, rect: Rectangle) -> Option<f32> {
+    zoom_label_font_size(char_count, rect, 1.0)
+}
+
+/// [`label_font_size`] with a zoom enlargement: while a brick is blown up
+/// (`scale > 1`) the caption may grow past [`MAX_FONT`] up to [`ZOOM_MAX_FONT`],
+/// tracking the brick. At `scale == 1` this is exactly [`label_font_size`], so a
+/// settling caption never snaps to a different size.
+fn zoom_label_font_size(char_count: usize, rect: Rectangle, scale: f32) -> Option<f32> {
     // Both sides bound the font: the width per character count and
     // the height minus the caption's vertical padding (8 px).
     let fit = (rect.width / (CHAR_WIDTH * char_count.max(1) as f32)).min(rect.height - 8.0);
+    let cap = (MAX_FONT * scale).clamp(MIN_FONT, ZOOM_MAX_FONT);
     // Down to an even integer: fewer distinct font sizes — a more stable atlas.
-    let font_size = (fit.clamp(MIN_FONT, MAX_FONT) / 2.0).floor() * 2.0;
+    let font_size = (fit.clamp(MIN_FONT, cap) / 2.0).floor() * 2.0;
     (rect.height >= font_size + 8.0 && rect.width >= 2.0 * font_size).then_some(font_size)
 }
 
@@ -586,6 +690,78 @@ fn muted(color: Color) -> Color {
         a: color.a * 0.6,
         ..color
     }
+}
+
+/// A brick's caption may grow past [`MAX_FONT`] while a zoom tween enlarges it
+/// — the font tracks the brick and shrinks back to [`MAX_FONT`] at rest. Capped
+/// so the glyph atlas sees only a handful of extra sizes.
+const ZOOM_MAX_FONT: f32 = 48.0;
+
+/// `ω·t` at which a critically damped spring is settled — the zoom's nominal
+/// duration in units of `1/STIFFNESS` (matches the `≈10/ω s` in the
+/// [`STIFFNESS`] note). Turns elapsed time into a 0→1 progress for the
+/// time-keyed parts of a zoom-*in*.
+const SETTLE_TURNS: f32 = 10.0;
+
+/// Zoom-*out*: the enlargement (`current/normal` scale) at which a pivot is
+/// fully vivid and bared; it folds back to an opaque preview brick as it
+/// shrinks to its slot (scale → 1).
+const VIVID_FULL_SCALE: f32 = 1.5;
+
+/// Zoom-*in* vivify window (fraction of the duration): the silhouettes hold
+/// their faint preview until [`VIVID_DELAY`] and lerp to fully vivid (the real
+/// child colors) by [`VIVID_FULL`], so the level "opens up" mid-flight.
+const VIVID_DELAY: f32 = 0.25;
+const VIVID_FULL: f32 = 0.6;
+
+/// Zoom-*in*: when (fraction of the duration) the stretching brick begins
+/// dissolving to transparent — a short opaque "this is the folder" beat while
+/// it grows, then a fade over the rest that reveals the child level the commit
+/// snaps in underneath.
+const DISSOLVE_START: f32 = 2.0 / 3.0;
+
+/// Scales a color's opacity by `alpha` (clamped) — the per-frame fade of a
+/// zoom transition. `alpha == 1.0` is a no-op.
+fn fade_color(color: Color, alpha: f32) -> Color {
+    Color {
+        a: color.a * alpha.clamp(0.0, 1.0),
+        ..color
+    }
+}
+
+/// Linear blend between two colors, component-wise; `t` clamped to `0..=1`.
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    Color {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}
+
+/// How much a rectangle is enlarged relative to its resting slot, as a linear
+/// scale (√ of the area ratio): `1.0` at rest, `> 1` while a zoom blows it up.
+fn zoom_scale(rect: Rectangle, normal: Rectangle) -> f32 {
+    let area = rect.width.max(0.0) * rect.height.max(0.0);
+    let base = normal.width.max(1.0) * normal.height.max(1.0);
+    (area / base).max(0.0).sqrt()
+}
+
+/// Per-brick fade/scale state of a zoom transition, parallel to the springs.
+/// All four alphas are `0..=1`; `scale` is the [`zoom_scale`] of the brick.
+#[derive(Clone, Copy, Debug)]
+struct ZoomDraw {
+    /// Caption font multiplier (and how big the brick reads).
+    scale: f32,
+    /// How far the folder fill is bared toward the background (`1` — gone).
+    bare: f32,
+    /// Lerp of the nested silhouettes from faint preview to real child colors.
+    vivid: f32,
+    /// Overall opacity of the nested silhouettes (`1` — fully shown).
+    silhouette: f32,
+    /// Opacity of the caption.
+    caption: f32,
 }
 
 /// Stiffness of the brick spring, s⁻¹: a critically damped spring crosses
@@ -689,6 +865,11 @@ struct BrickSpring {
     /// State at [`MapState::started`].
     motion: Motion,
     target: Rectangle,
+    /// The brick's resting slot in the current level — the size it reads as at
+    /// scale 1. Equals `target` except during a zoom-*in*, whose springs head
+    /// to a blown-up `target` while `normal` stays the slot the caption and
+    /// silhouettes are measured against ([`zoom_scale`]).
+    normal: Rectangle,
 }
 
 impl BrickSpring {
@@ -743,6 +924,14 @@ pub struct MapState {
     /// When the spring states were last rebased.
     started: Instant,
     animating: bool,
+    /// Whether the running animation is a zoom transition (drives the caption
+    /// scale/fade and silhouette vivify); a scan snapshot or deletion is not.
+    zoom: bool,
+    /// While a zoom-*in* is in flight: the child folder the parent level is
+    /// growing toward, committed to once the pivot fills the screen. `None`
+    /// otherwise. Drives [`DiskMap::update`]'s routing and blocks navigation
+    /// mid-transition.
+    zooming_into: Option<NodeId>,
     /// The navigated-to node and canvas size of the current layout:
     /// a change of either snaps instead of animating.
     level: Option<NodeId>,
@@ -773,6 +962,8 @@ impl Default for MapState {
             springs: Vec::new(),
             started: Instant::now(),
             animating: false,
+            zoom: false,
+            zooming_into: None,
             level: None,
             size: Size::ZERO,
             nested: RefCell::new(NestedCache::default()),
@@ -892,26 +1083,18 @@ impl MapState {
     /// tail, or the source frame is degenerate) — the caller snaps instead.
     fn zoom_frames(
         &self,
-        level: NodeId,
+        _level: NodeId,
         layout: &[(Brick, Rectangle)],
         zoom: Zoom,
-        now: Instant,
+        _now: Instant,
     ) -> Option<(Rectangle, Rectangle)> {
         let bounds = map_bounds(self.size);
         let (from, to) = match zoom {
-            Zoom::Snap => return None,
-            // Entering a folder: the new level grows out of the clicked
-            // brick, wherever it is drawn right now (possibly mid-flight).
-            Zoom::In => {
-                let brick = self
-                    .springs
-                    .iter()
-                    .find(|s| s.brick == Brick::Node(level))?
-                    .rect_at(self.elapsed(now));
-                (bounds, brick)
-            }
-            // Leaving a folder: the map shrinks back into that folder's
-            // brick on the parent level.
+            // Zoom-*in* runs through the dedicated [`MapState::zoom_in`] path
+            // (the parent level blows up and commits), not the generic remap.
+            Zoom::Snap | Zoom::In => return None,
+            // Leaving a folder: the map shrinks into that folder's brick on
+            // the parent level.
             Zoom::Out => {
                 let old = self.level?;
                 let &(_, target) = layout
@@ -946,15 +1129,20 @@ impl MapState {
             self.level = Some(level);
             self.size = size;
             if let Some((from, to)) = frames {
+                // Zoom-out: springs start blown up (the pivot fills the screen)
+                // and shrink to their resting slots — `normal == target`.
                 self.springs = layout
                     .into_iter()
                     .map(|(brick, target)| BrickSpring {
                         brick,
                         motion: Motion::resting(map_rect(target, from, to)),
                         target,
+                        normal: target,
                     })
                     .collect();
                 self.started = now;
+                self.zoom = true;
+                self.zooming_into = None;
                 self.animating = self.springs.iter().any(|s| !s.settled(0.0));
                 return true;
             }
@@ -965,9 +1153,12 @@ impl MapState {
                     brick,
                     motion: Motion::resting(rect),
                     target: rect,
+                    normal: rect,
                 })
                 .collect();
             self.started = now;
+            self.zoom = false;
+            self.zooming_into = None;
             self.animating = false;
             return stale;
         }
@@ -989,10 +1180,13 @@ impl MapState {
                         // of the center of its destination.
                         || Motion::resting(Rectangle::new(target.center(), Size::ZERO)),
                     );
-                    BrickSpring { brick, motion, target }
+                    BrickSpring { brick, motion, target, normal: target }
                 })
                 .collect();
             self.started = now;
+            // A scan snapshot / deletion is a plain slide, not a zoom.
+            self.zoom = false;
+            self.zooming_into = None;
             // A change may be caption-only (the rest brick's counts drift
             // while its rectangle stays put): repaint once, but don't run
             // animation frames for springs that are already at rest.
@@ -1006,6 +1200,7 @@ impl MapState {
                     s.motion = Motion::resting(s.target);
                 }
                 self.animating = false;
+                self.zoom = false;
             }
             // The completing frame still repaints: the cache holds the
             // last in-flight picture.
@@ -1030,6 +1225,158 @@ impl MapState {
 
     fn is_animating(&self) -> bool {
         self.animating
+    }
+
+    /// The child folder a zoom-*in* is currently growing toward, if any.
+    fn zooming_into(&self) -> Option<NodeId> {
+        self.zooming_into
+    }
+
+    /// The memoized [`level1`] of a folder in map-bounds coordinates (an
+    /// identity remap through [`MapState::nested`], reusing its per-tree
+    /// cache). Used for the zoom-*in* underlay and to warm the destination
+    /// layouts before a zoom-*out* lands them all at once.
+    fn cached_level1(&self, tree: &FsTree, dir: NodeId, canvas: Size) -> Vec<(Brick, Rectangle)> {
+        self.nested(tree, dir, canvas, map_bounds(canvas))
+    }
+
+    /// Per-brick [`ZoomDraw`], parallel to [`bricks`]; `None` at rest or for a
+    /// plain scan-snapshot slide.
+    ///
+    /// **Zoom-out** is size-keyed: a pivot stays vivid and bared while it still
+    /// fills much of the screen, folding back to an opaque preview brick — its
+    /// caption fading in at slot size — as it shrinks (`scale → 1`).
+    ///
+    /// **Zoom-in** is time-keyed (the spring's ease-out would reach a given
+    /// fraction far too early): the silhouettes hold their faint preview through
+    /// the first quarter and vivify across the middle; the stretching brick
+    /// stays opaque while it grows, then dissolves to transparent over the last
+    /// third ([`bare`] and the caption fade together) — handing off to the
+    /// child level the commit snaps in underneath.
+    fn zoom_draw(&self, now: Instant) -> Vec<Option<ZoomDraw>> {
+        if !(self.animating && self.zoom) {
+            return vec![None; self.springs.len()];
+        }
+        let t = self.elapsed(now);
+        if self.zooming_into.is_some() {
+            let linear = (t * STIFFNESS / SETTLE_TURNS).clamp(0.0, 1.0);
+            let dissolve = ((linear - DISSOLVE_START) / (1.0 - DISSOLVE_START)).clamp(0.0, 1.0);
+            let vivid = ((linear - VIVID_DELAY) / (VIVID_FULL - VIVID_DELAY)).clamp(0.0, 1.0);
+            return self
+                .springs
+                .iter()
+                .map(|s| {
+                    Some(ZoomDraw {
+                        scale: zoom_scale(s.rect_at(t), s.normal),
+                        bare: dissolve,
+                        vivid,
+                        // Silhouettes fade with the shell — the real child
+                        // underlay (see `draw`) takes their place.
+                        silhouette: 1.0 - dissolve,
+                        caption: 1.0 - dissolve,
+                    })
+                })
+                .collect();
+        }
+        self.springs
+            .iter()
+            .map(|s| {
+                let scale = zoom_scale(s.rect_at(t), s.normal);
+                let v = ((scale - 1.0) / (VIVID_FULL_SCALE - 1.0)).clamp(0.0, 1.0);
+                // Zoom-out keeps its silhouettes solid: the bared pivot shows the
+                // vivid child squares as it shrinks back into its slot, and the
+                // caption fades in at slot size (the mirror of zoom-in).
+                Some(ZoomDraw {
+                    scale,
+                    bare: v,
+                    vivid: v,
+                    silhouette: 1.0,
+                    caption: 1.0 - v,
+                })
+            })
+            .collect()
+    }
+
+    /// Drive a zoom-*in* into child folder `target`: animate the *parent*
+    /// level (still displayed) so the pivot's slot grows to fill the screen —
+    /// the time-reverse of a zoom-out. The pivot brick (and its vivifying
+    /// silhouettes) thus grows out of the parent exactly as a zoom-out shrinks
+    /// into it. When the springs reach the blown-up layout the transition
+    /// commits ([`commit_zoom_in`]) to `target`'s own level; a pivot that is
+    /// off-screen or a sliver commits immediately. Returns whether the picture
+    /// changed (the geometry cache is stale).
+    fn zoom_in(&mut self, tree: &FsTree, parent: NodeId, target: NodeId, size: Size, now: Instant) -> bool {
+        let bounds = map_bounds(size);
+        if bounds.width < 1.0 || bounds.height < 1.0 {
+            return self.commit_zoom_in(tree, target, size, now);
+        }
+        let p_layout = self.cached_level1(tree, parent, size);
+        let f_slot = p_layout
+            .iter()
+            .find(|&&(brick, _)| brick == Brick::Node(target))
+            .map(|&(_, rect)| rect)
+            .filter(|r| r.width >= 1.0 && r.height >= 1.0);
+        let Some(f_slot) = f_slot else {
+            // The folder collapsed into the rest tail or is a sliver — no slot
+            // to grow out of, so jump straight to its level.
+            return self.commit_zoom_in(tree, target, size, now);
+        };
+        let fresh = self.zooming_into != Some(target)
+            || self.level != Some(parent)
+            || self.size != size;
+        if fresh {
+            // First frame: springs start at rest (the parent map) and head to
+            // the blown-up layout where the pivot slot fills the screen.
+            self.level = Some(parent);
+            self.size = size;
+            self.zooming_into = Some(target);
+            self.zoom = true;
+            self.started = now;
+            self.springs = p_layout
+                .into_iter()
+                .map(|(brick, slot)| BrickSpring {
+                    brick,
+                    motion: Motion::resting(slot),
+                    target: map_rect(slot, f_slot, bounds),
+                    normal: slot,
+                })
+                .collect();
+            self.animating = self.springs.iter().any(|s| !s.settled(0.0));
+            if !self.animating {
+                // The slot already fills the screen: nothing to animate.
+                return self.commit_zoom_in(tree, target, size, now);
+            }
+            return true;
+        }
+        // Continuing: commit once the pivot has filled the screen.
+        let t = self.elapsed(now);
+        if self.springs.iter().all(|s| s.settled(t)) {
+            return self.commit_zoom_in(tree, target, size, now);
+        }
+        true
+    }
+
+    /// Land a zoom-*in* on `target`'s own level, at rest. The child map has
+    /// already grown to fill the screen as the zoom-in underlay, so the
+    /// hand-off is seamless.
+    fn commit_zoom_in(&mut self, tree: &FsTree, target: NodeId, size: Size, now: Instant) -> bool {
+        let layout = self.cached_level1(tree, target, size);
+        self.level = Some(target);
+        self.size = size;
+        self.zooming_into = None;
+        self.zoom = false;
+        self.started = now;
+        self.springs = layout
+            .into_iter()
+            .map(|(brick, rect)| BrickSpring {
+                brick,
+                motion: Motion::resting(rect),
+                target: rect,
+                normal: rect,
+            })
+            .collect();
+        self.animating = false;
+        true
     }
 }
 
@@ -1873,47 +2220,53 @@ mod tests {
     }
 
     #[test]
-    fn zoom_in_grows_level_out_of_clicked_brick() {
-        let folder = Brick::Node(NodeId(1));
-        let source = Rectangle::new(Point::new(40.0, 20.0), Size::new(200.0, 100.0));
-        let children = halves_layout(Brick::Node(NodeId(2)), Brick::Node(NodeId(3)));
+    fn zoom_in_grows_parent_into_child_then_commits() {
+        // Zoom-in is the mirror of zoom-out: the parent level (still shown)
+        // blows up so the clicked folder's slot fills the screen, then commits
+        // to the child level.
+        let tree = nested_tree();
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget_snap(NodeId(0), CANVAS, vec![(folder, source)], t0);
-        let t1 = t0 + Duration::from_secs(1);
-        assert!(state.retarget(NodeId(1), CANVAS, children.clone(), Zoom::In, t1));
+        let root_layout = level1(&tree, NodeId(0), CANVAS);
+        state.retarget_snap(NodeId(0), CANVAS, root_layout.clone(), t0);
+        // Click into "sub" (NodeId 1).
+        assert!(state.zoom_in(&tree, NodeId(0), NodeId(1), CANVAS, t0));
         assert!(state.is_animating());
-        // The new level starts compressed into the clicked brick…
-        let expected: Layout = children
+        assert_eq!(state.zooming_into(), Some(NodeId(1)));
+        // It starts at the resting parent map (scale 1)…
+        assert_rects_close(&state.bricks(t0), &root_layout);
+        // …and grows so the pivot slot fills the whole map.
+        let sub_slot = root_layout
             .iter()
-            .map(|&(brick, target)| (brick, map_rect(target, canvas_bounds(), source)))
+            .find(|&&(b, _)| b == Brick::Node(NodeId(1)))
+            .unwrap()
+            .1;
+        let blown: Layout = root_layout
+            .iter()
+            .map(|&(b, t)| (b, map_rect(t, sub_slot, canvas_bounds())))
             .collect();
-        assert_rects_close(&state.bricks(t1), &expected);
-        // …and the springs expand it to the full map.
-        assert_rects_close(&state.bricks(t1 + Duration::from_secs(1)), &children);
+        assert_eq!(blown[0].1, canvas_bounds());
+        assert_rects_close(&state.bricks(t0 + Duration::from_secs(1)), &blown);
+        // A far-future frame commits to "sub"'s own level, at rest.
+        let done = t0 + Duration::from_secs(2);
+        assert!(state.zoom_in(&tree, NodeId(0), NodeId(1), CANVAS, done));
+        assert_eq!(state.zooming_into(), None);
+        assert_eq!(state.level, Some(NodeId(1)));
+        assert!(!state.is_animating());
+        assert_eq!(state.bricks(done), level1(&tree, NodeId(1), CANVAS));
     }
 
     #[test]
-    fn zoom_in_starts_from_the_brick_mid_flight_position() {
-        // The clicked brick is still flying toward `landing`: the new level
-        // grows out of where the brick is drawn, not where it will land.
-        let folder = Brick::Node(NodeId(1));
-        let parked = rect(100.0, 50.0);
-        let landing = Rectangle::new(Point::new(40.0, 20.0), Size::new(200.0, 100.0));
+    fn zoom_in_commits_immediately_on_degenerate_canvas() {
+        // No room to grow a pivot out of: jump straight to the child level.
+        let tree = nested_tree();
         let mut state = MapState::default();
         let t0 = Instant::now();
-        state.retarget_snap(NodeId(0), CANVAS, vec![(folder, parked)], t0);
-        let t1 = t0 + Duration::from_secs(1);
-        state.retarget_snap(NodeId(0), CANVAS, vec![(folder, landing)], t1);
-        let mid = t1 + Duration::from_millis(100);
-        let (_, drawn) = state.bricks(mid)[0];
-        let children = halves_layout(Brick::Node(NodeId(2)), Brick::Node(NodeId(3)));
-        state.retarget(NodeId(1), CANVAS, children.clone(), Zoom::In, mid);
-        let expected: Layout = children
-            .iter()
-            .map(|&(brick, target)| (brick, map_rect(target, canvas_bounds(), drawn)))
-            .collect();
-        assert_rects_close(&state.bricks(mid), &expected);
+        let tiny = Size::new(1.0, 1.0);
+        assert!(state.zoom_in(&tree, NodeId(0), NodeId(1), tiny, t0));
+        assert!(!state.is_animating());
+        assert_eq!(state.zooming_into(), None);
+        assert_eq!(state.level, Some(NodeId(1)));
     }
 
     #[test]
@@ -1937,21 +2290,6 @@ mod tests {
         assert_eq!(expected[0].1, canvas_bounds());
         assert_rects_close(&state.bricks(t1), &expected);
         assert_rects_close(&state.bricks(t1 + Duration::from_secs(1)), &parent);
-    }
-
-    #[test]
-    fn zoom_in_snaps_when_clicked_brick_not_on_screen() {
-        // The springs hold a different brick (e.g. the folder was inside
-        // the collapsed rest tail): no anchor — an instant transition.
-        let children = halves_layout(Brick::Node(NodeId(2)), Brick::Node(NodeId(3)));
-        let mut state = MapState::default();
-        let t0 = Instant::now();
-        let elsewhere = vec![(Brick::Node(NodeId(9)), rect(100.0, 50.0))];
-        state.retarget_snap(NodeId(0), CANVAS, elsewhere, t0);
-        let t1 = t0 + Duration::from_secs(1);
-        assert!(state.retarget(NodeId(1), CANVAS, children.clone(), Zoom::In, t1));
-        assert!(!state.is_animating());
-        assert_eq!(state.bricks(t1), children);
     }
 
     #[test]
@@ -2114,13 +2452,32 @@ impl canvas::Program<Message> for DiskMap<'_> {
             Event::Window(iced::window::Event::RedrawRequested(now)) => {
                 let size = bounds.size();
                 let zoom = zoom_direction(self.tree, state.level, self.current);
-                let stale = state.retarget(
-                    self.current,
-                    size,
-                    level1(self.tree, self.current, size),
-                    zoom,
-                    *now,
-                );
+                // A zoom-*in* runs its own path: keep showing the parent level
+                // and grow the clicked folder's slot to fill the screen, then
+                // commit to the child. `zooming_into` keeps driving it across
+                // the frames after the first.
+                let entering = state
+                    .zooming_into()
+                    .or_else(|| (zoom == Zoom::In).then_some(self.current));
+                let stale = if let Some(target) = entering {
+                    let parent = state.level.unwrap_or(self.current);
+                    state.zoom_in(self.tree, parent, target, size, *now)
+                } else {
+                    let layout = level1(self.tree, self.current, size);
+                    // Warm the destination folders' nested layouts on this light
+                    // first frame of a zoom-out, so they aren't all computed at
+                    // once when the siblings land (that burst froze the hand-off).
+                    if zoom == Zoom::Out {
+                        for &(brick, _) in &layout {
+                            if let Brick::Node(id) = brick
+                                && self.tree.node(id).is_dir
+                            {
+                                let _ = state.cached_level1(self.tree, id, size);
+                            }
+                        }
+                    }
+                    state.retarget(self.current, size, layout, zoom, *now)
+                };
                 if stale {
                     self.cache.clear();
                 }
@@ -2137,12 +2494,18 @@ impl canvas::Program<Message> for DiskMap<'_> {
                 .active
                 .is_some()
                 .then(|| Action::publish(Message::SetActive(None))),
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+            // Navigation is blocked mid zoom-in: a second transition would
+            // fight the one in flight (and its pending commit).
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if state.zooming_into().is_none() =>
+            {
                 hit(state).map(|id| Action::publish(Message::BrickPressed(id)).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonPressed(
                 mouse::Button::Right | mouse::Button::Back,
-            )) => Some(Action::publish(Message::GoUp).and_capture()),
+            )) if state.zooming_into().is_none() => {
+                Some(Action::publish(Message::GoUp).and_capture())
+            }
             _ => None,
         }
     }
@@ -2163,11 +2526,24 @@ impl canvas::Program<Message> for DiskMap<'_> {
         // The springs hold the current layout: `update` receives
         // `RedrawRequested` and retargets them before every frame, so
         // re-running `level1` here would only repeat that work.
-        let bricks = state.bricks(Instant::now());
+        let now = Instant::now();
+        let bricks = state.bricks(now);
+        let draws = state.zoom_draw(now);
+        // Zoom-in underlay: the real child level grown into the pivot's current
+        // rectangle, so the dissolving parent brick hands off to it seamlessly.
+        // Built only once the pivot starts baring (before that it hides it).
+        let underlay = state
+            .zooming_into()
+            .and_then(|target| {
+                let i = bricks.iter().position(|&(b, _)| b == Brick::Node(target))?;
+                let bare = draws.get(i).copied().flatten().map_or(0.0, |z| z.bare);
+                (bare > 0.0).then(|| state.nested(self.tree, target, bounds.size(), bricks[i].1))
+            })
+            .unwrap_or_default();
         let map = self
             .cache
             .draw(renderer, bounds.size(), |frame| {
-                self.draw_map(state, frame, palette, &bricks)
+                self.draw_map(state, frame, palette, &bricks, &draws, &underlay)
             });
         let mut layers = vec![map];
 
