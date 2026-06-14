@@ -870,17 +870,17 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     let size_label = if node.is_dir {
         format!(
             "{} | {} | {} ({})",
+            node.name,
             format::human_size(node.size),
             percent,
-            node.name,
             node.children.len(),
         )
     } else {
         format!(
             "{} | {} | {}",
+            node.name,
             format::human_size(node.size),
             percent,
-            node.name,
         )
     };
     // A fixed content height (the mouse-hint icon's) keeps the bar — and so
