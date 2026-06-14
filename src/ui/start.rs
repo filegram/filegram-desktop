@@ -191,7 +191,7 @@ fn quick_scan_button<'a>(icon: &'static [u8], name: String, path: &Path) -> Elem
     )
     .style(button::text)
     .padding(4)
-    .on_press_maybe((!path.is_empty()).then(|| Message::HistoryPicked(path)))
+    .on_press_maybe((!path.is_empty()).then_some(Message::HistoryPicked(path)))
     .into()
 }
 
