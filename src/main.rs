@@ -129,6 +129,9 @@ struct App {
     /// Whether the open menu shows the full list instead of the short one;
     /// the "…" entry expands it, reopening resets to short.
     lang_menu_expanded: bool,
+    /// The recent-scan entry the pointer is over, by its path; only that
+    /// entry shows the delete cross. `None` when the pointer is elsewhere.
+    hovered_history: Option<String>,
     /// Where the theme and language choices are persisted; `None` disables
     /// saving (tests).
     settings_file: Option<PathBuf>,
@@ -155,6 +158,10 @@ enum ScanState {
 enum Message {
     PathChanged(String),
     HistoryPicked(String),
+    /// The pointer entered (`Some(path)`) or left (`None`) a recent-scan row.
+    HistoryHovered(Option<String>),
+    /// The delete cross on a recent-scan row was clicked: drop it for good.
+    HistoryRemoved(String),
     StartScan,
     CancelScan,
     Scan(ScanEvent),
@@ -262,6 +269,7 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         lang_override: None,
         lang_menu_open: false,
         lang_menu_expanded: false,
+        hovered_history: None,
         settings_file: None,
         latest_release: None,
         delete: |path| trash::delete(path).map_err(std::io::Error::other),
@@ -314,6 +322,16 @@ fn subscription(app: &App) -> Subscription<Message> {
     Subscription::batch(subs)
 }
 
+/// Persists the history to its file, if persistence is enabled. A failure is
+/// logged, not fatal: the in-memory history stays correct for the session.
+fn save_history(app: &App) {
+    if let Some(file) = &app.history_file
+        && let Err(error) = app.history.save(file)
+    {
+        eprintln!("filegram: failed to save the scan history: {error}");
+    }
+}
+
 fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::PathChanged(path) => {
@@ -323,6 +341,20 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::HistoryPicked(path) => {
             app.path_input = path;
             update(app, Message::StartScan)
+        }
+        Message::HistoryHovered(path) => {
+            app.hovered_history = path;
+            Task::none()
+        }
+        Message::HistoryRemoved(path) => {
+            app.history.remove(&path);
+            // The row is gone, so its cross can never be hovered again; clear
+            // the highlight in case it pointed at the entry just removed.
+            if app.hovered_history.as_deref() == Some(path.as_str()) {
+                app.hovered_history = None;
+            }
+            save_history(app);
+            Task::none()
         }
         Message::StartScan => {
             // Normalize once, with the same rules the history applies, so the
@@ -338,11 +370,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             // must not become a clickable entry and the next-launch prefill.
             if std::path::Path::new(&app.path_input).is_dir() {
                 app.history.push(&app.path_input);
-                if let Some(file) = &app.history_file
-                    && let Err(error) = app.history.save(file)
-                {
-                    eprintln!("filegram: failed to save the scan history: {error}");
-                }
+                save_history(app);
             }
             app.disk_usage = disk::usage(Path::new(&app.path_input));
             app.cancel = Arc::new(AtomicBool::new(false));
