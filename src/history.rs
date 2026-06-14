@@ -26,6 +26,14 @@ impl History {
         self.entries.truncate(MAX_ENTRIES);
     }
 
+    /// Drops a path from the history, if present. The path is normalized the
+    /// same way [`push`] records it, so a path read back from a displayed
+    /// entry still matches and is removed.
+    pub fn remove(&mut self, path: &str) {
+        let path = normalize(path);
+        self.entries.retain(|entry| entry != path);
+    }
+
     /// The most recent path, if any.
     pub fn latest(&self) -> Option<&str> {
         self.entries.first().map(String::as_str)
@@ -118,6 +126,25 @@ mod tests {
         history.push("/b");
         history.push("/a");
         assert_eq!(history.entries(), ["/a", "/b"]);
+    }
+
+    #[test]
+    fn remove_drops_the_path_normalized() {
+        let mut history = History::default();
+        history.push("/a");
+        history.push("/b");
+        history.push("/c");
+        // A trailing separator must still match the stored, normalized entry.
+        history.remove("/b/");
+        assert_eq!(history.entries(), ["/c", "/a"]);
+    }
+
+    #[test]
+    fn remove_missing_path_is_a_no_op() {
+        let mut history = History::default();
+        history.push("/a");
+        history.remove("/absent");
+        assert_eq!(history.entries(), ["/a"]);
     }
 
     #[test]

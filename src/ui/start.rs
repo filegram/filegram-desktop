@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use iced::widget::{
-    button, center, column, container, mouse_area, opaque, row, scrollable, stack, text, text_input,
+    button, center, column, container, mouse_area, opaque, row, scrollable, space, stack, text,
+    text_input,
 };
 use iced::{Center, Element, Fill, Padding, Theme};
 
@@ -194,17 +195,43 @@ fn quick_scan_button<'a>(icon: &'static [u8], name: String, path: &Path) -> Elem
     .into()
 }
 
-/// The scan history under the path input: a click rescans the path.
+/// The scan history under the path input: a click rescans the path, and
+/// hovering a row reveals a trailing cross that removes the entry.
 fn recent_scans(app: &App) -> Element<'_, Message> {
     column![text(app.strings().recent_scans).size(14).style(muted_text)]
         .spacing(2)
-        .extend(app.history.entries().iter().map(|path| {
-            button(text(format::shorten_path(path, PATH_BAR_MAX_CHARS)).size(14))
+        .extend(app.history.entries().iter().map(|path| recent_scan_row(app, path)))
+        .into()
+}
+
+/// One history row. A click on the path rescans it; the row fills the column
+/// width so the delete cross lands on the same right edge for every entry,
+/// and the `mouse_area` spans that whole width so the hover target is the
+/// entire row, not just the path text. The cross renders only for the hovered
+/// row — at the same font size and vertical padding as the path, so revealing
+/// it never changes the row height and the list below it stays put.
+fn recent_scan_row<'a>(app: &'a App, path: &'a str) -> Element<'a, Message> {
+    let scan = button(text(format::shorten_path(path, PATH_BAR_MAX_CHARS)).size(14))
+        .style(button::text)
+        .padding(4)
+        .on_press(Message::HistoryPicked(path.to_string()));
+    let mut entry = row![scan, space().width(Fill)].align_y(Center);
+    if app.hovered_history.as_deref() == Some(path) {
+        entry = entry.push(
+            button(text("×").size(14))
                 .style(button::text)
-                .padding(4)
-                .on_press(Message::HistoryPicked(path.clone()))
-                .into()
-        }))
+                .padding(Padding {
+                    top: 4.0,
+                    right: 8.0,
+                    bottom: 4.0,
+                    left: 8.0,
+                })
+                .on_press(Message::HistoryRemoved(path.to_string())),
+        );
+    }
+    mouse_area(entry.width(Fill))
+        .on_enter(Message::HistoryHovered(Some(path.to_string())))
+        .on_exit(Message::HistoryHovered(None))
         .into()
 }
 
