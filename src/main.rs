@@ -1124,7 +1124,7 @@ fn map_canvas(app: &App) -> Element<'_, Message> {
                 .into_iter()
                 .find(|&(brick, _)| brick == diskmap::Brick::Node(active))
                 // A brick too small for a caption gets no actions panel either.
-                .filter(|&(_, rect)| diskmap::has_label(tree, active, rect))
+                .filter(|&(_, rect)| diskmap::has_label(rect))
                 .map(|(_, rect)| brick_actions(app, active, rect, size))
         });
         // The canvas always sits in the stack, panel or not: moving it
