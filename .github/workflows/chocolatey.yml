@@ -1,0 +1,82 @@
+name: Chocolatey
+
+# Packs the Chocolatey package from packaging/chocolatey and pushes it to the
+# community feed. Pulls the official Windows binaries from the matching GitHub
+# release, pins their SHA-256 sums into the install script, then packs/pushes.
+#
+# Runnable two ways:
+#   - workflow_dispatch: publish any already-released version on demand
+#     (e.g. to backfill 0.2.5).
+#   - workflow_call: invoked by release.yml right after the release is published.
+#
+# Requires the CHOCO_API_KEY secret (a chocolatey.org API key). Without it the
+# job logs a warning and exits cleanly so a release is never blocked on it.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to publish (e.g. 0.2.5)"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish to Chocolatey
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      # The default branch carries the packaging files; the release tag may
+      # predate them (e.g. when backfilling an older version). The binaries
+      # come from the release by version, independent of the checked-out ref.
+      - uses: actions/checkout@v6
+
+      - name: Pack and push
+        shell: pwsh
+        env:
+          CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not $env:CHOCO_API_KEY) {
+            Write-Warning 'CHOCO_API_KEY secret is not set; skipping Chocolatey publish.'
+            exit 0
+          }
+
+          $version = $env:VERSION
+          $tag = "v$version"
+
+          New-Item -ItemType Directory -Force dl | Out-Null
+          gh release download $tag --repo $env:GITHUB_REPOSITORY `
+            --pattern 'filegram-windows-x86_64.exe' `
+            --pattern 'filegram-windows-i686.exe' `
+            --dir dl
+          if ($LASTEXITCODE -ne 0) { throw "failed to download release assets for $tag" }
+
+          $sum64 = (Get-FileHash dl/filegram-windows-x86_64.exe -Algorithm SHA256).Hash
+          $sum32 = (Get-FileHash dl/filegram-windows-i686.exe   -Algorithm SHA256).Hash
+
+          Push-Location packaging/chocolatey
+          foreach ($f in 'filegram.nuspec', 'tools/chocolateyinstall.ps1', 'tools/VERIFICATION.txt') {
+            (Get-Content $f -Raw).
+              Replace('__VERSION__',    $version).
+              Replace('__CHECKSUM64__', $sum64).
+              Replace('__CHECKSUM32__', $sum32) | Set-Content $f
+          }
+
+          choco pack filegram.nuspec
+          if ($LASTEXITCODE -ne 0) { throw 'choco pack failed' }
+
+          choco push "filegram.$version.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
+          if ($LASTEXITCODE -ne 0) { throw 'choco push failed' }
+          Pop-Location
