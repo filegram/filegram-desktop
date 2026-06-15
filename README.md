@@ -34,6 +34,14 @@ Pre-built binaries are published to the rolling
 
 For other platforms, build from source below.
 
+### macOS (Homebrew)
+
+Filegram is also available as a [Homebrew](https://brew.sh) cask:
+
+```sh
+brew install --cask filegram/tap/filegram
+```
+
 ### Windows (Scoop)
 
 Filegram is also available via [Scoop](https://scoop.sh):
