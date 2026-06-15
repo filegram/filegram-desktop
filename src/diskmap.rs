@@ -507,13 +507,16 @@ impl DiskMap<'_> {
         // Dropped on short bricks (height below three name-font lines), where it
         // would crowd the centered name.
         if rect.height >= 3.0 * font_size {
+            // The size line scales with the name font so it stays legible on big
+            // bricks (floored on small ones, see [`size_font`]).
+            let size_font = size_font(font_size);
             // For a folder, append the file count when the widened line still
             // clears the brick width (4 px pad each side); estimate the width
             // like elsewhere — measuring by shaping inside the draw is unsafe.
             let size_line = match files {
                 Some(n) => {
                     let with_files = format!("{size} · {}", plural(n, "file"));
-                    let fits = with_files.chars().count() as f32 * CHAR_WIDTH * SIZE_FONT
+                    let fits = with_files.chars().count() as f32 * CHAR_WIDTH * size_font
                         <= rect.width - 8.0;
                     if fits { with_files } else { size }
                 }
@@ -523,7 +526,7 @@ impl DiskMap<'_> {
                 content: size_line,
                 position: label_origin(rect),
                 color: size_color,
-                size: Pixels(SIZE_FONT),
+                size: Pixels(size_font),
                 shaping: iced::widget::text::Shaping::Advanced,
                 ..Text::default()
             });
@@ -697,9 +700,25 @@ fn zoom_label_font_size(char_count: usize, rect: Rectangle, scale: f32) -> Optio
     (rect.height >= font_size + 8.0 && rect.width >= 2.0 * font_size).then_some(font_size)
 }
 
-/// Font size of the size caption — small and fixed, so it reads as the lesser
-/// part of the label.
-const SIZE_FONT: f32 = 10.0;
+/// Floor on the size caption's font — the size on small bricks (unchanged from
+/// when this caption was a fixed [`MIN_SIZE_FONT`]).
+const MIN_SIZE_FONT: f32 = 10.0;
+/// The size caption tracks the name font at this fraction: it grows on large
+/// bricks so it stays readable, while remaining the lesser part of the label.
+const SIZE_FONT_FRACTION: f32 = 0.5;
+
+/// Font size of the size/count caption for a brick whose name is drawn at
+/// `name_font`: a fraction of the name font, floored at [`MIN_SIZE_FONT`] so
+/// small bricks read exactly as before and big bricks scale up.
+///
+/// Snapped down to an even integer — like [`zoom_label_font_size`] does for the
+/// name. The grid keeps the count of distinct font sizes small (and reuses the
+/// name's own atlas slots): every extra glyph size carves a fresh region out of
+/// iced's glyph atlas, and once it overflows *all* text on the canvas shreds.
+fn size_font(name_font: f32) -> f32 {
+    let raw = (name_font * SIZE_FONT_FRACTION).max(MIN_SIZE_FONT);
+    (raw / 2.0).floor() * 2.0
+}
 
 /// A muted variant of a label color: same hue, lower opacity, so it reads as
 /// less prominent over the brick fill in either theme.
@@ -2843,6 +2862,20 @@ impl canvas::Program<Message> for DiskMap<'_> {
             let path =
                 Path::rounded_rectangle(rect.position(), rect.size(), CORNER_RADIUS.into());
             frame.fill(&path, palette.highlight);
+            // The highlight is a translucent wash over the whole brick, caption
+            // included — in the light theme (white at 0.5) it bleaches the text
+            // to mush. Redraw the active brick's caption on top so it stays
+            // crisp. The highlight sits at the slot rect regardless of any zoom,
+            // so the caption is redrawn at rest (`None`) to match it.
+            let node = self.tree.node(active);
+            let text_color = if node.is_dir {
+                palette.folder_text
+            } else {
+                palette.file_text
+            };
+            let (name, size) = brick_caption(self.tree, active);
+            let files = node.is_dir.then_some(node.files);
+            self.draw_brick_label(&mut frame, (name, size, files), text_color, rect, None);
             layers.push(frame.into_geometry());
         }
         layers
