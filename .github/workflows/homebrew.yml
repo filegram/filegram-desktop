@@ -1,0 +1,79 @@
+name: Homebrew
+
+# Bumps the Filegram cask in the filegram/homebrew-tap repository to a released
+# version: pulls the macOS .dmg from the matching GitHub release, computes its
+# SHA-256, then rewrites version + sha256 in Casks/filegram.rb and pushes.
+#
+# Runnable two ways:
+#   - workflow_dispatch: bump to any already-released version on demand
+#     (e.g. to backfill 0.2.5).
+#   - workflow_call: invoked by release.yml right after the release is published.
+#
+# Requires the HOMEBREW_TAP_TOKEN secret: a PAT with contents:write on
+# filegram/homebrew-tap (GITHUB_TOKEN only reaches this repo, not the tap).
+# Without it the job logs a warning and exits cleanly so a release is never
+# blocked on it.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to publish (e.g. 0.2.5)"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  bump:
+    name: Bump Homebrew cask
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Update cask in tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN secret is not set; skipping Homebrew bump."
+            exit 0
+          fi
+
+          tag="v${VERSION}"
+          asset="filegram-macos-universal.dmg"
+
+          # Pull the released .dmg and hash it — independent of any ref.
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir dl
+          sum=$(shasum -a 256 "dl/$asset" | cut -d' ' -f1)
+          echo "sha256($asset) = $sum"
+
+          git clone --depth 1 \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/filegram/homebrew-tap.git" tap
+          cask=tap/Casks/filegram.rb
+
+          sed -i -E "s/^(  version \").*(\")$/\1${VERSION}\2/" "$cask"
+          sed -i -E "s/^(  sha256 \").*(\")$/\1${sum}\2/" "$cask"
+
+          echo "--- updated cask ---"
+          sed -n '1,3p' "$cask"
+
+          cd tap
+          if git diff --quiet; then
+            echo "Cask already at ${VERSION}; nothing to push."
+            exit 0
+          fi
+
+          git config user.name 'filegram-bot'
+          git config user.email 'filegram-bot@users.noreply.github.com'
+          git commit -am "Update Filegram cask for v${VERSION}"
+          git push origin HEAD:master

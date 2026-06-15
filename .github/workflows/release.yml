@@ -117,3 +117,14 @@ jobs:
     secrets: inherit
     with:
       version: ${{ inputs.version }}
+
+  # Bump the Homebrew cask in filegram/homebrew-tap once the release (and its
+  # binaries) exist. No-ops with a warning if the HOMEBREW_TAP_TOKEN secret is
+  # unset.
+  homebrew:
+    name: Bump Homebrew cask
+    needs: [prepare, publish]
+    uses: ./.github/workflows/homebrew.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
