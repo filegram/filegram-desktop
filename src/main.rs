@@ -151,7 +151,12 @@ struct App {
 
 enum ScanState {
     Idle,
-    Running { current: String, files: u64 },
+    Running {
+        current: String,
+        files: u64,
+        /// Directories being traversed right now (see [`scanner::ScanEvent`]).
+        dirs: u64,
+    },
     Done,
 }
 
@@ -378,6 +383,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.scan = ScanState::Running {
                 current: app.path_input.clone(),
                 files: 0,
+                dirs: 0,
             };
             app.tree = None;
             app.current = NodeId(0);
@@ -396,9 +402,17 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::Scan(event) => {
             match event {
-                ScanEvent::Progress { current, files } => {
+                ScanEvent::Progress {
+                    current,
+                    files,
+                    dirs,
+                } => {
                     if let ScanState::Running { .. } = app.scan {
-                        app.scan = ScanState::Running { current, files };
+                        app.scan = ScanState::Running {
+                            current,
+                            files,
+                            dirs,
+                        };
                     }
                 }
                 // A late snapshot arriving after Finished is ignored.
@@ -655,7 +669,11 @@ fn save_settings(app: &App) {
 fn view(app: &App) -> Element<'_, Message> {
     match &app.scan {
         ScanState::Idle => idle_view(app),
-        ScanState::Running { current, files } => running_view(app, current, *files),
+        ScanState::Running {
+            current,
+            files,
+            dirs,
+        } => running_view(app, current, *files, *dirs),
         ScanState::Done => map_view(app),
     }
 }
@@ -672,15 +690,33 @@ fn scan_label<'a>(label: &'static str, files: u64, size: f32) -> Element<'a, Mes
     .into()
 }
 
+/// The count of directories being traversed right now, with the folder glyph —
+/// sits just to the left of the path of the folder being scanned, so the live
+/// "in-flight" tally reads together with where the scan currently is.
+fn dirs_in_flight<'a>(dirs: u64) -> Element<'a, Message> {
+    row![
+        muted_icon(FOLDER_ICON).width(16).height(16),
+        text(dirs.to_string()).font(Font::MONOSPACE).style(muted_text),
+    ]
+    .spacing(6)
+    .align_y(Center)
+    .into()
+}
+
 /// Scan screen: a counter until the first snapshot, after that the map grows
 /// right as the scan proceeds (navigating it already works: NodeIds are stable).
-fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Message> {
+fn running_view<'a>(app: &'a App, current: &str, files: u64, dirs: u64) -> Element<'a, Message> {
     let s = app.strings();
     if app.tree.is_none() {
         return center(
             column![
                 scan_label(s.scanning_files, files, 20.0),
-                text(format::shorten_path(current, PATH_BAR_MAX_CHARS)).style(muted_text),
+                row![
+                    dirs_in_flight(dirs),
+                    text(format::shorten_path(current, PATH_BAR_MAX_CHARS)).style(muted_text),
+                ]
+                .spacing(8)
+                .align_y(Center),
                 button(text(s.cancel))
                     .style(chrome_button)
                     .on_press(Message::CancelScan),
@@ -707,9 +743,11 @@ fn running_view<'a>(app: &'a App, current: &str, files: u64) -> Element<'a, Mess
         .into(),
         scan_stats(files, total).into(),
     );
-    // The folder being scanned right now fills the bottom bar, vertically
-    // centered within the fixed bar height.
+    // The live folder-in-flight count sits at the bottom-left, just before the
+    // path of the folder being scanned right now, which fills the rest of the
+    // bottom bar — both vertically centered within the fixed bar height.
     let mut footer = row![
+        dirs_in_flight(dirs),
         container(text(format::shorten_path(current, PATH_BAR_MAX_CHARS)).style(muted_text))
             .width(Fill)
             .height(Fill)
@@ -1197,6 +1235,7 @@ mod tests {
             ScanState::Running {
                 current: String::new(),
                 files: 0,
+                dirs: 0,
             },
         ] {
             app.scan = scan;
@@ -1496,6 +1535,7 @@ mod tests {
             ScanState::Running {
                 current: String::new(),
                 files: 0,
+                dirs: 0,
             },
         ] {
             app.scan = scan;
