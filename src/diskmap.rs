@@ -105,8 +105,25 @@ pub fn brick_text_color(theme: &iced::Theme, is_dir: bool) -> Color {
 /// Margin between the canvas edges and the brick area.
 const MAP_MARGIN: f32 = 4.0;
 const CORNER_RADIUS: f32 = 8.0;
-const MAX_FONT: f32 = 28.0;
-const MIN_FONT: f32 = 12.0;
+/// The fixed ladder of label font sizes (px). A caption is drawn at the largest
+/// rung that fits the brick, chosen from the brick's geometry alone — never from
+/// the name's length. Equally sized bricks then read at the same size, and the
+/// whole map shows this small, deliberate set of sizes instead of a per-brick
+/// continuum. (The old fit made the font track `width / name_length`, so two
+/// same-size bricks with names of different lengths drew at different sizes —
+/// the source of the "sizes jump around" look.)
+const FONT_TIERS: [f32; 4] = [12.0, 16.0, 22.0, 28.0];
+/// Smallest rung: a brick that cannot fit it carries no label.
+const MIN_FONT: f32 = FONT_TIERS[0];
+/// Padding reserved around a caption inside its brick (4 px each side).
+const LABEL_PAD: f32 = 8.0;
+/// A rung is chosen only if at least this many characters fit at it; a longer
+/// name is truncated with an ellipsis rather than shrinking the font. This also
+/// guarantees a truncated name keeps at least this many characters.
+const MIN_LABEL_CHARS: f32 = 4.0;
+/// Line height of a wrapped name, as a multiple of the font size — the vertical
+/// step between lines when a long name wraps to use the brick's spare height.
+const NAME_LINE_HEIGHT: f32 = 1.2;
 /// Empirical average glyph width as a fraction of the font size — for fitting the font
 /// per brick (canvas offers no cheap way to measure text).
 const CHAR_WIDTH: f32 = 0.6;
@@ -219,7 +236,7 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
     loop {
         let rects = rects_for(collapsed);
         let kept = children.len() - collapsed;
-        let grown = match (0..kept).find(|&i| !has_label(tree, children[i], rects[i])) {
+        let grown = match (0..kept).find(|&i| !has_label(rects[i])) {
             Some(first_unlabeled) => children.len() - first_unlabeled,
             None => collapsed,
         }
@@ -281,17 +298,11 @@ fn brick_caption(tree: &FsTree, id: NodeId) -> (&str, String) {
     (&node.name, crate::format::human_size(node.size))
 }
 
-/// The full caption as one string — for fitting the font and deciding
-/// whether the brick is large enough to carry a label at all.
-fn brick_label(tree: &FsTree, id: NodeId) -> String {
-    let (name, size) = brick_caption(tree, id);
-    format!("{name} {size}")
-}
-
-/// Whether the brick is large enough to fit its caption. Tiny slivers get
-/// no label, and the hover actions panel is suppressed for them too.
-pub fn has_label(tree: &FsTree, id: NodeId, rect: Rectangle) -> bool {
-    label_font_size(brick_label(tree, id).chars().count(), rect).is_some()
+/// Whether the brick is large enough to carry a label. Decided from the brick's
+/// geometry alone (see [`tier_font`]): tiny slivers get no label, and the hover
+/// actions panel is suppressed for them too.
+pub fn has_label(rect: Rectangle) -> bool {
+    tier_font(rect).is_some()
 }
 
 /// The content area inside a folder silhouette: inset on the top and the
@@ -459,21 +470,21 @@ impl DiskMap<'_> {
         self.draw_brick_label(frame, (name, size, files), text_color, rect, cap);
     }
 
-    /// Draws a node brick's caption: the name in `color` at the fitted size in
-    /// the geometric center of the brick, and — on bricks at least three
+    /// Draws a node brick's caption: the name in `color` at the brick's
+    /// [`tier_font`] size in its geometric center, and — on bricks at least three
     /// name-font lines tall — the size small and muted in the top-left corner.
     /// For a folder, `files` carries its file count, appended to the size line
     /// (`"1.2 MB · 42 files"`) when the combined text fits the brick width.
-    /// The name font is fitted to the full "name size" caption so the
-    /// panel-visibility decision in [`has_label`] stays consistent. The caption
-    /// draws over the nested silhouettes, which now fill the brick to its top.
+    /// The font is chosen from the brick's geometry (so [`has_label`] agrees on
+    /// when a label appears); a name too long for one line wraps down the brick's
+    /// spare height ([`wrap_name`]), and only truncates with an ellipsis when even
+    /// the wrapped lines do not fit. The caption draws over the nested
+    /// silhouettes, which now fill the brick to its top.
     ///
     /// The name is centered by an *estimated* offset rounded to whole pixels,
     /// not by [`Text`]'s own alignment (which lands glyphs on fractional pixels
     /// and shreds the glyph atlas) nor by a real measurement (shaping text to
-    /// measure it inside the canvas draw corrupts the renderer). The fit already
-    /// guarantees the *full* caption clears the brick width, so the shorter name
-    /// alone always fits; the truncation below is only a defensive guard.
+    /// measure it inside the canvas draw corrupts the renderer).
     fn draw_brick_label(
         &self,
         frame: &mut Frame,
@@ -492,25 +503,23 @@ impl DiskMap<'_> {
         if alpha <= 0.01 {
             return;
         }
-        // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in
-        // UTF-8. The font is fitted to the full caption so a brick draws a
-        // label exactly when `has_label` (which measures the same string) does.
+        // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
         let name_chars = name.chars().count();
-        let size_chars = size.chars().count();
-        let full_chars = name_chars + 1 + size_chars;
-        let Some(font_size) = zoom_label_font_size(full_chars.max(1), rect, scale) else {
+        // The brick's geometry sets the tier (so a brick draws a label exactly
+        // when `has_label`, on the same geometry, does); the name may then shrink
+        // below it to fit in full (see [`fit_name`]).
+        let Some(tier) = zoom_tier_font(rect, scale) else {
             return;
         };
         let name_color = fade_color(color, alpha);
         let size_color = fade_color(muted(color), alpha);
 
         // Size: top-left corner, small and muted — the lesser part of the label.
-        // Dropped on short bricks (height below three name-font lines), where it
-        // would crowd the centered name.
-        if rect.height >= 3.0 * font_size {
-            // The size line scales with the name font so it stays legible on big
-            // bricks (floored on small ones, see [`size_font`]).
-            let size_font = size_font(font_size);
+        // Tied to the brick's tier (not the shrunk name) so it stays consistent;
+        // dropped on short bricks (height below three tier lines), where it would
+        // crowd the centered name. Its font also reserves a top band for the name.
+        let caption_size_font = (rect.height >= 3.0 * tier).then(|| size_font(tier));
+        if let Some(size_font) = caption_size_font {
             // For a folder, append the file count when the widened line still
             // clears the brick width (4 px pad each side); estimate the width
             // like elsewhere — measuring by shaping inside the draw is unsafe.
@@ -533,34 +542,52 @@ impl DiskMap<'_> {
             });
         }
 
-        // Name: centered in the brick. Centering is done by hand — `Text`'s own
-        // `Alignment::Center` subtracts the shaped width/2 from the position,
-        // landing glyphs on fractional pixels; that splits each letter across
-        // subpixel bins and overflows the glyph atlas (text turns to mush, see
-        // [`label_origin`] and [`label_font_size`]). Instead we *estimate* the
-        // name width ([`CHAR_WIDTH`] per char, like elsewhere — shaping to
-        // measure inside the draw corrupts the renderer) and round the
-        // top-left origin to whole pixels, keeping `Text`'s default Left/Top.
-        let max_name_chars = ((rect.width - 8.0) / (CHAR_WIDTH * font_size)).max(0.0) as usize;
-        // Reuse `name_chars` rather than re-scanning the UTF-8 every redraw.
-        let shown_chars = name_chars.min(max_name_chars);
-        let name_shown: String = name.chars().take(shown_chars).collect();
-        let name_w = shown_chars as f32 * CHAR_WIDTH * font_size;
-        frame.fill_text(Text {
-            content: name_shown,
-            position: Point::new(
-                (rect.x + (rect.width - name_w) / 2.0).round(),
-                (rect.y + (rect.height - font_size) / 2.0).round(),
-            ),
-            color: name_color,
-            size: Pixels(font_size),
-            shaping: iced::widget::text::Shaping::Advanced,
-            ..Text::default()
-        });
+        // Name: centered in the brick. It wraps to use the brick's spare height
+        // and, if still too long, shrinks below the tier so the whole name shows;
+        // only at the smallest size does it ellipsize. A short brick stays one
+        // line at the tier.
+        //
+        // Horizontal centering is left to `Text` itself (`align_x: Center` about
+        // the brick's mid-x): it measures the real shaped width, while our own
+        // [`CHAR_WIDTH`]-per-char estimate is too coarse for proportional text and
+        // visibly mis-centers a short name (lots of slack to one side). The wrap
+        // math still estimates widths, but only to pick where lines break — not to
+        // place them. The mid-x is rounded; centering then lands glyphs on a few
+        // subpixel bins, which is affordable only because the font set is tiny
+        // ([`fit_name`] stays on the ladder) — a large glyph set forces the atlas
+        // to grow mid-scan and that corrupts the text (see the memory note).
+        let band = caption_size_font.map_or(LABEL_PAD, |sf| LABEL_PAD + sf);
+        let (font_size, lines) = fit_name(name, name_chars, rect, tier, band);
+        let line_h = font_size * NAME_LINE_HEIGHT;
+        // The name's vertical region clears the caption band up top and keeps a
+        // pad at the bottom, so a wrapped block never collides with the caption
+        // nor runs to the edge.
+        let region_top = rect.y + band;
+        let region_h = (rect.height - LABEL_PAD - band).max(font_size);
+        let block_h = (lines.len() - 1) as f32 * line_h + font_size;
+        // One line keeps the old full-brick centering; a wrapped block centers
+        // inside the region so it clears the caption and the bottom edge.
+        let top = if lines.len() > 1 {
+            region_top + (region_h - block_h) / 2.0
+        } else {
+            rect.y + (rect.height - block_h) / 2.0
+        };
+        let center_x = (rect.x + rect.width / 2.0).round();
+        for (i, line) in lines.iter().enumerate() {
+            frame.fill_text(Text {
+                content: line.clone(),
+                position: Point::new(center_x, (top + i as f32 * line_h).round()),
+                color: name_color,
+                size: Pixels(font_size),
+                align_x: iced::widget::text::Alignment::Center,
+                shaping: iced::widget::text::Shaping::Advanced,
+                ..Text::default()
+            });
+        }
     }
 
-    /// Brick label; the font size is fitted per brick rather than globally
-    /// (fixes a bug of the original). `zoom` is the caption's `(scale, alpha)`
+    /// Rest-brick label, drawn at the brick's [`tier_font`] size and truncated
+    /// to the width with an ellipsis. `zoom` is the caption's `(scale, alpha)`
     /// during a transition, `None` at rest.
     fn draw_label(
         &self,
@@ -574,14 +601,14 @@ impl DiskMap<'_> {
         if alpha <= 0.01 {
             return;
         }
-        // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
-        let char_count = label.chars().count().max(1);
-        let Some(font_size) = zoom_label_font_size(char_count, rect, scale) else {
+        let Some(font_size) = zoom_tier_font(rect, scale) else {
             return;
         };
-        // If even the minimum size does not fit, truncate the text to the width.
-        let max_chars = (rect.width / (CHAR_WIDTH * font_size)) as usize;
-        let content: String = label.chars().take(max_chars).collect();
+        // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
+        // A label wider than the brick is truncated to the width with an ellipsis.
+        let char_count = label.chars().count();
+        let max_chars = ((rect.width - LABEL_PAD) / (CHAR_WIDTH * font_size)).max(0.0) as usize;
+        let (content, _) = fit_with_ellipsis(label, char_count, max_chars);
         frame.fill_text(Text {
             content,
             position: label_origin(rect),
@@ -678,27 +705,136 @@ impl DiskMap<'_> {
     }
 }
 
-/// Label font size for the brick width; `None` — the brick is too small for a label.
-/// The font size is strictly integral: cosmic-text rasterizes glyphs separately for
-/// each f32 size (`CacheKey::font_size_bits`), and fractional sizes — distinct for
-/// every brick and every progressive-scan snapshot — overflow iced's glyph
-/// atlas (`PrepareError::AtlasFull` is silently ignored, text breaks).
-fn label_font_size(char_count: usize, rect: Rectangle) -> Option<f32> {
-    zoom_label_font_size(char_count, rect, 1.0)
+/// How large a label could be in `rect` before quantizing: bounded by the brick
+/// height and by the width needed for a [`MIN_LABEL_CHARS`]-wide caption. The
+/// width bound depends only on a fixed character budget, never on the actual
+/// name — so the size reflects the brick, not how its file happens to be named.
+fn label_fit(rect: Rectangle) -> f32 {
+    (rect.height - LABEL_PAD).min((rect.width - LABEL_PAD) / (CHAR_WIDTH * MIN_LABEL_CHARS))
 }
 
-/// [`label_font_size`] with a zoom enlargement: while a brick is blown up
-/// (`scale > 1`) the caption may grow past [`MAX_FONT`] up to [`ZOOM_MAX_FONT`],
-/// tracking the brick. At `scale == 1` this is exactly [`label_font_size`], so a
-/// settling caption never snaps to a different size.
-fn zoom_label_font_size(char_count: usize, rect: Rectangle, scale: f32) -> Option<f32> {
-    // Both sides bound the font: the width per character count and
-    // the height minus the caption's vertical padding (8 px).
-    let fit = (rect.width / (CHAR_WIDTH * char_count.max(1) as f32)).min(rect.height - 8.0);
-    let cap = (MAX_FONT * scale).clamp(MIN_FONT, ZOOM_MAX_FONT);
+/// The resting label font size for a brick: the largest [`FONT_TIERS`] rung that
+/// fits, or `None` when even the smallest rung does not (the brick gets no
+/// label). Because the chosen rung clears a [`MIN_LABEL_CHARS`]-wide caption, a
+/// truncated name always keeps at least that many characters.
+fn tier_font(rect: Rectangle) -> Option<f32> {
+    let fit = label_fit(rect);
+    FONT_TIERS.iter().rev().copied().find(|&rung| rung <= fit)
+}
+
+/// [`tier_font`] with a zoom enlargement. While a brick is blown up
+/// (`scale > 1`) the caption grows past the ladder up to [`ZOOM_MAX_FONT`],
+/// tracking the brick — snapped to an even integer so the handful of animating
+/// frames add only a handful of glyph sizes to the atlas. At rest (`scale <= 1`)
+/// this is exactly [`tier_font`], so the resting map shows only ladder sizes.
+///
+/// The font is always whole pixels: cosmic-text rasterizes glyphs separately for
+/// each f32 size (`CacheKey::font_size_bits`), so fewer distinct sizes mean a
+/// more stable glyph atlas (`PrepareError::AtlasFull` is silently ignored, and
+/// when it overflows text breaks).
+fn zoom_tier_font(rect: Rectangle, scale: f32) -> Option<f32> {
+    if scale <= 1.0 {
+        return tier_font(rect);
+    }
+    let fit = label_fit(rect);
     // Down to an even integer: fewer distinct font sizes — a more stable atlas.
-    let font_size = (fit.clamp(MIN_FONT, cap) / 2.0).floor() * 2.0;
-    (rect.height >= font_size + 8.0 && rect.width >= 2.0 * font_size).then_some(font_size)
+    (fit >= MIN_FONT).then(|| (fit.min(ZOOM_MAX_FONT) / 2.0).floor() * 2.0)
+}
+
+/// Fits `text` (with `char_count` characters) into `max_chars` glyphs, appending
+/// an ellipsis when it has to cut. Returns the string and its character count —
+/// the caller estimates its width from the count to center it. For a name the
+/// rung guarantees `max_chars >= MIN_LABEL_CHARS`, so a truncated name keeps
+/// several characters before the ellipsis.
+fn fit_with_ellipsis(text: &str, char_count: usize, max_chars: usize) -> (String, usize) {
+    if char_count <= max_chars {
+        return (text.to_owned(), char_count);
+    }
+    if max_chars == 0 {
+        return (String::new(), 0);
+    }
+    let mut shown: String = text.chars().take(max_chars - 1).collect();
+    shown.push('…');
+    (shown, max_chars)
+}
+
+/// The name's font size and wrapped lines for `rect`: tries the [`FONT_TIERS`]
+/// rungs at or below the geometry `tier`, largest first, and takes the first
+/// where the whole name fits wrapped — so a name long for its brick drops to a
+/// lower rung and shows in full instead of truncating. Staying on the ladder is
+/// deliberate: it keeps the whole map to a handful of font sizes, so the glyph
+/// atlas stays small and never has to grow (growing it mid-scan visibly corrupts
+/// the text — see the memory note). If no rung shows the name in full, the
+/// smallest is used (its last line ellipsized). `band` is the height reserved at
+/// the top for the size caption.
+fn fit_name(name: &str, name_chars: usize, rect: Rectangle, tier: f32, band: f32) -> (f32, Vec<String>) {
+    let mut fallback = None;
+    for &rung in FONT_TIERS.iter().rev() {
+        if rung > tier {
+            continue;
+        }
+        let max_chars = ((rect.width - LABEL_PAD) / (CHAR_WIDTH * rung)).max(0.0) as usize;
+        let line_h = rung * NAME_LINE_HEIGHT;
+        let region_h = (rect.height - LABEL_PAD - band).max(rung);
+        let max_lines = ((region_h - rung) / line_h + 1.0).floor().max(1.0) as usize;
+        let lines = wrap_name(name, name_chars, max_chars, max_lines);
+        // Fits in full when the last line was not ellipsized.
+        if !lines.last().is_some_and(|l| l.ends_with('…')) {
+            return (rung, lines);
+        }
+        fallback = Some((rung, lines));
+    }
+    // No rung shows it in full — the smallest rung fits the most characters.
+    fallback.unwrap_or_else(|| (MIN_FONT, vec![name.to_string()]))
+}
+
+/// A character a wrapped name may break after, keeping it on the upper line: path
+/// and word separators read better than a mid-token cut.
+fn is_break_char(c: char) -> bool {
+    matches!(c, ' ' | '-' | '_' | '.')
+}
+
+/// Wraps `name` (with `char_count` characters) to at most `max_lines` lines of
+/// about `max_chars` characters each, so a long name shows in full down the
+/// brick's spare height instead of truncating. Each line breaks after a
+/// [`is_break_char`] separator when one is near the end, else hard-breaks at
+/// `max_chars`; the last line is ellipsized if the whole name still does not fit.
+/// With `max_lines == 1` (or a name that already fits) this is a single line,
+/// exactly the non-wrapped behavior. Always returns at least one line.
+fn wrap_name(name: &str, char_count: usize, max_chars: usize, max_lines: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return vec![String::new()];
+    }
+    if char_count <= max_chars || max_lines <= 1 {
+        return vec![fit_with_ellipsis(name, char_count, max_chars).0];
+    }
+    let chars: Vec<char> = name.chars().collect();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while start < chars.len() && lines.len() < max_lines {
+        let remaining = chars.len() - start;
+        // Last allowed line and the rest does not fit: ellipsize what remains.
+        if lines.len() == max_lines - 1 && remaining > max_chars {
+            let rest: String = chars[start..].iter().collect();
+            lines.push(fit_with_ellipsis(&rest, remaining, max_chars).0);
+            break;
+        }
+        let end = (start + max_chars).min(chars.len());
+        // Prefer a separator near the line end; keep it on this line.
+        let mut brk = end;
+        if end < chars.len()
+            && let Some(pos) = (start..end).rfind(|&i| is_break_char(chars[i]))
+        {
+            brk = pos + 1;
+        }
+        // A separator right at the start would not advance — take the full window.
+        if brk <= start {
+            brk = end;
+        }
+        lines.push(chars[start..brk].iter().collect());
+        start = brk;
+    }
+    lines
 }
 
 /// Floor on the size caption's font — the size on small bricks (unchanged from
@@ -712,8 +848,8 @@ const SIZE_FONT_FRACTION: f32 = 0.5;
 /// `name_font`: a fraction of the name font, floored at [`MIN_SIZE_FONT`] so
 /// small bricks read exactly as before and big bricks scale up.
 ///
-/// Snapped down to an even integer — like [`zoom_label_font_size`] does for the
-/// name. The grid keeps the count of distinct font sizes small (and reuses the
+/// Snapped down to an even integer — like the name's [`FONT_TIERS`] rungs. The
+/// grid keeps the count of distinct font sizes small (and reuses the
 /// name's own atlas slots): every extra glyph size carves a fresh region out of
 /// iced's glyph atlas, and once it overflows *all* text on the canvas shreds.
 fn size_font(name_font: f32) -> f32 {
@@ -730,9 +866,9 @@ fn muted(color: Color) -> Color {
     }
 }
 
-/// A brick's caption may grow past [`MAX_FONT`] while a zoom tween enlarges it
-/// — the font tracks the brick and shrinks back to [`MAX_FONT`] at rest. Capped
-/// so the glyph atlas sees only a handful of extra sizes.
+/// A brick's caption may grow past the top [`FONT_TIERS`] rung while a zoom
+/// tween enlarges it — the font tracks the brick and settles back onto the
+/// ladder at rest. Capped so the glyph atlas sees only a handful of extra sizes.
 const ZOOM_MAX_FONT: f32 = 48.0;
 
 /// `ω·t` at which a critically damped spring is settled — the zoom's nominal
@@ -1702,7 +1838,7 @@ impl MapState {
 /// each glyph's subpixel bin (`CacheKey::{x_bin,y_bin}`), while bricks
 /// shift slightly on every scan snapshot — without rounding the same
 /// letters are re-rasterized into new bins, and the glyph atlas keeps
-/// evicting/reallocating regions (see the comment on [`label_font_size`]).
+/// evicting/reallocating regions (see the comment on [`zoom_tier_font`]).
 fn label_origin(rect: Rectangle) -> Point {
     Point::new((rect.x + 4.0).round(), (rect.y + 4.0).round())
 }
@@ -2710,13 +2846,84 @@ mod tests {
     }
 
     #[test]
-    fn font_size_is_whole_even_pixels() {
-        // fit = 200 / (0.6 · 15) = 22.22… — the font size rounds down to an even
-        // integer: each distinct f32 size is rasterized in the glyph atlas
-        // separately, and the fewer distinct sizes, the more stable the atlas.
-        assert_eq!(label_font_size(15, rect(200.0, 100.0)), Some(22.0));
-        // fit = 210 / (0.6 · 14) = 25.0 — an odd value is pushed down to 24.
-        assert_eq!(label_font_size(14, rect(210.0, 100.0)), Some(24.0));
+    fn tier_font_snaps_to_the_ladder() {
+        // The font is the largest ladder rung that fits — chosen from geometry,
+        // never the name length. A roomy brick takes the top rung.
+        assert_eq!(tier_font(rect(200.0, 100.0)), Some(28.0));
+        // Height-bounded: fit = 32 − 8 = 24 → the 22 rung.
+        assert_eq!(tier_font(rect(200.0, 32.0)), Some(22.0));
+        // fit = 28 − 8 = 20 → the 16 rung.
+        assert_eq!(tier_font(rect(200.0, 28.0)), Some(16.0));
+        // fit = 22 − 8 = 14 → the smallest rung.
+        assert_eq!(tier_font(rect(200.0, 22.0)), Some(12.0));
+    }
+
+    #[test]
+    fn tier_font_is_width_bounded_for_narrow_bricks() {
+        // Width caps the font so MIN_LABEL_CHARS fit: (70 − 8)/(0.6 · 4) = 25.8 → 22.
+        assert_eq!(tier_font(rect(70.0, 200.0)), Some(22.0));
+        // (40 − 8)/(0.6 · 4) = 13.3 → only the smallest rung fits.
+        assert_eq!(tier_font(rect(40.0, 200.0)), Some(12.0));
+    }
+
+    #[test]
+    fn zoom_font_grows_past_the_ladder_and_snaps_even() {
+        // Mid-zoom (scale > 1) the blown-up brick's caption tracks its geometry
+        // up to ZOOM_MAX_FONT, snapped to an even integer (not the ladder).
+        assert_eq!(zoom_tier_font(rect(300.0, 400.0), 2.0), Some(ZOOM_MAX_FONT));
+        // fit = 33 − 8 = 25 → even 24 mid-zoom, but the 22 rung at rest.
+        assert_eq!(zoom_tier_font(rect(200.0, 33.0), 1.5), Some(24.0));
+        assert_eq!(
+            zoom_tier_font(rect(200.0, 33.0), 1.0),
+            tier_font(rect(200.0, 33.0))
+        );
+    }
+
+    #[test]
+    fn ellipsis_truncates_long_names() {
+        // Fits whole — returned unchanged.
+        assert_eq!(fit_with_ellipsis("report", 6, 10), ("report".to_string(), 6));
+        // Too long — keeps max_chars − 1 characters plus an ellipsis.
+        assert_eq!(
+            fit_with_ellipsis("node_modules", 12, 6),
+            ("node_…".to_string(), 6)
+        );
+        // Counts characters, not bytes: Cyrillic stays correct.
+        assert_eq!(fit_with_ellipsis("документ", 8, 5), ("доку…".to_string(), 5));
+        assert_eq!(fit_with_ellipsis("x", 1, 0), (String::new(), 0));
+    }
+
+    #[test]
+    fn wrap_name_uses_extra_lines_for_long_names() {
+        // Fits one line — unchanged.
+        assert_eq!(wrap_name("readme.md", 9, 12, 4), vec!["readme.md"]);
+        // One line allowed — single line with an ellipsis (the non-wrapped case).
+        assert_eq!(wrap_name("filegram-desktop", 16, 10, 1), vec!["filegram-…"]);
+        // Wraps, breaking after the separator and keeping the whole name.
+        assert_eq!(
+            wrap_name("filegram-desktop", 16, 10, 4),
+            vec!["filegram-", "desktop"]
+        );
+        // No separator — hard break, last line ellipsized when it still overflows.
+        assert_eq!(wrap_name("aaaabbbbccccdddd", 16, 4, 2), vec!["aaaa", "bbb…"]);
+        // Characters, not bytes: Cyrillic wraps cleanly.
+        assert_eq!(wrap_name("очень_длинное", 13, 7, 3), vec!["очень_", "длинное"]);
+    }
+
+    #[test]
+    fn fit_name_shrinks_to_show_the_whole_name() {
+        let name = "abcdefghijklmnop"; // 16 chars, no separators
+        // A short, narrowish brick can't fit the name at the tier (28); the font
+        // steps down until the whole name fits wrapped — no ellipsis.
+        let (font, lines) = fit_name(name, 16, rect(160.0, 60.0), 28.0, LABEL_PAD);
+        assert!(font < 28.0);
+        assert!(!lines.last().unwrap().ends_with('…'));
+        assert_eq!(lines.concat(), name);
+        // A name that already fits keeps the tier on a single line.
+        assert_eq!(
+            fit_name("short", 5, rect(400.0, 120.0), 28.0, LABEL_PAD),
+            (28.0, vec!["short".to_string()])
+        );
     }
 
     #[test]
@@ -2730,34 +2937,11 @@ mod tests {
     }
 
     #[test]
-    fn font_size_clamped_to_limits() {
-        assert_eq!(label_font_size(5, rect(1000.0, 100.0)), Some(MAX_FONT));
-        assert_eq!(label_font_size(40, rect(100.0, 100.0)), Some(MIN_FONT));
-    }
-
-    #[test]
     fn label_decides_actions_panel_visibility() {
-        use crate::fs_tree::ScanNode;
-        let tree = FsTree::from_arena(&[
-            ScanNode {
-                name: "root".into(),
-                path: std::path::Path::new("/root").into(),
-                size: 0,
-                is_dir: true,
-                parent: 0,
-            },
-            ScanNode {
-                name: "data.bin".into(),
-                path: std::path::Path::new("/root/data.bin").into(),
-                size: 100,
-                is_dir: false,
-                parent: 0,
-            },
-        ]);
-        let brick = NodeId(1);
-        assert!(has_label(&tree, brick, rect(300.0, 100.0)));
-        // A sliver brick: no caption fits — the hover actions are suppressed.
-        assert!(!has_label(&tree, brick, rect(24.0, 10.0)));
+        // Decided from geometry alone now — no tree lookup needed.
+        assert!(has_label(rect(300.0, 100.0)));
+        // A sliver brick: no rung fits — the hover actions are suppressed.
+        assert!(!has_label(rect(24.0, 10.0)));
     }
 
     #[test]
@@ -2790,17 +2974,11 @@ mod tests {
     }
 
     #[test]
-    fn wide_short_brick_fits_label_with_smaller_font() {
-        // A wide but short brick: the width-derived font would be 20 px and
-        // fail the height check (25 < 28) — the height bounds the font.
-        assert_eq!(label_font_size(31, rect(400.0, 25.0)), Some(16.0));
-    }
-
-    #[test]
     fn label_skipped_when_brick_too_small() {
-        // Height under font size + 8 or width under two font sizes — no label.
-        assert_eq!(label_font_size(10, rect(200.0, 15.0)), None);
-        assert_eq!(label_font_size(10, rect(20.0, 100.0)), None);
+        // Height below the smallest rung + padding (20 px) — no label.
+        assert_eq!(tier_font(rect(200.0, 19.0)), None);
+        // Too narrow for MIN_LABEL_CHARS even at the smallest rung.
+        assert_eq!(tier_font(rect(20.0, 100.0)), None);
     }
 }
 
