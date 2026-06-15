@@ -32,7 +32,15 @@ pub const SNAPSHOT_INTERVAL_MS: u64 = 250;
 
 #[derive(Debug, Clone)]
 pub enum ScanEvent {
-    Progress { current: String, files: u64 },
+    Progress {
+        current: String,
+        files: u64,
+        /// Directories being traversed at this very moment: incremented when a
+        /// `scan_dir` call starts, decremented when it returns. A live snapshot
+        /// of in-flight work, so it rises and falls (bounded by the rayon pool),
+        /// unlike the monotonic file counter.
+        dirs: u64,
+    },
     /// An intermediate snapshot: the arena is append-only, so the snapshot's `NodeId`s
     /// remain valid in subsequent snapshots and in the final tree.
     Snapshot(Arc<FsTree>),
@@ -70,6 +78,7 @@ pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = 
             let progress = Progress {
                 tx: tx.clone(),
                 files: AtomicU64::new(0),
+                active_dirs: AtomicU64::new(0),
                 last_sent: Mutex::new(Instant::now()),
             };
             let visited = VisitedDirs::new();
@@ -159,6 +168,8 @@ impl VisitedDirs {
 struct Progress {
     tx: mpsc::UnboundedSender<ScanEvent>,
     files: AtomicU64,
+    /// Count of `scan_dir` calls currently in flight; see [`ScanEvent::Progress`].
+    active_dirs: AtomicU64,
     last_sent: Mutex<Instant>,
 }
 
@@ -175,7 +186,26 @@ impl Progress {
         let _ = self.tx.unbounded_send(ScanEvent::Progress {
             current: path.display().to_string(),
             files,
+            dirs: self.active_dirs.load(Ordering::Relaxed),
         });
+    }
+}
+
+/// Keeps [`Progress::active_dirs`] in sync with the live `scan_dir` calls:
+/// bumps the counter on construction, drops it on scope exit — so every return
+/// path (cancellation, read error, normal completion) balances the increment.
+struct ActiveDirGuard<'a>(&'a AtomicU64);
+
+impl<'a> ActiveDirGuard<'a> {
+    fn enter(counter: &'a AtomicU64) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self(counter)
+    }
+}
+
+impl Drop for ActiveDirGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -192,6 +222,9 @@ fn scan_dir(
     progress: &Progress,
     visited: &VisitedDirs,
 ) {
+    // Counts toward "directories in flight" for the whole call, including the
+    // time spent blocked on the parallel traversal of its subfolders below.
+    let _active = ActiveDirGuard::enter(&progress.active_dirs);
     if cancel.load(Ordering::Relaxed) {
         return;
     }
@@ -374,6 +407,7 @@ mod tests {
         let progress = Progress {
             tx,
             files: AtomicU64::new(0),
+            active_dirs: AtomicU64::new(0),
             last_sent: Mutex::new(Instant::now()),
         };
         let arena = Mutex::new(vec![ScanNode {
