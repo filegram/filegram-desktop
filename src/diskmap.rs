@@ -1188,15 +1188,20 @@ impl MapState {
                 return true;
             }
             if first_ever && !layout.is_empty() {
-                // Every brick starts as a zero-size point at the map centre and
-                // springs out to its slot. A plain geometry tween (no zoom
-                // scale/fade), like a scan snapshot growing a new brick.
+                // Every brick starts at its full slot size but stacked on top
+                // of one another at the map centre, then springs out to its
+                // slot. A plain geometry tween (no zoom scale/fade).
                 let centre = map_bounds(size).center();
                 self.springs = layout
                     .into_iter()
                     .map(|(brick, target)| BrickSpring {
                         brick,
-                        motion: Motion::resting(Rectangle::new(centre, Size::ZERO)),
+                        motion: Motion::resting(Rectangle {
+                            x: centre.x - target.width / 2.0,
+                            y: centre.y - target.height / 2.0,
+                            width: target.width,
+                            height: target.height,
+                        }),
                         target,
                         normal: target,
                     })
