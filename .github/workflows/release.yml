@@ -107,3 +107,13 @@ jobs:
             --verify-tag \
             --latest \
             dist/*
+
+  # Push the Chocolatey package once the release (and its binaries) exist.
+  # No-ops with a warning if the CHOCO_API_KEY secret is unset.
+  chocolatey:
+    name: Publish to Chocolatey
+    needs: [prepare, publish]
+    uses: ./.github/workflows/chocolatey.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}

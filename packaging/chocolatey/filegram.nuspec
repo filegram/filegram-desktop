@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Packaged for the Chocolatey community feed. The release CI
+     (.github/workflows/release.yml) substitutes __VERSION__ and the
+     per-architecture __CHECKSUM*__ placeholders, then runs choco pack/push. -->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>filegram</id>
+    <version>__VERSION__</version>
+    <title>Filegram</title>
+    <authors>Filegram contributors</authors>
+    <owners>filegram</owners>
+    <projectUrl>https://github.com/filegram/filegram-desktop</projectUrl>
+    <projectSourceUrl>https://github.com/filegram/filegram-desktop</projectSourceUrl>
+    <packageSourceUrl>https://github.com/filegram/filegram-desktop/tree/master/packaging/chocolatey</packageSourceUrl>
+    <bugTrackerUrl>https://github.com/filegram/filegram-desktop/issues</bugTrackerUrl>
+    <docsUrl>https://github.com/filegram/filegram-desktop/blob/master/README.md</docsUrl>
+    <licenseUrl>https://github.com/filegram/filegram-desktop/blob/master/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <iconUrl>https://cdn.jsdelivr.net/gh/filegram/filegram-desktop@v__VERSION__/assets/icon/icon-128.png</iconUrl>
+    <copyright>Filegram contributors</copyright>
+    <tags>filegram disk-usage disk-analyzer disk-space treemap diskmap storage cli gui foss cross-platform rust</tags>
+    <summary>Disk space analyzer with an interactive treemap.</summary>
+    <description>
+Filegram scans a directory tree and visualizes disk usage as an interactive
+treemap, helping you find what takes up space.
+
+### Features
+
+- **Interactive treemap** — files and folders are rendered as bricks sized
+  proportionally to their disk usage.
+- **Fast parallel scanning** — directory traversal is parallelized and can be
+  cancelled at any time.
+- **Navigation** — click a folder brick to dive in, go back up, or rescan.
+- **File actions** — reveal a file in Explorer or move it to the Recycle Bin
+  right from the map.
+- **Light and dark themes** — follows the system theme automatically.
+
+This package downloads the official `filegram-windows-x86_64.exe`
+(or the i686 build on 32-bit Windows) from the tagged GitHub release and
+verifies it against a pinned SHA-256 checksum.
+    </description>
+    <releaseNotes>https://github.com/filegram/filegram-desktop/releases/tag/v__VERSION__</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

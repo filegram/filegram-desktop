@@ -1,0 +1,27 @@
+VERIFICATION
+
+Verification is intended to assist the Chocolatey moderators and community in
+verifying that this package's contents are trustworthy.
+
+This package is published by the Filegram project itself (the software vendor
+and the package maintainer are the same). It does not embed any binaries.
+
+At install time it downloads the official Windows executables that are attached
+to the matching GitHub release:
+
+  x86_64: https://github.com/filegram/filegram-desktop/releases/download/v__VERSION__/filegram-windows-x86_64.exe
+  i686:   https://github.com/filegram/filegram-desktop/releases/download/v__VERSION__/filegram-windows-i686.exe
+
+The download is verified against the SHA-256 checksums embedded in
+tools\chocolateyinstall.ps1 (checksum64 / checksum). To verify them yourself:
+
+  1. Download the executables from the URLs above.
+  2. Compute their SHA-256 hashes, e.g. in PowerShell:
+       Get-FileHash filegram-windows-x86_64.exe -Algorithm SHA256
+       Get-FileHash filegram-windows-i686.exe   -Algorithm SHA256
+  3. Confirm they match the checksum64 / checksum values in
+     tools\chocolateyinstall.ps1, and the digests shown on the GitHub
+     release assets.
+
+The bundled LICENSE.txt is a verbatim copy of the project's MIT license:
+  https://github.com/filegram/filegram-desktop/blob/master/LICENSE
