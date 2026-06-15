@@ -7,8 +7,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::time::Instant;
 
-use iced::widget::canvas::{self, Action, Event, Frame, Path, Stroke, Text};
-use iced::{Color, Pixels, Point, Rectangle, Size, mouse};
+use iced::widget::canvas::{self, Action, Event, Frame, LineCap, LineJoin, Path, Stroke, Text};
+use iced::{Color, Pixels, Point, Rectangle, Size, Vector, mouse};
 
 use crate::Message;
 use crate::fs_tree::{FsTree, NodeId};
@@ -120,6 +120,21 @@ const NESTED_DEPTH: u8 = 2;
 /// [`CORNER_RADIUS`]: rounding stays proportional like the original — tiny
 /// tiles stay sharp, large ones round off.
 const NESTED_CORNER_FRACTION: f32 = 0.15;
+
+/// Faint file-type watermark, centered inside a file brick. It fills the brick
+/// almost edge to edge: a square sized to the *shorter* side (so it stays
+/// proportional in tall or wide bricks alike) inset by [`FILE_ICON_MARGIN`].
+const FILE_ICON_MARGIN: f32 = 6.0;
+/// Below this side (px) the glyph reads as clutter rather than a hint, so a
+/// small brick draws no icon at all.
+const FILE_ICON_MIN_SIDE: f32 = 18.0;
+/// Opacity of the watermark over the brick fill — barely there, so the
+/// centered name still reads on top of it.
+const FILE_ICON_ALPHA: f32 = 0.12;
+/// The glyphs are authored in a 24×24 box (like the bundled SVG icons) and
+/// scaled to the brick; the stroke width is in that same space.
+const ICON_VIEWBOX: f32 = 24.0;
+const ICON_STROKE: f32 = 1.8;
 
 pub struct DiskMap<'a> {
     pub tree: &'a FsTree,
@@ -425,11 +440,14 @@ impl DiskMap<'_> {
                 .with_width(1.0),
         );
 
-        // Silhouettes first so the caption (size in the corner, name centered)
-        // draws on top of them.
+        // Silhouettes (folders) or a faint file-type watermark (files) draw
+        // first, so the caption (size in the corner, name centered) lands on top.
         if node.is_dir {
             let lift = zoom.map_or((0.0, 1.0), |z| (z.vivid, z.silhouette));
             self.draw_nested(state, frame, palette, id, rect, lift);
+        } else {
+            let alpha = (1.0 - bare) * FILE_ICON_ALPHA;
+            draw_file_icon(frame, FileKind::classify(&node.name), rect, text_color, alpha);
         }
 
         let (name, size) = brick_caption(self.tree, id);
@@ -727,6 +745,147 @@ fn fade_color(color: Color, alpha: f32) -> Color {
         a: color.a * alpha.clamp(0.0, 1.0),
         ..color
     }
+}
+
+/// A coarse file category, derived from a name's extension, that selects which
+/// watermark glyph a file brick draws.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileKind {
+    Image,
+    Video,
+    Audio,
+    Document,
+    Archive,
+    Code,
+    Generic,
+}
+
+impl FileKind {
+    /// Maps a file name to a category by its lowercased extension. Names with
+    /// no extension — and any unknown one — fall back to [`FileKind::Generic`],
+    /// so every file brick still shows a watermark.
+    fn classify(name: &str) -> FileKind {
+        // The part after the last dot; a leading-dot name ("/.gitignore") has an
+        // empty stem and so classifies as Generic, which is what we want.
+        let ext = name
+            .rsplit_once('.')
+            .map_or(String::new(), |(_, e)| e.to_ascii_lowercase());
+        match ext.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "tif" | "tiff" | "heic"
+            | "heif" | "ico" | "avif" | "raw" => FileKind::Image,
+            "mp4" | "mkv" | "mov" | "avi" | "webm" | "flv" | "wmv" | "m4v" | "mpg" | "mpeg"
+            | "3gp" | "m2ts" => FileKind::Video,
+            "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "wma" | "opus" | "aiff" | "mid" => {
+                FileKind::Audio
+            }
+            "pdf" | "doc" | "docx" | "txt" | "md" | "rtf" | "odt" | "odp" | "ods" | "pages"
+            | "xls" | "xlsx" | "ppt" | "pptx" | "csv" | "tex" | "epub" => FileKind::Document,
+            "zip" | "rar" | "7z" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "iso" | "dmg" => {
+                FileKind::Archive
+            }
+            "rs" | "js" | "ts" | "tsx" | "jsx" | "py" | "c" | "cc" | "cpp" | "cxx" | "h" | "hpp"
+            | "java" | "go" | "rb" | "php" | "html" | "htm" | "css" | "scss" | "json" | "xml"
+            | "yaml" | "yml" | "toml" | "sh" | "bash" | "zsh" | "sql" | "swift" | "kt" | "lua" => {
+                FileKind::Code
+            }
+            _ => FileKind::Generic,
+        }
+    }
+}
+
+/// Draws the faint file-type watermark centered in a file brick: a line glyph
+/// (Lucide style, like the bundled SVG icons) authored in a 24×24 box and
+/// scaled to [`FILE_ICON_FRACTION`] of the brick's shorter side. Drawn before
+/// the caption so the name reads on top; skipped on bricks too small to carry
+/// it or when a zoom has nearly faded it out.
+fn draw_file_icon(frame: &mut Frame, kind: FileKind, rect: Rectangle, color: Color, alpha: f32) {
+    if alpha <= 0.01 {
+        return;
+    }
+    let side = rect.width.min(rect.height) - 2.0 * FILE_ICON_MARGIN;
+    if side < FILE_ICON_MIN_SIDE {
+        return;
+    }
+    let scale = side / ICON_VIEWBOX;
+    // Round the box origin to whole pixels so the strokes land cleanly.
+    let ox = (rect.x + (rect.width - side) / 2.0).round();
+    let oy = (rect.y + (rect.height - side) / 2.0).round();
+    let path = icon_path(kind);
+    frame.with_save(|frame| {
+        frame.translate(Vector::new(ox, oy));
+        frame.scale(scale);
+        frame.stroke(
+            &path,
+            Stroke::default()
+                .with_color(fade_color(color, alpha))
+                .with_width(ICON_STROKE)
+                .with_line_cap(LineCap::Round)
+                .with_line_join(LineJoin::Round),
+        );
+    });
+}
+
+/// Connected stroke segment through `pts`, in the 24×24 icon box.
+fn polyline(b: &mut canvas::path::Builder, pts: &[(f32, f32)]) {
+    let mut pts = pts.iter();
+    if let Some(&(x, y)) = pts.next() {
+        b.move_to(Point::new(x, y));
+        for &(x, y) in pts {
+            b.line_to(Point::new(x, y));
+        }
+    }
+}
+
+/// The line-glyph for a category, built in the 24×24 icon box. Stroke-only, so
+/// it tints to a single faint color cleanly.
+fn icon_path(kind: FileKind) -> Path {
+    Path::new(|b| match kind {
+        FileKind::Image => {
+            // Framed photo: border, sun, and a mountain ridge.
+            polyline(b, &[(3.0, 5.0), (3.0, 19.0), (21.0, 19.0), (21.0, 5.0), (3.0, 5.0)]);
+            b.circle(Point::new(8.5, 9.0), 1.8);
+            polyline(b, &[(3.0, 17.0), (9.0, 11.0), (13.0, 15.0), (16.0, 12.0), (21.0, 17.0)]);
+        }
+        FileKind::Video => {
+            // Screen with a centered play triangle.
+            polyline(b, &[(3.0, 5.0), (3.0, 19.0), (21.0, 19.0), (21.0, 5.0), (3.0, 5.0)]);
+            polyline(b, &[(10.0, 8.5), (16.0, 12.0), (10.0, 15.5), (10.0, 8.5)]);
+        }
+        FileKind::Audio => {
+            // Musical note: a beamed stem with two note heads.
+            polyline(b, &[(9.0, 17.0), (9.0, 5.0), (19.0, 3.0), (19.0, 15.0)]);
+            b.circle(Point::new(6.5, 17.0), 2.5);
+            b.circle(Point::new(16.5, 15.0), 2.5);
+        }
+        FileKind::Document => {
+            // Page with a folded corner and a few text lines.
+            polyline(b, &[(6.0, 3.0), (14.0, 3.0), (20.0, 9.0), (20.0, 21.0), (6.0, 21.0), (6.0, 3.0)]);
+            polyline(b, &[(14.0, 3.0), (14.0, 9.0), (20.0, 9.0)]);
+            polyline(b, &[(9.0, 13.0), (16.0, 13.0)]);
+            polyline(b, &[(9.0, 16.0), (16.0, 16.0)]);
+            polyline(b, &[(9.0, 19.0), (13.0, 19.0)]);
+        }
+        FileKind::Archive => {
+            // Isometric box with its top seam and a front edge.
+            polyline(b, &[
+                (12.0, 2.5), (20.5, 7.25), (20.5, 16.75), (12.0, 21.5),
+                (3.5, 16.75), (3.5, 7.25), (12.0, 2.5),
+            ]);
+            polyline(b, &[(3.5, 7.25), (12.0, 12.0), (20.5, 7.25)]);
+            polyline(b, &[(12.0, 12.0), (12.0, 21.5)]);
+        }
+        FileKind::Code => {
+            // Angle brackets around a slash: `< / >`.
+            polyline(b, &[(8.5, 8.0), (4.5, 12.0), (8.5, 16.0)]);
+            polyline(b, &[(15.5, 8.0), (19.5, 12.0), (15.5, 16.0)]);
+            polyline(b, &[(13.5, 6.0), (10.5, 18.0)]);
+        }
+        FileKind::Generic => {
+            // Blank page with a folded corner.
+            polyline(b, &[(6.0, 3.0), (14.0, 3.0), (20.0, 9.0), (20.0, 21.0), (6.0, 21.0), (6.0, 3.0)]);
+            polyline(b, &[(14.0, 3.0), (14.0, 9.0), (20.0, 9.0)]);
+        }
+    })
 }
 
 /// Linear blend between two colors, component-wise; `t` clamped to `0..=1`.
@@ -1722,6 +1881,28 @@ mod tests {
             .map(|(brick, _)| brick)
             .collect();
         assert_eq!(full, nested);
+    }
+
+    #[test]
+    fn classify_maps_extensions_to_kinds() {
+        let cases = [
+            ("photo.JPG", FileKind::Image),
+            ("clip.mp4", FileKind::Video),
+            ("song.flac", FileKind::Audio),
+            ("report.PDF", FileKind::Document),
+            ("backup.tar.gz", FileKind::Archive),
+            ("main.rs", FileKind::Code),
+            ("page.ts", FileKind::Code),
+            ("README", FileKind::Generic),
+            (".gitignore", FileKind::Generic),
+            ("data.unknownext", FileKind::Generic),
+        ];
+        for (name, expected) in cases {
+            assert!(
+                FileKind::classify(name) == expected,
+                "classify({name:?}) mismatched"
+            );
+        }
     }
 
     #[test]
