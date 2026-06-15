@@ -907,7 +907,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     let percent = size_percent(node.size, tree.node(tree.root).size);
     let size_label = if node.is_dir {
         format!(
-            "{} | {} | {} ({})",
+            "{} · {} · {} ({})",
             node.name,
             format::human_size(node.size),
             percent,
@@ -915,7 +915,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
         )
     } else {
         format!(
-            "{} | {} | {}",
+            "{} · {} · {}",
             node.name,
             format::human_size(node.size),
             percent,
