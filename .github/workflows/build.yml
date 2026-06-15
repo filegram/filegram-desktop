@@ -234,6 +234,11 @@ jobs:
       # cache, so only filegram itself recompiles. See docker/smoke.Dockerfile.
       - name: Build the smoke image
         uses: docker/build-push-action@v6
+        # The build record is a debugging summary in the Actions UI; without
+        # this it is also uploaded as a `*.dockerbuild` artifact, which the
+        # dev-release job's unfiltered download then chokes on.
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           file: docker/smoke.Dockerfile
@@ -265,6 +270,8 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
+          # Only the binary artifacts; never any stray build records.
+          pattern: filegram-*
           path: dist
           merge-multiple: true
 
