@@ -34,6 +34,15 @@ Pre-built binaries are published to the rolling
 
 For other platforms, build from source below.
 
+### Windows (Scoop)
+
+Filegram is also available via [Scoop](https://scoop.sh):
+
+```powershell
+scoop bucket add filegram https://github.com/filegram/scoop-bucket
+scoop install filegram
+```
+
 ## Building from source
 
 Requires Rust 1.88 or newer.
