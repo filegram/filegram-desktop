@@ -1188,15 +1188,20 @@ impl MapState {
                 return true;
             }
             if first_ever && !layout.is_empty() {
-                // Every brick starts as a zero-size point at the map centre and
-                // springs out to its slot. A plain geometry tween (no zoom
-                // scale/fade), like a scan snapshot growing a new brick.
+                // Every brick starts at its full slot size but stacked on top
+                // of one another at the map centre, then springs out to its
+                // slot. A plain geometry tween (no zoom scale/fade).
                 let centre = map_bounds(size).center();
                 self.springs = layout
                     .into_iter()
                     .map(|(brick, target)| BrickSpring {
                         brick,
-                        motion: Motion::resting(Rectangle::new(centre, Size::ZERO)),
+                        motion: Motion::resting(Rectangle {
+                            x: centre.x - target.width / 2.0,
+                            y: centre.y - target.height / 2.0,
+                            width: target.width,
+                            height: target.height,
+                        }),
                         target,
                         normal: target,
                     })
@@ -1988,17 +1993,19 @@ mod tests {
 
     #[test]
     fn map_state_reveals_first_layout_from_centre() {
-        // The opening reveal: the very first layout is born as points at the
-        // centre of the map and springs out to its slots.
+        // The opening reveal: the very first layout is born stacked at full
+        // size on the centre of the map and springs out to its slots.
         let (l1, _) = spring_layouts();
         let mut state = MapState::default();
         let now = Instant::now();
         assert!(state.retarget_snap(NodeId(0), CANVAS, l1.clone(), now));
         assert!(state.is_animating());
-        // At t0 every brick is a zero-size point at the map centre.
+        // At t0 every brick has its full slot size but is centred at the map
+        // centre, stacked on top of the others.
         let centre = map_bounds(CANVAS).center();
-        for (_, r) in state.bricks(now) {
-            assert!(r.width < 0.01 && r.height < 0.01, "{r:?}");
+        for ((_, r), (_, target)) in state.bricks(now).iter().zip(&l1) {
+            assert!((r.width - target.width).abs() < 0.01, "{r:?}");
+            assert!((r.height - target.height).abs() < 0.01, "{r:?}");
             assert!((r.center().x - centre.x).abs() < 0.01, "{r:?}");
             assert!((r.center().y - centre.y).abs() < 0.01, "{r:?}");
         }
