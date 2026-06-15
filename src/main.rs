@@ -925,7 +925,15 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     // the map canvas above it — the exact same size whether or not the hints
     // are shown. Without it the bar would shrink the moment a navigation
     // clears `active`, resizing the canvas and snapping the zoom transition.
-    let mut content = row![container(text(size_label).size(14).style(muted_text)).width(Fill)]
+    // The entry's icon — a folder outline or its file-type glyph — sits before
+    // the label, matching the faint watermark drawn inside the brick.
+    let info = row![
+        diskmap::entry_icon(node.is_dir, &node.name, 16.0),
+        text(size_label).size(14).style(muted_text),
+    ]
+    .spacing(8)
+    .align_y(Center);
+    let mut content = row![container(info).width(Fill)]
         .spacing(16)
         .height(BAR_CONTENT_HEIGHT)
         .align_y(Center);

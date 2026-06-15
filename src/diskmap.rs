@@ -13,6 +13,7 @@ use iced::{Color, Pixels, Point, Rectangle, Size, Vector, mouse};
 use crate::Message;
 use crate::fs_tree::{FsTree, NodeId};
 use crate::treemap::{layout, normalize_weight};
+use crate::ui::chrome::muted_color;
 
 /// Brick colors for one theme mode; the variant is picked per frame from
 /// the application theme (the chrome follows the system light/dark scheme).
@@ -886,6 +887,75 @@ fn icon_path(kind: FileKind) -> Path {
             polyline(b, &[(14.0, 3.0), (14.0, 9.0), (20.0, 9.0)]);
         }
     })
+}
+
+/// The tabbed-folder line glyph for the status-bar entry icon, in the 24×24
+/// icon box — the directory counterpart to the file-type glyphs above.
+fn folder_icon_path() -> Path {
+    Path::new(|b| {
+        polyline(b, &[
+            (3.0, 6.0), (9.0, 6.0), (11.0, 8.0), (21.0, 8.0),
+            (21.0, 19.0), (3.0, 19.0), (3.0, 6.0),
+        ]);
+    })
+}
+
+/// A small status-bar glyph: the folder outline for a directory, otherwise the
+/// file-type glyph matching the brick watermark. Themed to the muted chrome
+/// color so it sits quietly before the entry's name.
+struct EntryIcon {
+    is_dir: bool,
+    kind: FileKind,
+}
+
+impl canvas::Program<Message> for EntryIcon {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        theme: &iced::Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        // The glyph is square; center it in the (square) bounds and scale the
+        // 24-box to fit — the same authoring space as the brick watermark.
+        let side = bounds.width.min(bounds.height);
+        let scale = side / ICON_VIEWBOX;
+        let ox = ((bounds.width - side) / 2.0).round();
+        let oy = ((bounds.height - side) / 2.0).round();
+        let path = if self.is_dir {
+            folder_icon_path()
+        } else {
+            icon_path(self.kind)
+        };
+        frame.translate(Vector::new(ox, oy));
+        frame.scale(scale);
+        frame.stroke(
+            &path,
+            Stroke::default()
+                .with_color(muted_color(theme))
+                .with_width(ICON_STROKE)
+                .with_line_cap(LineCap::Round)
+                .with_line_join(LineJoin::Round),
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
+/// A status-bar icon for a tree entry: the folder outline for a directory or
+/// the file-type glyph for a file, sized to sit inline before the entry's
+/// name. Reuses the brick-watermark glyphs so the two never drift.
+pub fn entry_icon<'a>(is_dir: bool, name: &str, size: f32) -> iced::Element<'a, Message> {
+    iced::widget::canvas(EntryIcon {
+        is_dir,
+        kind: FileKind::classify(name),
+    })
+    .width(size)
+    .height(size)
+    .into()
 }
 
 /// Linear blend between two colors, component-wise; `t` clamped to `0..=1`.
