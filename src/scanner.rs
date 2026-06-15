@@ -20,6 +20,21 @@ use rayon::prelude::*;
 
 use crate::fs_tree::{FsTree, ScanNode};
 
+/// Oversubscription factor for the scan thread pool. Disk traversal is
+/// I/O-bound — workers spend most of their time blocked in `stat`/`read_dir`,
+/// not on the CPU — so running several times more threads than cores keeps the
+/// storage queue busy while others wait.
+const SCAN_THREADS_PER_CORE: usize = 4;
+
+/// Number of worker threads for the scan: logical cores × [`SCAN_THREADS_PER_CORE`],
+/// falling back to the factor itself if parallelism can't be detected.
+fn scan_thread_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        * SCAN_THREADS_PER_CORE
+}
+
 /// Interval for sending progress to the UI, as in the original.
 pub const PROGRESS_INTERVAL_MS: u64 = 100;
 /// Interval of intermediate tree snapshots for progressive rendering.
@@ -83,7 +98,18 @@ pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = 
             };
             let visited = VisitedDirs::new();
             visited.first_visit(&root);
-            scan_dir(&root, 0, &arena, &cancel, &progress, &visited);
+            // A dedicated, oversubscribed pool instead of rayon's global one:
+            // `install` makes every nested `into_par_iter` in the recursion run
+            // on these threads. If the pool can't be built, fall back to the
+            // global pool (still parallel, just at core count).
+            match rayon::ThreadPoolBuilder::new()
+                .num_threads(scan_thread_count())
+                .build()
+            {
+                Ok(pool) => pool
+                    .install(|| scan_dir(&root, 0, &arena, &cancel, &progress, &visited)),
+                Err(_) => scan_dir(&root, 0, &arena, &cancel, &progress, &visited),
+            }
             *done.0.lock().unwrap() = true;
             done.1.notify_all();
             let tree = FsTree::from_arena(&arena.lock().unwrap());
