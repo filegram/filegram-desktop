@@ -128,3 +128,14 @@ jobs:
     secrets: inherit
     with:
       version: ${{ inputs.version }}
+
+  # Build and push the snap to the Snap Store once the release (and its
+  # binaries) exist. No-ops with a warning if the SNAPCRAFT_STORE_CREDENTIALS
+  # secret is unset.
+  snap:
+    name: Publish to Snap Store
+    needs: [prepare, publish]
+    uses: ./.github/workflows/snap.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
