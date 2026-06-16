@@ -1,0 +1,5 @@
+# Statically link the MSVC CRT. Otherwise the Windows .exe depends on the VC++
+# Redistributable at runtime and fails to start with STATUS_DLL_NOT_FOUND
+# (0xC0000135) on machines without it. Only applies to msvc targets.
+[target.'cfg(target_env = "msvc")']
+rustflags = ["-C", "target-feature=+crt-static"]
