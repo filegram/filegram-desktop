@@ -9,8 +9,10 @@ name: Chocolatey
 #     (e.g. to backfill 0.2.5).
 #   - workflow_call: invoked by release.yml right after the release is published.
 #
-# Requires the CHOCO_API_KEY secret (a chocolatey.org API key). Without it the
-# job logs a warning and exits cleanly so a release is never blocked on it.
+# Requires the CHOCO_API_KEY secret (a chocolatey.org API key). A missing key,
+# or a push the feed rejects (expired key, or the package still awaiting
+# moderation), logs a warning and exits cleanly so a release is never blocked
+# on it. Re-run via workflow_dispatch once the key/moderation is sorted.
 on:
   workflow_dispatch:
     inputs:
@@ -78,5 +80,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'choco pack failed' }
 
           choco push "filegram.$version.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
-          if ($LASTEXITCODE -ne 0) { throw 'choco push failed' }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'choco push failed (expired CHOCO_API_KEY, or the package is still awaiting moderation); not blocking the release.'
+            exit 0
+          }
           Pop-Location
