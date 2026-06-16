@@ -114,6 +114,8 @@ jobs:
     name: Publish to Chocolatey
     needs: [prepare, publish]
     uses: ./.github/workflows/chocolatey.yml
+    permissions:
+      contents: read
     secrets: inherit
     with:
       version: ${{ inputs.version }}
@@ -125,6 +127,8 @@ jobs:
     name: Bump Homebrew cask
     needs: [prepare, publish]
     uses: ./.github/workflows/homebrew.yml
+    permissions:
+      contents: read
     secrets: inherit
     with:
       version: ${{ inputs.version }}
@@ -136,6 +140,8 @@ jobs:
     name: Publish to Snap Store
     needs: [prepare, publish]
     uses: ./.github/workflows/snap.yml
+    permissions:
+      contents: read
     secrets: inherit
     with:
       version: ${{ inputs.version }}
