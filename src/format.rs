@@ -1,7 +1,6 @@
-//! Human-readable sizes and path shortening (a port of the original's StringUtils).
+//! Human-readable sizes and path shortening.
 
-/// Size in binary units (divisor 1024), one digit after the decimal point.
-/// Below 1024 bytes — a whole number with a `B` suffix.
+/// Binary units (divisor 1024), one decimal digit; below 1024, a whole `B` count.
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
     if bytes < 1024 {
@@ -19,21 +18,16 @@ pub fn human_size(bytes: u64) -> String {
     format!("{value:.1} {unit}")
 }
 
-/// How much of an over-long last segment survives at minimum: a tiny
-/// character budget must not erase the name entirely.
+/// Minimum of an over-long last segment kept under a tiny budget.
 const MIN_LAST_SEGMENT_CHARS: usize = 16;
 
-/// Shortens the path toward `max_chars` characters by successively replacing
-/// middle segments with `..` (like `hideFolderNameInPath` in the original).
-/// The last segment is never replaced; when it alone exceeds the remaining
-/// budget, it is truncated with an ellipsis (but keeps at least
-/// [`MIN_LAST_SEGMENT_CHARS`] characters).
-///
-/// `max_chars` is a target, not a hard cap: the first segment (root/drive),
-/// the `..` placeholders and the preserved minimum of the last segment are
-/// never sacrificed, so for tiny budgets the result can come out longer.
+/// Shortens `path` toward `max_chars` by replacing middle segments with `..`.
+/// The last segment is never replaced; if it alone overflows the budget it is
+/// truncated with an ellipsis, keeping at least [`MIN_LAST_SEGMENT_CHARS`].
+/// `max_chars` is a target, not a hard cap: the first segment, the `..`
+/// placeholders and the last-segment minimum are never sacrificed, so tiny
+/// budgets can come out longer.
 pub fn shorten_path(path: &str, max_chars: usize) -> String {
-    // Windows paths are displayed with `\` — detect the separator from the input.
     let separator = if path.contains('\\') && !path.contains('/') {
         '\\'
     } else {
@@ -46,8 +40,7 @@ pub fn shorten_path(path: &str, max_chars: usize) -> String {
     };
     while len(&segments) > max_chars && segments.len() > 2 {
         let last = segments.len() - 1;
-        // Candidates are middle segments only: the first (root/drive)
-        // and the last one are never replaced.
+        // Only middle segments are candidates; first and last are never replaced.
         let Some(victim) = segments[1..last]
             .iter()
             .position(|s| !s.is_empty() && *s != "..")
@@ -61,7 +54,7 @@ pub fn shorten_path(path: &str, max_chars: usize) -> String {
     if !segments.is_empty() {
         result.push(separator);
     }
-    // The budget left for the name; `+ 1` reserves room for the ellipsis.
+    // `+ 1` reserves room for the ellipsis.
     let budget = max_chars
         .saturating_sub(result.chars().count() + 1)
         .max(MIN_LAST_SEGMENT_CHARS);
@@ -109,7 +102,6 @@ mod tests {
 
     #[test]
     fn shorten_path_keeps_last_segment() {
-        // Even when it does not fit, the last segment is left untouched.
         assert_eq!(shorten_path("/home/user/filegram", 5), "/../../filegram");
     }
 
@@ -123,11 +115,6 @@ mod tests {
 
     #[test]
     fn shorten_path_truncates_overlong_last_segment() {
-        // A single super-long folder name cannot be collapsed into `..` —
-        // it is cut to the remaining budget with an ellipsis. With realistic
-        // budgets (the 80-char path bar) the result fits `max_chars`, so the
-        // label stops wrapping the UI; tiny budgets may still come out
-        // longer (see the contract note on `shorten_path`).
         let path = format!("/data/projects/{}", "a".repeat(100));
         let shortened = shorten_path(&path, 40);
         assert_eq!(shortened, format!("/../../{}…", "a".repeat(32)));
@@ -143,8 +130,6 @@ mod tests {
 
     #[test]
     fn shorten_path_truncation_keeps_readable_minimum() {
-        // Absurdly small budgets do not erase the name: at least 16
-        // characters of the last segment survive.
         let path = format!("/home/user/{}", "b".repeat(60));
         assert_eq!(
             shorten_path(&path, 10),
@@ -154,7 +139,6 @@ mod tests {
 
     #[test]
     fn shorten_path_never_replaces_first_segment() {
-        // The first segment (root/drive) is never replaced even when space runs out.
         assert_eq!(
             shorten_path("home/user/projects/filegram", 1),
             "home/../../filegram"

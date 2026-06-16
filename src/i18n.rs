@@ -1,10 +1,6 @@
-//! UI translations: one static string table per language. The effective
-//! language defaults to the system locale and can be overridden from the
-//! footer language menu; the choice persists via `settings`.
+//! UI translations: one static string table per language.
 
-/// A UI language offered by the footer menu. `tag()` / `from_tag` round-trip
-/// the BCP-47-style identifiers for persistence; `from_locale` maps an
-/// arbitrary system locale onto the closest entry.
+/// A UI language offered by the footer menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
     EnUs,
@@ -50,16 +46,14 @@ pub enum Lang {
     Fil,
 }
 
-/// Regions whose Spanish reads as Latin American (plus the UN macro-region
-/// code `419` itself); anything else falls back to European Spanish.
+/// Regions whose Spanish reads as Latin American; anything else is European Spanish.
 const LATIN_AMERICA: [&str; 21] = [
     "419", "ar", "bo", "cl", "co", "cr", "cu", "do", "ec", "gt", "hn", "mx", "ni", "pa", "pe",
     "pr", "py", "sv", "us", "uy", "ve",
 ];
 
 impl Lang {
-    /// The short menu: the most spoken languages, shown until the "…"
-    /// entry expands the list to [`Lang::ALL`].
+    /// The short menu, shown until the "…" entry expands to [`Lang::ALL`].
     pub const PRIMARY: [Lang; 17] = [
         Lang::EnUs,
         Lang::ZhCn,
@@ -80,8 +74,7 @@ impl Lang {
         Lang::Tr,
     ];
 
-    /// Every language, ordered by the share of web content (the regional
-    /// variants of Spanish and Portuguese sit together).
+    /// Every language, ordered by share of web content.
     pub const ALL: [Lang; 41] = [
         Lang::EnUs,
         Lang::EsEs,
@@ -173,14 +166,12 @@ impl Lang {
         }
     }
 
-    /// The exact inverse of [`Lang::tag`]; `None` for anything else, so an
-    /// edited settings file falls back to the system locale.
+    /// The inverse of [`Lang::tag`]; `None` for anything else.
     pub fn from_tag(tag: &str) -> Option<Lang> {
         Lang::ALL.into_iter().find(|lang| lang.tag() == tag)
     }
 
-    /// The menu label: the language in its own writing, with a region where
-    /// the menu offers two variants of the same language.
+    /// The menu label: the language in its own writing.
     pub fn native_name(self) -> &'static str {
         match self {
             Lang::EnUs => "English (US)",
@@ -227,14 +218,12 @@ impl Lang {
         }
     }
 
-    /// Best-effort match of a system locale (`en-US`, `de_DE.UTF-8`,
-    /// `zh-Hans-CN`) onto a menu entry; unknown languages read as English.
+    /// Matches a system locale onto a menu entry; unknown languages read as English.
     pub fn from_locale(locale: &str) -> Lang {
         let locale = locale.to_ascii_lowercase();
         let mut parts = locale.split(['-', '_', '.', '@']);
         let language = parts.next().unwrap_or("");
-        // The first two-letter (or `419`) subtag is the region; scripts
-        // (`hans`) and encodings (`utf`) are longer and skipped.
+        // The region is the first two-letter (or `419`) subtag; scripts and encodings are longer.
         let region = parts.find(|part| {
             *part == "419" || (part.len() == 2 && part.chars().all(|c| c.is_ascii_alphabetic()))
         });
@@ -261,7 +250,7 @@ impl Lang {
             "ru" => Lang::RuRu,
             "fr" => Lang::FrFr,
             "de" => Lang::DeDe,
-            // `in` is the legacy ISO code Java-era systems report for Indonesian.
+            // `in` is the legacy ISO code for Indonesian.
             "id" | "in" => Lang::Id,
             "it" => Lang::ItIt,
             "ko" => Lang::Ko,
@@ -289,7 +278,7 @@ impl Lang {
             "lv" => Lang::Lv,
             "sl" => Lang::Sl,
             "et" => Lang::Et,
-            // `iw` is the legacy ISO code Java-era systems report for Hebrew.
+            // `iw` is the legacy ISO code for Hebrew.
             "he" | "iw" => Lang::He,
             "ms" => Lang::Ms,
             // `tl` (Tagalog) is what most systems report for Filipino.
@@ -298,8 +287,7 @@ impl Lang {
         }
     }
 
-    /// The language of the OS user interface; English when the OS reports
-    /// nothing.
+    /// The OS UI language; English when the OS reports nothing.
     pub fn system() -> Lang {
         sys_locale::get_locale()
             .as_deref()
@@ -354,8 +342,7 @@ impl Lang {
     }
 }
 
-/// Every user-visible string of the chrome. The brand name "Filegram" and
-/// the version label stay untranslated by design.
+/// Every user-visible string of the chrome.
 pub struct Strings {
     pub app_title: &'static str,
     pub path_placeholder: &'static str,
@@ -366,13 +353,10 @@ pub struct Strings {
     pub downloads: &'static str,
     pub desktop: &'static str,
     pub documents: &'static str,
-    /// The scan progress prefix; the file counter is appended directly,
-    /// so each translation includes whatever trailing spacing or
-    /// punctuation its script needs before the number.
+    /// Scan progress prefix; the file counter is appended directly, so each
+    /// translation includes its own trailing spacing before the number.
     pub scanning_files: &'static str,
     pub cancel: &'static str,
-    /// The top-bar icon-button tooltips: ascend to the parent folder
-    /// and rescan the current root.
     pub go_up: &'static str,
     pub rescan: &'static str,
     pub new_scan: &'static str,
@@ -387,8 +371,7 @@ pub struct Strings {
     pub language: &'static str,
     pub hint_select: &'static str,
     pub hint_go_up: &'static str,
-    /// The disk-usage bar connector: `{free} {disk_free} {total}`, e.g.
-    /// "182.4 GB free of 494.4 GB".
+    /// Disk-usage bar connector: `{free} {disk_free} {total}`.
     pub disk_free: &'static str,
 }
 
@@ -1612,7 +1595,6 @@ mod tests {
         assert_eq!(Lang::from_locale("uk-UA"), Lang::Uk);
         assert_eq!(Lang::from_locale("vi-VN"), Lang::Vi);
         assert_eq!(Lang::from_locale("fil-PH"), Lang::Fil);
-        // Norwegian variants and legacy codes collapse onto one entry.
         for norwegian in ["no", "nb-NO", "nn-NO"] {
             assert_eq!(Lang::from_locale(norwegian), Lang::No, "{norwegian}");
         }
@@ -1622,10 +1604,9 @@ mod tests {
 
     #[test]
     fn unknown_tag_reads_as_none() {
-        // An edited settings file must fall back to the system locale.
         assert_eq!(Lang::from_tag("xx"), None);
         assert_eq!(Lang::from_tag(""), None);
-        // The persistence match is exact: a loose system tag is not enough.
+        // The match is exact: a loose system tag like `en` is not enough.
         assert_eq!(Lang::from_tag("en"), None);
     }
 
