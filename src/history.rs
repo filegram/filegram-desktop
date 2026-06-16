@@ -1,5 +1,5 @@
-//! The scan-start history: the last [`MAX_ENTRIES`] unique paths,
-//! most recent first, persisted as a plain text file (one path per line).
+//! Scan-start history: the last [`MAX_ENTRIES`] unique paths, most recent
+//! first, persisted one path per line.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,9 +13,8 @@ pub struct History {
 }
 
 impl History {
-    /// Records a scan start: the path is normalized (see [`normalize`]) and
-    /// moves to the front, duplicates are removed, the list is capped at
-    /// [`MAX_ENTRIES`]. Blank paths and paths with line breaks are ignored.
+    /// Records a scan start: the path is [`normalize`]d, moves to the front,
+    /// duplicates removed, capped at [`MAX_ENTRIES`]. Blank paths ignored.
     pub fn push(&mut self, path: &str) {
         let path = normalize(path);
         if path.is_empty() {
@@ -26,9 +25,8 @@ impl History {
         self.entries.truncate(MAX_ENTRIES);
     }
 
-    /// Drops a path from the history, if present. The path is normalized the
-    /// same way [`push`] records it, so a path read back from a displayed
-    /// entry still matches and is removed.
+    /// Drops a path, if present. Normalized like [`push`] so a displayed
+    /// entry still matches.
     pub fn remove(&mut self, path: &str) {
         let path = normalize(path);
         self.entries.retain(|entry| entry != path);
@@ -44,9 +42,8 @@ impl History {
         &self.entries
     }
 
-    /// Reads the history file; a missing file yields an empty history.
-    /// Any other read error is returned so the caller can avoid saving
-    /// over a file it could not read.
+    /// Reads the history file; a missing file yields an empty history. Any
+    /// other read error is returned so the caller does not clobber it.
     pub fn load(path: &Path) -> io::Result<Self> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
@@ -54,8 +51,8 @@ impl History {
             Err(error) => return Err(error),
         };
         let mut history = Self::default();
-        // Pushing in reverse order keeps the file's first line most recent
-        // and reapplies the dedupe/cap invariants to hand-edited files.
+        // Reverse order keeps the file's first line most recent and reapplies
+        // the dedupe/cap invariants to hand-edited files.
         for line in text.lines().rev() {
             history.push(line);
         }
@@ -71,11 +68,10 @@ impl History {
     }
 }
 
-/// Trims whitespace and trailing separators (`/tmp/` and `/tmp` are the same
-/// directory), keeping roots like `/` or `C:\` intact. Paths with line breaks
-/// normalize to blank: they cannot round-trip through the one-path-per-line
-/// file format. [`History::push`] applies this internally; callers that
-/// display or scan the path normalize it themselves to stay in sync.
+/// Trims whitespace and trailing separators, keeping roots like `/` or `C:\`
+/// intact. Paths with line breaks normalize to blank: they cannot round-trip
+/// through the one-path-per-line file. Callers that display or scan the path
+/// normalize it themselves to stay in sync with stored entries.
 pub fn normalize(path: &str) -> &str {
     let path = path.trim();
     if path.contains(['\n', '\r']) {
@@ -89,10 +85,9 @@ pub fn normalize(path: &str) -> &str {
     }
 }
 
-/// `C:` — a bare Windows drive letter. `C:\` must keep its separator:
-/// without it the path is drive-relative, a different location. On Unix
-/// `:` is an ordinary filename character, so only the exact two-character
-/// ASCII-letter form counts.
+/// A bare Windows drive letter like `C:`. `C:\` keeps its separator (without
+/// it the path is drive-relative). On Unix `:` is an ordinary filename char,
+/// so only the exact two-character ASCII-letter form counts.
 fn is_drive_letter(path: &str) -> bool {
     let mut chars = path.chars();
     matches!(
@@ -134,7 +129,6 @@ mod tests {
         history.push("/a");
         history.push("/b");
         history.push("/c");
-        // A trailing separator must still match the stored, normalized entry.
         history.remove("/b/");
         assert_eq!(history.entries(), ["/c", "/a"]);
     }
@@ -155,7 +149,6 @@ mod tests {
         }
         assert_eq!(history.entries().len(), MAX_ENTRIES);
         assert_eq!(history.latest(), Some("/dir14"));
-        // The oldest entries fell off.
         assert!(!history.entries().contains(&"/dir0".to_string()));
     }
 
@@ -196,8 +189,6 @@ mod tests {
 
     #[test]
     fn push_strips_separators_after_non_drive_colons() {
-        // On Unix `:` is an ordinary filename character — only a bare
-        // Windows drive letter keeps its trailing separator.
         let mut history = History::default();
         history.push("/tmp:");
         history.push("/tmp:/");
@@ -220,7 +211,7 @@ mod tests {
     #[test]
     fn save_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        // The parent directory does not exist yet — save must create it.
+        // Parent does not exist yet; save must create it.
         let file = dir.path().join("nested").join("history.txt");
 
         let mut history = History::default();
@@ -240,8 +231,7 @@ mod tests {
 
     #[test]
     fn load_unreadable_file_errors() {
-        // A directory cannot be read as a file — the error must surface
-        // instead of being swallowed into an empty (clobber-prone) history.
+        // A directory cannot be read as a file; the error must surface.
         let dir = tempfile::tempdir().unwrap();
         assert!(History::load(dir.path()).is_err());
     }

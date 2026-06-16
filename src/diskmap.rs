@@ -1,7 +1,4 @@
-//! Disk map canvas widget: drawing bricks with labels and nested
-//! silhouettes, hit-testing and active brick highlighting.
-//! Map geometry is cached in a `canvas::Cache` (analog of the original's offscreen Bitmap),
-//! the highlight is drawn as a separate layer on top.
+//! Disk map canvas widget: bricks, nested silhouettes, hit-testing and highlight.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -15,8 +12,7 @@ use crate::fs_tree::{FsTree, NodeId};
 use crate::treemap::{layout, normalize_weight};
 use crate::ui::chrome::muted_color;
 
-/// Brick colors for one theme mode; the variant is picked per frame from
-/// the application theme (the chrome follows the system light/dark scheme).
+/// Brick colors for one theme mode, picked per frame from the app theme.
 struct BrickPalette {
     map_background: Color,
     folder_fill: Color,
@@ -31,15 +27,14 @@ struct BrickPalette {
     nested_folder_fill: Color,
     nested_file_fill: Color,
     nested_rest_fill: Color,
-    /// Level-2 silhouettes are background detail: paler than level 1 so
-    /// they barely tint the folder silhouette they sit on.
+    /// Level-2 silhouettes: paler than level 1 so they barely tint the folder.
     nested_deep_folder_fill: Color,
     nested_deep_file_fill: Color,
     nested_deep_rest_fill: Color,
     highlight: Color,
 }
 
-/// The palette of the original Android Disk Map: saturated fills, white labels.
+/// Saturated fills, white labels.
 const DARK_PALETTE: BrickPalette = BrickPalette {
     map_background: Color::from_rgb8(0x1C, 0x1C, 0x1C),
     folder_fill: Color::from_rgb8(0xF9, 0xA8, 0x25),
@@ -52,17 +47,15 @@ const DARK_PALETTE: BrickPalette = BrickPalette {
     rest_stroke: Color::from_rgb8(0x75, 0x75, 0x75),
     rest_text: Color::from_rgb8(0xB0, 0xB0, 0xB0),
     nested_folder_fill: Color::from_rgba8(0xFB, 0xC0, 0x2D, 0.35),
-    // From the original's ARGB #4080CBC4 (alpha ≈ 0.25), toned down.
     nested_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.105),
     nested_rest_fill: Color::from_rgba8(0x9E, 0x9E, 0x9E, 0.105),
-    // Barely-there shading that almost blends into the folder silhouette.
     nested_deep_folder_fill: Color::from_rgba8(0x58, 0x2B, 0x04, 0.028),
     nested_deep_file_fill: Color::from_rgba8(0x80, 0xCB, 0xC4, 0.028),
     nested_deep_rest_fill: Color::from_rgba8(0x9E, 0x9E, 0x9E, 0.028),
     highlight: Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.5),
 };
 
-/// Muted fills with dark labels for the light system theme.
+/// Muted fills with dark labels for the light theme.
 const LIGHT_PALETTE: BrickPalette = BrickPalette {
     map_background: Color::from_rgb8(0xD8, 0xD8, 0xD8),
     folder_fill: Color::from_rgb8(0xFF, 0xE0, 0x82),
@@ -91,8 +84,7 @@ fn palette(theme: &iced::Theme) -> &'static BrickPalette {
     }
 }
 
-/// The color a brick's caption is drawn in (folder vs file). Lets overlays
-/// drawn over a brick — e.g. the hover action icons — match the label text.
+/// The color a brick's caption is drawn in (folder vs file), so overlays match it.
 pub fn brick_text_color(theme: &iced::Theme, is_dir: bool) -> Color {
     let palette = palette(theme);
     if is_dir {
@@ -105,52 +97,39 @@ pub fn brick_text_color(theme: &iced::Theme, is_dir: bool) -> Color {
 /// Margin between the canvas edges and the brick area.
 const MAP_MARGIN: f32 = 4.0;
 const CORNER_RADIUS: f32 = 8.0;
-/// The fixed ladder of label font sizes (px). A caption is drawn at the largest
-/// rung that fits the brick, chosen from the brick's geometry alone — never from
-/// the name's length. Equally sized bricks then read at the same size, and the
-/// whole map shows this small, deliberate set of sizes instead of a per-brick
-/// continuum. (The old fit made the font track `width / name_length`, so two
-/// same-size bricks with names of different lengths drew at different sizes —
-/// the source of the "sizes jump around" look.)
+/// Fixed ladder of label font sizes (px); a caption uses the largest rung that
+/// fits the brick, chosen from geometry alone so equal bricks read at one size.
 const FONT_TIERS: [f32; 4] = [12.0, 16.0, 22.0, 28.0];
 /// Smallest rung: a brick that cannot fit it carries no label.
 const MIN_FONT: f32 = FONT_TIERS[0];
 /// Padding reserved around a caption inside its brick (4 px each side).
 const LABEL_PAD: f32 = 8.0;
-/// A rung is chosen only if at least this many characters fit at it; a longer
-/// name is truncated with an ellipsis rather than shrinking the font. This also
-/// guarantees a truncated name keeps at least this many characters.
+/// A rung is chosen only if at least this many characters fit; otherwise the
+/// name truncates with an ellipsis rather than shrinking the font.
 const MIN_LABEL_CHARS: f32 = 4.0;
-/// Line height of a wrapped name, as a multiple of the font size — the vertical
-/// step between lines when a long name wraps to use the brick's spare height.
+/// Line height of a wrapped name, as a multiple of the font size.
 const NAME_LINE_HEIGHT: f32 = 1.2;
-/// Empirical average glyph width as a fraction of the font size — for fitting the font
-/// per brick (canvas offers no cheap way to measure text).
+/// Empirical average glyph width as a fraction of the font size; canvas offers
+/// no cheap way to measure text.
 const CHAR_WIDTH: f32 = 0.6;
 /// Minimum side length of the nested-content area.
 const MIN_CONTENT_SIDE: f32 = 12.0;
 /// Margin of a nested silhouette (left and bottom).
 const SILHOUETTE_MARGIN: f32 = 6.0;
-/// How deep the nested preview goes: a folder brick shows its children and,
-/// inside child-folder silhouettes, grandchildren.
+/// How deep the nested preview goes (children, then grandchildren).
 const NESTED_DEPTH: u8 = 2;
 /// Silhouette corner radius as a fraction of its shorter side, capped at
-/// [`CORNER_RADIUS`]: rounding stays proportional like the original — tiny
-/// tiles stay sharp, large ones round off.
+/// [`CORNER_RADIUS`].
 const NESTED_CORNER_FRACTION: f32 = 0.15;
 
-/// Faint file-type watermark, centered inside a file brick. It fills the brick
-/// almost edge to edge: a square sized to the *shorter* side (so it stays
-/// proportional in tall or wide bricks alike) inset by [`FILE_ICON_MARGIN`].
+/// Faint file-type watermark, centered in a file brick: a square sized to the
+/// shorter side, inset by [`FILE_ICON_MARGIN`].
 const FILE_ICON_MARGIN: f32 = 6.0;
-/// Below this side (px) the glyph reads as clutter rather than a hint, so a
-/// small brick draws no icon at all.
+/// Below this side (px) a brick draws no icon.
 const FILE_ICON_MIN_SIDE: f32 = 18.0;
-/// Opacity of the watermark over the brick fill — barely there, so the
-/// centered name still reads on top of it.
+/// Opacity of the watermark over the brick fill.
 const FILE_ICON_ALPHA: f32 = 0.12;
-/// The glyphs are authored in a 24×24 box (like the bundled SVG icons) and
-/// scaled to the brick; the stroke width is in that same space.
+/// The glyphs are authored in a 24×24 box and scaled to the brick.
 const ICON_VIEWBOX: f32 = 24.0;
 const ICON_STROKE: f32 = 1.8;
 
@@ -161,19 +140,18 @@ pub struct DiskMap<'a> {
     pub cache: &'a canvas::Cache,
 }
 
-/// A first-level map tile: either a real tree node or the aggregate
-/// rest brick that collapses the tail of small items.
+/// A first-level map tile: a tree node, or the rest brick collapsing the tail.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Brick {
     Node(NodeId),
     Rest { files: usize, dirs: usize, size: u64 },
 }
 
-/// Collapse threshold: a brick whose weight share (== map area share)
-/// is below this fraction goes into the rest tail.
+/// Collapse threshold: a brick whose weight share is below this goes into the
+/// rest tail.
 const REST_SHARE: f32 = 0.05;
 
-/// "N word" with a naive English plural (an "s" suffix unless N == 1).
+/// "N word" with a naive English plural.
 fn plural(n: u64, word: &str) -> String {
     format!("{n} {word}{}", if n == 1 { "" } else { "s" })
 }
@@ -194,11 +172,10 @@ fn rest_label(files: usize, dirs: usize, size: u64) -> String {
     )
 }
 
-/// First-level layout: children of `current` (already sorted by size,
-/// descending) in local canvas coordinates; the tail of items that are
-/// tiny (share < [`REST_SHARE`]) or can't fit their caption is collapsed
-/// into a single trailing [`Brick::Rest`]. Public so the application can
-/// anchor overlays (the hover actions panel) to a brick's rectangle.
+/// First-level layout: children of `current` (sorted by size, descending) in
+/// local canvas coordinates; the tail of tiny items (share < [`REST_SHARE`]) or
+/// items that can't fit a caption collapses into a single trailing
+/// [`Brick::Rest`]. Public so overlays can anchor to a brick's rectangle.
 pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectangle)> {
     let children = tree.node(current).children.as_slice();
     let weights: Vec<f32> = children
@@ -208,14 +185,13 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
     let total: f32 = weights.iter().sum();
     let bounds = map_bounds(size);
 
-    // suffix[k] is the combined weight of items k.. — the would-be rest.
+    // suffix[k] is the combined weight of items k.., the would-be rest.
     let mut suffix = vec![0.0f32; weights.len() + 1];
     for k in (0..weights.len()).rev() {
         suffix[k] = suffix[k + 1] + weights[k];
     }
 
-    // Displayed weights for a given tail size; the buffer is reused
-    // across iterations to avoid re-allocating per snapshot.
+    // Displayed weights for a given tail size; the buffer is reused.
     let mut shown: Vec<f32> = Vec::with_capacity(weights.len());
     let mut rects_for = |collapsed: usize| {
         let kept = weights.len() - collapsed;
@@ -227,11 +203,9 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
         layout(&shown, bounds)
     };
 
-    // Phase 1 — unreadable bricks: collapse the tail from the first brick
-    // whose caption cannot fit. The tail only grows, so the loop converges
-    // in ≤ n steps (2–3 in practice: each step jumps straight to the first
-    // unlabeled brick); after every extension the layout is recomputed and
-    // the remaining bricks are re-checked in their new rectangles.
+    // Phase 1: collapse the tail from the first brick whose caption cannot fit.
+    // The tail only grows, so the loop converges; the layout is recomputed after
+    // each extension and the remaining bricks re-checked in their new rectangles.
     let mut collapsed = 0;
     loop {
         let rects = rects_for(collapsed);
@@ -247,13 +221,10 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
         collapsed = grown;
     }
 
-    // Phase 2 — small shares: the tail extends with items whose share is
-    // below [`REST_SHARE`], but the rest must stay strictly smaller than
-    // the smallest displayed brick — otherwise a folder of near-equal items
-    // (or a mid-scan snapshot, while folder aggregates are still counting
-    // up) would be swallowed whole; heavier items stay regular bricks.
-    // The unreadable tail from phase 1 is exempt from this cap, but not
-    // from the under-two rule below.
+    // Phase 2: extend the tail with items whose share is below [`REST_SHARE`],
+    // but keep the rest strictly smaller than the smallest displayed brick, else
+    // a folder of near-equal items would be swallowed whole. The phase-1 tail is
+    // exempt from this cap, but not from the under-two rule below.
     let share_tail = weights
         .iter()
         .rev()
@@ -267,9 +238,8 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
         target -= 1;
     }
 
-    // A single-item tail is not worth a rest brick: it would occupy the
-    // exact same rectangle, equally unlabeled, while a regular brick at
-    // least stays clickable — so anything under two items is shown as is.
+    // A single-item tail is not worth a rest brick: it would occupy the same
+    // rectangle, while a regular brick at least stays clickable.
     let collapsed = if target >= 2 { target } else { 0 };
     let rects = rects_for(collapsed);
     let kept = children.len() - collapsed;
@@ -290,24 +260,19 @@ pub fn level1(tree: &FsTree, current: NodeId, size: Size) -> Vec<(Brick, Rectang
     bricks.into_iter().zip(rects).collect()
 }
 
-/// The brick caption split into its two parts: the name (drawn in the
-/// brick's text color) and the human-readable size (drawn smaller and
-/// muted). The folder entry count lives in the status bar, not on the brick.
+/// The brick caption split in two: the name and the human-readable size.
 fn brick_caption(tree: &FsTree, id: NodeId) -> (&str, String) {
     let node = tree.node(id);
     (&node.name, crate::format::human_size(node.size))
 }
 
-/// Whether the brick is large enough to carry a label. Decided from the brick's
-/// geometry alone (see [`tier_font`]): tiny slivers get no label, and the hover
-/// actions panel is suppressed for them too.
+/// Whether the brick is large enough to carry a label, from geometry alone.
 pub fn has_label(rect: Rectangle) -> bool {
     tier_font(rect).is_some()
 }
 
-/// The content area inside a folder silhouette: inset on the top and the
-/// right so the deeper level leaves the parent's fill visible as a frame
-/// (the left and bottom gaps come from the children's own margins).
+/// The content area inside a folder silhouette: inset top and right so the
+/// deeper level leaves the parent's fill visible as a frame.
 fn silhouette_content(r: Rectangle) -> Rectangle {
     Rectangle {
         x: r.x,
@@ -328,11 +293,9 @@ fn map_bounds(size: Size) -> Rectangle {
 }
 
 impl DiskMap<'_> {
-    /// The rest brick is inert: the cursor over it hits nothing.
-    /// Mid-flight the bricks sit away from their targets, so the cursor
-    /// resolves against what is actually drawn — the spring rectangles;
-    /// `level1` is the fallback for events that arrive before the first
-    /// `RedrawRequested` syncs the springs to this level and canvas size.
+    /// The rest brick is inert. The cursor resolves against the drawn (spring)
+    /// rectangles; `level1` is the fallback before the first `RedrawRequested`
+    /// syncs the springs to this level and canvas size.
     fn hit_test(&self, state: &MapState, size: Size, point: Point) -> Option<NodeId> {
         let bricks = if state.covers(self.current, size) {
             state.bricks(Instant::now())
@@ -358,13 +321,11 @@ impl DiskMap<'_> {
         underlay: &[(Brick, Rectangle)],
     ) {
         frame.fill_rectangle(Point::ORIGIN, frame.size(), palette.map_background);
-        // A zoom blows bricks far past the screen: an off-screen brick is not
-        // worth filling, and — crucially — drawing its caption would rasterize
-        // huge glyphs at many sizes into iced's glyph atlas, overflowing it and
-        // breaking *other* text (`AtlasFull` is silently ignored).
+        // Skip off-screen bricks: a zoom blows them far past the screen, and
+        // drawing their captions would overflow iced's glyph atlas and break
+        // other text (`AtlasFull` is silently ignored).
         let view = Rectangle::new(Point::ORIGIN, frame.size());
-        // The zoom-in underlay: the real child level grown into the pivot,
-        // drawn beneath the dissolving parent bricks so the commit is seamless.
+        // The zoom-in underlay, beneath the dissolving parent bricks.
         for &(brick, rect) in underlay {
             if view.intersects(&rect) {
                 self.draw_one(state, frame, palette, brick, rect, None);
@@ -379,7 +340,7 @@ impl DiskMap<'_> {
         }
     }
 
-    /// One brick, node or rest tail, with an optional zoom fade/scale.
+    /// One brick, with an optional zoom fade/scale.
     fn draw_one(
         &self,
         state: &MapState,
@@ -397,7 +358,7 @@ impl DiskMap<'_> {
         }
     }
 
-    /// The aggregate rest brick: neutral gray tones, no nested silhouettes.
+    /// The rest brick: neutral gray, no nested silhouettes.
     fn draw_rest(
         &self,
         frame: &mut Frame,
@@ -439,9 +400,8 @@ impl DiskMap<'_> {
         } else {
             (palette.file_fill, palette.file_stroke, palette.file_text)
         };
-        // Bare the fill toward the background as a zoom-in pivot dissolves (and,
-        // for zoom-out, while it is still blown up): the child squares (real
-        // underlay or vivid silhouettes) read instead of a flat folder color.
+        // Bare the fill toward the background during a zoom so the child squares
+        // read instead of a flat folder color.
         let bare = zoom.map_or(0.0, |z| z.bare);
         let path = Path::rounded_rectangle(rect.position(), rect.size(), CORNER_RADIUS.into());
         frame.fill(&path, fade_color(fill, 1.0 - bare));
@@ -452,8 +412,8 @@ impl DiskMap<'_> {
                 .with_width(1.0),
         );
 
-        // Silhouettes (folders) or a faint file-type watermark (files) draw
-        // first, so the caption (size in the corner, name centered) lands on top.
+        // Silhouettes (folders) or a file-type watermark (files) draw first, so
+        // the caption lands on top.
         if node.is_dir {
             let lift = zoom.map_or((0.0, 1.0), |z| (z.vivid, z.silhouette));
             self.draw_nested(state, frame, palette, id, rect, lift);
@@ -463,28 +423,18 @@ impl DiskMap<'_> {
         }
 
         let (name, size) = brick_caption(self.tree, id);
-        // Folders carry their file count beside the size when it fits; files
-        // have no count to show.
+        // Folders carry their file count beside the size when it fits.
         let files = node.is_dir.then_some(node.files);
         let cap = zoom.map(|z| (z.scale, z.caption));
         self.draw_brick_label(frame, (name, size, files), text_color, rect, cap);
     }
 
-    /// Draws a node brick's caption: the name in `color` at the brick's
-    /// [`tier_font`] size in its geometric center, and — on bricks at least three
-    /// name-font lines tall — the size small and muted in the top-left corner.
-    /// For a folder, `files` carries its file count, appended to the size line
-    /// (`"1.2 MB · 42 files"`) when the combined text fits the brick width.
-    /// The font is chosen from the brick's geometry (so [`has_label`] agrees on
-    /// when a label appears); a name too long for one line wraps down the brick's
-    /// spare height ([`wrap_name`]), and only truncates with an ellipsis when even
-    /// the wrapped lines do not fit. The caption draws over the nested
-    /// silhouettes, which now fill the brick to its top.
-    ///
-    /// The name is centered by an *estimated* offset rounded to whole pixels,
-    /// not by [`Text`]'s own alignment (which lands glyphs on fractional pixels
-    /// and shreds the glyph atlas) nor by a real measurement (shaping text to
-    /// measure it inside the canvas draw corrupts the renderer).
+    /// Draws a node brick's caption: the name centered at the brick's
+    /// [`tier_font`] size, and (on bricks at least three name-font lines tall)
+    /// the size small and muted in the top-left corner. For a folder, `files`
+    /// is appended to the size line when it fits the brick width. A name too
+    /// long for one line wraps down the spare height ([`wrap_name`]) and only
+    /// ellipsizes when even the wrapped lines do not fit.
     fn draw_brick_label(
         &self,
         frame: &mut Frame,
@@ -494,35 +444,28 @@ impl DiskMap<'_> {
         zoom: Option<(f32, f32)>,
     ) {
         let (name, size, files) = caption;
-        // A zoom blows the caption up (scale) and fades it (alpha): a zoom-in
-        // pivot grows its name and dissolves it; a zoom-out brick fades its name
-        // back in at slot size. `(1.0, 1.0)` at rest — exactly the static label.
+        // `(1.0, 1.0)` at rest; a zoom scales and fades the caption.
         let (scale, alpha) = zoom.unwrap_or((1.0, 1.0));
-        // Skip a near-invisible caption outright: it would still rasterize its
-        // (possibly huge) glyphs into the atlas for nothing.
+        // Skip a near-invisible caption: it would still rasterize glyphs for nothing.
         if alpha <= 0.01 {
             return;
         }
-        // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
+        // Count characters, not bytes.
         let name_chars = name.chars().count();
-        // The brick's geometry sets the tier (so a brick draws a label exactly
-        // when `has_label`, on the same geometry, does); the name may then shrink
-        // below it to fit in full (see [`fit_name`]).
+        // The geometry sets the tier; the name may then shrink below it to fit
+        // in full (see [`fit_name`]).
         let Some(tier) = zoom_tier_font(rect, scale) else {
             return;
         };
         let name_color = fade_color(color, alpha);
         let size_color = fade_color(muted(color), alpha);
 
-        // Size: top-left corner, small and muted — the lesser part of the label.
-        // Tied to the brick's tier (not the shrunk name) so it stays consistent;
-        // dropped on short bricks (height below three tier lines), where it would
-        // crowd the centered name. Its font also reserves a top band for the name.
+        // Size: top-left corner, tied to the brick's tier; dropped on short
+        // bricks (height below three tier lines) where it would crowd the name.
         let caption_size_font = (rect.height >= 3.0 * tier).then(|| size_font(tier));
         if let Some(size_font) = caption_size_font {
             // For a folder, append the file count when the widened line still
-            // clears the brick width (4 px pad each side); estimate the width
-            // like elsewhere — measuring by shaping inside the draw is unsafe.
+            // clears the brick width (4 px pad each side).
             let size_line = match files {
                 Some(n) => {
                     let with_files = format!("{size} · {}", plural(n, "file"));
@@ -542,31 +485,20 @@ impl DiskMap<'_> {
             });
         }
 
-        // Name: centered in the brick. It wraps to use the brick's spare height
-        // and, if still too long, shrinks below the tier so the whole name shows;
-        // only at the smallest size does it ellipsize. A short brick stays one
-        // line at the tier.
-        //
-        // Horizontal centering is left to `Text` itself (`align_x: Center` about
-        // the brick's mid-x): it measures the real shaped width, while our own
-        // [`CHAR_WIDTH`]-per-char estimate is too coarse for proportional text and
-        // visibly mis-centers a short name (lots of slack to one side). The wrap
-        // math still estimates widths, but only to pick where lines break — not to
-        // place them. The mid-x is rounded; centering then lands glyphs on a few
-        // subpixel bins, which is affordable only because the font set is tiny
-        // ([`fit_name`] stays on the ladder) — a large glyph set forces the atlas
-        // to grow mid-scan and that corrupts the text (see the memory note).
+        // Name: wraps to use the spare height and shrinks below the tier so the
+        // whole name shows; only at the smallest size does it ellipsize.
+        // Horizontal centering is left to `Text` (it measures the real shaped
+        // width); the wrap math only estimates widths to pick line breaks. The
+        // mid-x is rounded so glyphs land on a few subpixel bins, affordable
+        // only because [`fit_name`] keeps the font set tiny.
         let band = caption_size_font.map_or(LABEL_PAD, |sf| LABEL_PAD + sf);
         let (font_size, lines) = fit_name(name, name_chars, rect, tier, band);
         let line_h = font_size * NAME_LINE_HEIGHT;
-        // The name's vertical region clears the caption band up top and keeps a
-        // pad at the bottom, so a wrapped block never collides with the caption
-        // nor runs to the edge.
+        // The name's region clears the caption band up top and keeps a bottom pad.
         let region_top = rect.y + band;
         let region_h = (rect.height - LABEL_PAD - band).max(font_size);
         let block_h = (lines.len() - 1) as f32 * line_h + font_size;
-        // One line keeps the old full-brick centering; a wrapped block centers
-        // inside the region so it clears the caption and the bottom edge.
+        // One line centers in the brick; a wrapped block centers in the region.
         let top = if lines.len() > 1 {
             region_top + (region_h - block_h) / 2.0
         } else {
@@ -586,9 +518,8 @@ impl DiskMap<'_> {
         }
     }
 
-    /// Rest-brick label, drawn at the brick's [`tier_font`] size and truncated
-    /// to the width with an ellipsis. `zoom` is the caption's `(scale, alpha)`
-    /// during a transition, `None` at rest.
+    /// Rest-brick label at the [`tier_font`] size, truncated to width with an
+    /// ellipsis. `zoom` is the `(scale, alpha)` during a transition, `None` at rest.
     fn draw_label(
         &self,
         frame: &mut Frame,
@@ -604,8 +535,7 @@ impl DiskMap<'_> {
         let Some(font_size) = zoom_tier_font(rect, scale) else {
             return;
         };
-        // Count characters, not bytes: Cyrillic takes 2 bytes per glyph in UTF-8.
-        // A label wider than the brick is truncated to the width with an ellipsis.
+        // Count characters, not bytes.
         let char_count = label.chars().count();
         let max_chars = ((rect.width - LABEL_PAD) / (CHAR_WIDTH * font_size)).max(0.0) as usize;
         let (content, _) = fit_with_ellipsis(label, char_count, max_chars);
@@ -619,12 +549,9 @@ impl DiskMap<'_> {
         });
     }
 
-    /// Nested silhouettes: colored rectangles without text, laid out by
-    /// [`MapState::nested_silhouettes`] so they preview the post-zoom levels
-    /// to [`NESTED_DEPTH`]. Full depth is drawn every frame, including
-    /// mid-flight: the silhouettes are pure geometry (no glyph atlas) and
-    /// the [`level1`] part is memoized, so they scale with an animating
-    /// brick instead of vanishing and snapping back at rest.
+    /// Nested silhouettes: colored rectangles previewing the post-zoom levels
+    /// to [`NESTED_DEPTH`]. Drawn every frame (pure geometry, memoized layout)
+    /// so they scale with an animating brick.
     fn draw_nested(
         &self,
         state: &MapState,
@@ -638,23 +565,18 @@ impl DiskMap<'_> {
         if alpha <= 0.01 {
             return;
         }
-        // The silhouettes fill the brick to its top edge (as they already do at
-        // the bottom): the size line and centered name float over them rather
-        // than reserving a header band. Horizontal frame only — left += 1,
-        // right −= 8.
+        // The silhouettes fill the brick to its top edge; the caption floats over
+        // them. Horizontal frame only: left += 1, right -= 8.
         let content = Rectangle {
             x: rect.x + 1.0,
             y: rect.y,
             width: rect.width - 1.0 - 8.0,
             height: rect.height,
         };
-        // A tiny brick previews nothing: skip the recursion outright. The
-        // same guard inside `nested_silhouettes` covers the deeper levels.
+        // A tiny brick previews nothing.
         if content.width < MIN_CONTENT_SIDE || content.height < MIN_CONTENT_SIDE {
             return;
         }
-        // A zoom blows bricks far past the screen: only the on-screen part of
-        // the preview is worth laying out and filling.
         let view = Rectangle::new(Point::ORIGIN, frame.size());
         if !view.intersects(&content) {
             return;
@@ -683,8 +605,8 @@ impl DiskMap<'_> {
                 Brick::Node(id) if self.tree.node(id).is_dir => folder,
                 Brick::Node(_) => file,
             };
-            // Vivify the top level toward the real child colors as the level
-            // "opens up"; deeper levels stay faint previews.
+            // Vivify the top level toward the real child colors; deeper levels
+            // stay faint previews.
             let fill = if level == 1 {
                 let real = match brick {
                     Brick::Rest { .. } => palette.rest_fill,
@@ -695,7 +617,7 @@ impl DiskMap<'_> {
             } else {
                 preview
             };
-            // Corners scale with the silhouette like the original.
+            // Corners scale with the silhouette.
             let radius =
                 (silhouette.width.min(silhouette.height) * NESTED_CORNER_FRACTION).min(CORNER_RADIUS);
             let path =
@@ -706,17 +628,14 @@ impl DiskMap<'_> {
 }
 
 /// How large a label could be in `rect` before quantizing: bounded by the brick
-/// height and by the width needed for a [`MIN_LABEL_CHARS`]-wide caption. The
-/// width bound depends only on a fixed character budget, never on the actual
-/// name — so the size reflects the brick, not how its file happens to be named.
+/// height and by the width for a [`MIN_LABEL_CHARS`]-wide caption. The width
+/// bound is a fixed character budget, never the actual name.
 fn label_fit(rect: Rectangle) -> f32 {
     (rect.height - LABEL_PAD).min((rect.width - LABEL_PAD) / (CHAR_WIDTH * MIN_LABEL_CHARS))
 }
 
-/// The resting label font size for a brick: the largest [`FONT_TIERS`] rung that
-/// fits, or `None` when even the smallest rung does not (the brick gets no
-/// label). Because the chosen rung clears a [`MIN_LABEL_CHARS`]-wide caption, a
-/// truncated name always keeps at least that many characters.
+/// The resting label font for a brick: the largest [`FONT_TIERS`] rung that
+/// fits, or `None` when even the smallest does not.
 fn tier_font(rect: Rectangle) -> Option<f32> {
     let fit = label_fit(rect);
     FONT_TIERS.iter().rev().copied().find(|&rung| rung <= fit)
@@ -724,28 +643,19 @@ fn tier_font(rect: Rectangle) -> Option<f32> {
 
 /// [`tier_font`] with a zoom enlargement. While a brick is blown up
 /// (`scale > 1`) the caption grows past the ladder up to [`ZOOM_MAX_FONT`],
-/// tracking the brick — snapped to an even integer so the handful of animating
-/// frames add only a handful of glyph sizes to the atlas. At rest (`scale <= 1`)
-/// this is exactly [`tier_font`], so the resting map shows only ladder sizes.
-///
-/// The font is always whole pixels: cosmic-text rasterizes glyphs separately for
-/// each f32 size (`CacheKey::font_size_bits`), so fewer distinct sizes mean a
-/// more stable glyph atlas (`PrepareError::AtlasFull` is silently ignored, and
-/// when it overflows text breaks).
+/// snapped to an even integer to keep the atlas small. At rest this is exactly
+/// [`tier_font`]. Whole pixels: cosmic-text rasterizes glyphs per f32 size, so
+/// fewer distinct sizes keep the atlas stable (overflow breaks text).
 fn zoom_tier_font(rect: Rectangle, scale: f32) -> Option<f32> {
     if scale <= 1.0 {
         return tier_font(rect);
     }
     let fit = label_fit(rect);
-    // Down to an even integer: fewer distinct font sizes — a more stable atlas.
     (fit >= MIN_FONT).then(|| (fit.min(ZOOM_MAX_FONT) / 2.0).floor() * 2.0)
 }
 
-/// Fits `text` (with `char_count` characters) into `max_chars` glyphs, appending
-/// an ellipsis when it has to cut. Returns the string and its character count —
-/// the caller estimates its width from the count to center it. For a name the
-/// rung guarantees `max_chars >= MIN_LABEL_CHARS`, so a truncated name keeps
-/// several characters before the ellipsis.
+/// Fits `text` into `max_chars` glyphs, appending an ellipsis when it must cut.
+/// Returns the string and its character count.
 fn fit_with_ellipsis(text: &str, char_count: usize, max_chars: usize) -> (String, usize) {
     if char_count <= max_chars {
         return (text.to_owned(), char_count);
@@ -758,15 +668,12 @@ fn fit_with_ellipsis(text: &str, char_count: usize, max_chars: usize) -> (String
     (shown, max_chars)
 }
 
-/// The name's font size and wrapped lines for `rect`: tries the [`FONT_TIERS`]
-/// rungs at or below the geometry `tier`, largest first, and takes the first
-/// where the whole name fits wrapped — so a name long for its brick drops to a
-/// lower rung and shows in full instead of truncating. Staying on the ladder is
-/// deliberate: it keeps the whole map to a handful of font sizes, so the glyph
-/// atlas stays small and never has to grow (growing it mid-scan visibly corrupts
-/// the text — see the memory note). If no rung shows the name in full, the
-/// smallest is used (its last line ellipsized). `band` is the height reserved at
-/// the top for the size caption.
+/// The name's font and wrapped lines for `rect`: tries the [`FONT_TIERS`] rungs
+/// at or below `tier`, largest first, and takes the first where the whole name
+/// fits wrapped, so a long name drops to a lower rung instead of truncating.
+/// Staying on the ladder keeps the glyph atlas small. If no rung shows the name
+/// in full, the smallest is used (last line ellipsized). `band` is the height
+/// reserved at the top for the size caption.
 fn fit_name(name: &str, name_chars: usize, rect: Rectangle, tier: f32, band: f32) -> (f32, Vec<String>) {
     let mut fallback = None;
     for &rung in FONT_TIERS.iter().rev() {
@@ -784,23 +691,18 @@ fn fit_name(name: &str, name_chars: usize, rect: Rectangle, tier: f32, band: f32
         }
         fallback = Some((rung, lines));
     }
-    // No rung shows it in full — the smallest rung fits the most characters.
     fallback.unwrap_or_else(|| (MIN_FONT, vec![name.to_string()]))
 }
 
-/// A character a wrapped name may break after, keeping it on the upper line: path
-/// and word separators read better than a mid-token cut.
+/// A character a wrapped name may break after: path and word separators.
 fn is_break_char(c: char) -> bool {
     matches!(c, ' ' | '-' | '_' | '.')
 }
 
-/// Wraps `name` (with `char_count` characters) to at most `max_lines` lines of
-/// about `max_chars` characters each, so a long name shows in full down the
-/// brick's spare height instead of truncating. Each line breaks after a
-/// [`is_break_char`] separator when one is near the end, else hard-breaks at
-/// `max_chars`; the last line is ellipsized if the whole name still does not fit.
-/// With `max_lines == 1` (or a name that already fits) this is a single line,
-/// exactly the non-wrapped behavior. Always returns at least one line.
+/// Wraps `name` to at most `max_lines` lines of about `max_chars` each. Each
+/// line breaks after a [`is_break_char`] separator near the end, else
+/// hard-breaks at `max_chars`; the last line is ellipsized if the name still
+/// does not fit. Always returns at least one line.
 fn wrap_name(name: &str, char_count: usize, max_chars: usize, max_lines: usize) -> Vec<String> {
     if max_chars == 0 {
         return vec![String::new()];
@@ -813,7 +715,7 @@ fn wrap_name(name: &str, char_count: usize, max_chars: usize, max_lines: usize) 
     let mut start = 0;
     while start < chars.len() && lines.len() < max_lines {
         let remaining = chars.len() - start;
-        // Last allowed line and the rest does not fit: ellipsize what remains.
+        // Last allowed line and the rest does not fit: ellipsize it.
         if lines.len() == max_lines - 1 && remaining > max_chars {
             let rest: String = chars[start..].iter().collect();
             lines.push(fit_with_ellipsis(&rest, remaining, max_chars).0);
@@ -827,7 +729,7 @@ fn wrap_name(name: &str, char_count: usize, max_chars: usize, max_lines: usize) 
         {
             brk = pos + 1;
         }
-        // A separator right at the start would not advance — take the full window.
+        // A separator right at the start would not advance: take the full window.
         if brk <= start {
             brk = end;
         }
@@ -837,28 +739,20 @@ fn wrap_name(name: &str, char_count: usize, max_chars: usize, max_lines: usize) 
     lines
 }
 
-/// Floor on the size caption's font — the size on small bricks (unchanged from
-/// when this caption was a fixed [`MIN_SIZE_FONT`]).
+/// Floor on the size caption's font.
 const MIN_SIZE_FONT: f32 = 10.0;
-/// The size caption tracks the name font at this fraction: it grows on large
-/// bricks so it stays readable, while remaining the lesser part of the label.
+/// The size caption tracks the name font at this fraction.
 const SIZE_FONT_FRACTION: f32 = 0.5;
 
-/// Font size of the size/count caption for a brick whose name is drawn at
-/// `name_font`: a fraction of the name font, floored at [`MIN_SIZE_FONT`] so
-/// small bricks read exactly as before and big bricks scale up.
-///
-/// Snapped down to an even integer — like the name's [`FONT_TIERS`] rungs. The
-/// grid keeps the count of distinct font sizes small (and reuses the
-/// name's own atlas slots): every extra glyph size carves a fresh region out of
-/// iced's glyph atlas, and once it overflows *all* text on the canvas shreds.
+/// Font of the size/count caption for a name drawn at `name_font`: a fraction of
+/// it, floored at [`MIN_SIZE_FONT`] and snapped to an even integer to keep the
+/// glyph atlas small.
 fn size_font(name_font: f32) -> f32 {
     let raw = (name_font * SIZE_FONT_FRACTION).max(MIN_SIZE_FONT);
     (raw / 2.0).floor() * 2.0
 }
 
-/// A muted variant of a label color: same hue, lower opacity, so it reads as
-/// less prominent over the brick fill in either theme.
+/// A muted variant of a label color: same hue, lower opacity.
 fn muted(color: Color) -> Color {
     Color {
         a: color.a * 0.6,
@@ -866,36 +760,29 @@ fn muted(color: Color) -> Color {
     }
 }
 
-/// A brick's caption may grow past the top [`FONT_TIERS`] rung while a zoom
-/// tween enlarges it — the font tracks the brick and settles back onto the
-/// ladder at rest. Capped so the glyph atlas sees only a handful of extra sizes.
+/// A caption may grow past the top [`FONT_TIERS`] rung while a zoom enlarges it.
+/// Capped so the glyph atlas sees only a handful of extra sizes.
 const ZOOM_MAX_FONT: f32 = 48.0;
 
-/// `ω·t` at which a critically damped spring is settled — the zoom's nominal
-/// duration in units of `1/STIFFNESS` (matches the `≈10/ω s` in the
-/// [`STIFFNESS`] note). Turns elapsed time into a 0→1 progress for the
-/// time-keyed parts of a zoom-*in*.
+/// `ω·t` at which a critically damped spring is settled: the zoom's nominal
+/// duration in units of `1/STIFFNESS`. Turns elapsed time into a 0→1 progress
+/// for the time-keyed parts of a zoom-in.
 const SETTLE_TURNS: f32 = 10.0;
 
-/// Zoom-*out*: the enlargement (`current/normal` scale) at which a pivot is
-/// fully vivid and bared; it folds back to an opaque preview brick as it
-/// shrinks to its slot (scale → 1).
+/// Zoom-out: the scale at which a pivot is fully vivid and bared; it folds back
+/// to an opaque preview brick as it shrinks to its slot (scale → 1).
 const VIVID_FULL_SCALE: f32 = 1.5;
 
-/// Zoom-*in* vivify window (fraction of the duration): the silhouettes hold
-/// their faint preview until [`VIVID_DELAY`] and lerp to fully vivid (the real
-/// child colors) by [`VIVID_FULL`], so the level "opens up" mid-flight.
+/// Zoom-in vivify window (fraction of the duration): silhouettes hold their
+/// faint preview until [`VIVID_DELAY`] and lerp to fully vivid by [`VIVID_FULL`].
 const VIVID_DELAY: f32 = 0.25;
 const VIVID_FULL: f32 = 0.6;
 
-/// Zoom-*in*: when (fraction of the duration) the stretching brick begins
-/// dissolving to transparent — a short opaque "this is the folder" beat while
-/// it grows, then a fade over the rest that reveals the child level the commit
-/// snaps in underneath.
+/// Zoom-in: when (fraction of the duration) the stretching brick begins
+/// dissolving to transparent, revealing the child level underneath.
 const DISSOLVE_START: f32 = 2.0 / 3.0;
 
-/// Scales a color's opacity by `alpha` (clamped) — the per-frame fade of a
-/// zoom transition. `alpha == 1.0` is a no-op.
+/// Scales a color's opacity by `alpha` (clamped). `alpha == 1.0` is a no-op.
 fn fade_color(color: Color, alpha: f32) -> Color {
     Color {
         a: color.a * alpha.clamp(0.0, 1.0),
@@ -903,8 +790,7 @@ fn fade_color(color: Color, alpha: f32) -> Color {
     }
 }
 
-/// A coarse file category, derived from a name's extension, that selects which
-/// watermark glyph a file brick draws.
+/// A coarse file category, from a name's extension, selecting the watermark glyph.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FileKind {
     Image,
@@ -917,12 +803,10 @@ enum FileKind {
 }
 
 impl FileKind {
-    /// Maps a file name to a category by its lowercased extension. Names with
-    /// no extension — and any unknown one — fall back to [`FileKind::Generic`],
-    /// so every file brick still shows a watermark.
+    /// Maps a file name to a category by its lowercased extension; no extension
+    /// or an unknown one is [`FileKind::Generic`].
     fn classify(name: &str) -> FileKind {
-        // The part after the last dot; a leading-dot name ("/.gitignore") has an
-        // empty stem and so classifies as Generic, which is what we want.
+        // A leading-dot name (".gitignore") has an empty stem, so Generic.
         let ext = name
             .rsplit_once('.')
             .map_or(String::new(), |(_, e)| e.to_ascii_lowercase());
@@ -949,11 +833,9 @@ impl FileKind {
     }
 }
 
-/// Draws the faint file-type watermark centered in a file brick: a line glyph
-/// (Lucide style, like the bundled SVG icons) authored in a 24×24 box and
-/// scaled to [`FILE_ICON_FRACTION`] of the brick's shorter side. Drawn before
-/// the caption so the name reads on top; skipped on bricks too small to carry
-/// it or when a zoom has nearly faded it out.
+/// Draws the file-type watermark centered in a file brick: a line glyph in a
+/// 24×24 box scaled to the brick's shorter side. Skipped on tiny bricks or when
+/// a zoom has nearly faded it out.
 fn draw_file_icon(frame: &mut Frame, kind: FileKind, rect: Rectangle, color: Color, alpha: f32) {
     if alpha <= 0.01 {
         return;
@@ -963,7 +845,7 @@ fn draw_file_icon(frame: &mut Frame, kind: FileKind, rect: Rectangle, color: Col
         return;
     }
     let scale = side / ICON_VIEWBOX;
-    // Round the box origin to whole pixels so the strokes land cleanly.
+    // Round the box origin so the strokes land cleanly.
     let ox = (rect.x + (rect.width - side) / 2.0).round();
     let oy = (rect.y + (rect.height - side) / 2.0).round();
     let path = icon_path(kind);
@@ -992,8 +874,7 @@ fn polyline(b: &mut canvas::path::Builder, pts: &[(f32, f32)]) {
     }
 }
 
-/// The line-glyph for a category, built in the 24×24 icon box. Stroke-only, so
-/// it tints to a single faint color cleanly.
+/// The line glyph for a category, built in the 24×24 icon box. Stroke-only.
 fn icon_path(kind: FileKind) -> Path {
     Path::new(|b| match kind {
         FileKind::Image => {
@@ -1014,7 +895,7 @@ fn icon_path(kind: FileKind) -> Path {
             b.circle(Point::new(16.5, 15.0), 2.5);
         }
         FileKind::Document => {
-            // Page with a folded corner and a few text lines.
+            // Page with a folded corner and text lines.
             polyline(b, &[(6.0, 3.0), (14.0, 3.0), (20.0, 9.0), (20.0, 21.0), (6.0, 21.0), (6.0, 3.0)]);
             polyline(b, &[(14.0, 3.0), (14.0, 9.0), (20.0, 9.0)]);
             polyline(b, &[(9.0, 13.0), (16.0, 13.0)]);
@@ -1022,7 +903,7 @@ fn icon_path(kind: FileKind) -> Path {
             polyline(b, &[(9.0, 19.0), (13.0, 19.0)]);
         }
         FileKind::Archive => {
-            // Isometric box with its top seam and a front edge.
+            // Isometric box with a top seam and a front edge.
             polyline(b, &[
                 (12.0, 2.5), (20.5, 7.25), (20.5, 16.75), (12.0, 21.5),
                 (3.5, 16.75), (3.5, 7.25), (12.0, 2.5),
@@ -1031,7 +912,7 @@ fn icon_path(kind: FileKind) -> Path {
             polyline(b, &[(12.0, 12.0), (12.0, 21.5)]);
         }
         FileKind::Code => {
-            // Angle brackets around a slash: `< / >`.
+            // Angle brackets around a slash: < / >.
             polyline(b, &[(8.5, 8.0), (4.5, 12.0), (8.5, 16.0)]);
             polyline(b, &[(15.5, 8.0), (19.5, 12.0), (15.5, 16.0)]);
             polyline(b, &[(13.5, 6.0), (10.5, 18.0)]);
@@ -1044,8 +925,7 @@ fn icon_path(kind: FileKind) -> Path {
     })
 }
 
-/// The tabbed-folder line glyph for the status-bar entry icon, in the 24×24
-/// icon box — the directory counterpart to the file-type glyphs above.
+/// The tabbed-folder line glyph for the status-bar entry icon, in the 24×24 box.
 fn folder_icon_path() -> Path {
     Path::new(|b| {
         polyline(b, &[
@@ -1056,8 +936,7 @@ fn folder_icon_path() -> Path {
 }
 
 /// A small status-bar glyph: the folder outline for a directory, otherwise the
-/// file-type glyph matching the brick watermark. Themed to the muted chrome
-/// color so it sits quietly before the entry's name.
+/// file-type glyph. Themed to the muted chrome color.
 struct EntryIcon {
     is_dir: bool,
     kind: FileKind,
@@ -1075,8 +954,7 @@ impl canvas::Program<Message> for EntryIcon {
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        // The glyph is square; center it in the (square) bounds and scale the
-        // 24-box to fit — the same authoring space as the brick watermark.
+        // Center the square glyph and scale the 24-box to fit.
         let side = bounds.width.min(bounds.height);
         let scale = side / ICON_VIEWBOX;
         let ox = ((bounds.width - side) / 2.0).round();
@@ -1100,9 +978,8 @@ impl canvas::Program<Message> for EntryIcon {
     }
 }
 
-/// A status-bar icon for a tree entry: the folder outline for a directory or
-/// the file-type glyph for a file, sized to sit inline before the entry's
-/// name. Reuses the brick-watermark glyphs so the two never drift.
+/// A status-bar icon for a tree entry: folder outline or file-type glyph,
+/// reusing the brick-watermark glyphs so the two never drift.
 pub fn entry_icon<'a>(is_dir: bool, name: &str, size: f32) -> iced::Element<'a, Message> {
     iced::widget::canvas(EntryIcon {
         is_dir,
@@ -1124,8 +1001,8 @@ fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     }
 }
 
-/// How much a rectangle is enlarged relative to its resting slot, as a linear
-/// scale (√ of the area ratio): `1.0` at rest, `> 1` while a zoom blows it up.
+/// How much a rectangle is enlarged relative to its slot (√ of the area ratio):
+/// `1.0` at rest, `> 1` while a zoom blows it up.
 fn zoom_scale(rect: Rectangle, normal: Rectangle) -> f32 {
     let area = rect.width.max(0.0) * rect.height.max(0.0);
     let base = normal.width.max(1.0) * normal.height.max(1.0);
@@ -1133,36 +1010,32 @@ fn zoom_scale(rect: Rectangle, normal: Rectangle) -> f32 {
 }
 
 /// Per-brick fade/scale state of a zoom transition, parallel to the springs.
-/// All four alphas are `0..=1`; `scale` is the [`zoom_scale`] of the brick.
 #[derive(Clone, Copy, Debug)]
 struct ZoomDraw {
-    /// Caption font multiplier (and how big the brick reads).
+    /// Caption font multiplier.
     scale: f32,
-    /// How far the folder fill is bared toward the background (`1` — gone).
+    /// How far the folder fill is bared toward the background (`1` is gone).
     bare: f32,
     /// Lerp of the nested silhouettes from faint preview to real child colors.
     vivid: f32,
-    /// Overall opacity of the nested silhouettes (`1` — fully shown).
+    /// Opacity of the nested silhouettes (`1` is fully shown).
     silhouette: f32,
     /// Opacity of the caption.
     caption: f32,
 }
 
-/// Stiffness of the brick spring, s⁻¹: a critically damped spring crosses
-/// a full-map distance to within half a pixel in ≈0.35 s. Higher — snappier.
+/// Stiffness of the brick spring, s⁻¹: critically damped, crosses a full-map
+/// distance to within half a pixel in ≈0.35 s. Higher is snappier.
 const STIFFNESS: f32 = 25.0;
 
-/// The opening reveal is dramatised: for the first [`WARP_WINDOW`] real
-/// seconds of the scan the spring clock runs [`WARP_FACTOR`]× slower, so the
-/// bricks drift out of the centre in slow motion before snapping to normal
-/// speed. Past the window real time resumes one-to-one.
+/// The opening reveal runs in slow motion: for the first [`WARP_WINDOW`] real
+/// seconds the spring clock runs [`WARP_FACTOR`]× slower, then real time resumes.
 const WARP_FACTOR: f32 = 5.0;
 const WARP_WINDOW: f32 = 3.0;
 
-/// Warped spring-clock seconds for `secs` real seconds since the reveal began:
-/// the first [`WARP_WINDOW`] seconds are stretched [`WARP_FACTOR`]×, the rest
-/// pass one-to-one. Monotonic and continuous, so the springs' seamless
-/// rebasing still holds across the boundary.
+/// Warped spring-clock seconds for `secs` real seconds since the reveal began.
+/// Monotonic and continuous, so the springs' seamless rebasing holds across the
+/// boundary.
 fn warp(secs: f32) -> f32 {
     if secs <= WARP_WINDOW {
         secs / WARP_FACTOR
@@ -1172,12 +1045,10 @@ fn warp(secs: f32) -> f32 {
 }
 
 /// A critically damped spring: the value and its velocity `t` seconds after
-/// starting at (`pos`, `velocity`) and heading to `target`. Closed form —
-/// evaluating at `t1 + t2` equals evaluating at `t1`, rebasing, and
-/// evaluating at `t2`, so mid-flight retargets keep velocity seamlessly.
+/// starting at (`pos`, `velocity`) and heading to `target`. Closed form, so a
+/// mid-flight retarget (evaluate, rebase, evaluate) keeps velocity seamlessly.
 fn spring(pos: f32, velocity: f32, target: f32, t: f32) -> (f32, f32) {
-    // x(t) = target + (d + b·t)·e^(−ω·t), where d is the initial
-    // displacement and b = v₀ + ω·d; critical damping — no oscillation.
+    // x(t) = target + (d + b·t)·e^(−ω·t), d = initial displacement, b = v₀ + ω·d.
     let d = pos - target;
     let b = velocity + STIFFNESS * d;
     let decay = (-STIFFNESS * t).exp();
@@ -1194,14 +1065,12 @@ enum Zoom {
     Snap,
     /// Into a child folder: the new level grows out of the clicked brick.
     In,
-    /// Back to the parent: the map shrinks into the brick of the folder
-    /// being left.
+    /// Back to the parent: the map shrinks into the folder being left.
     Out,
 }
 
 /// The navigation direction between the displayed level and the new one.
-/// A rescan replaces the tree wholesale and may leave an id from the
-/// previous arena behind — out-of-bounds ids snap instead of panicking.
+/// Out-of-bounds ids (left behind by a rescan) snap instead of panicking.
 fn zoom_direction(tree: &FsTree, old: Option<NodeId>, new: NodeId) -> Zoom {
     let Some(old) = old else { return Zoom::Snap };
     if old == new || old.0 >= tree.nodes.len() || new.0 >= tree.nodes.len() {
@@ -1229,9 +1098,8 @@ fn map_rect(rect: Rectangle, from: Rectangle, to: Rectangle) -> Rectangle {
     }
 }
 
-/// The identity of a brick across snapshots: nodes match by id, while the
-/// collapsed tail — whose counts and size change every snapshot — is always
-/// the single trailing rest brick.
+/// The identity of a brick across snapshots: nodes match by id, the collapsed
+/// tail is always the single trailing rest brick.
 type BrickKey = Option<NodeId>;
 
 fn brick_key(brick: Brick) -> BrickKey {
@@ -1247,8 +1115,7 @@ const REST_DISTANCE: f32 = 0.5;
 /// Velocity below which remaining motion is invisible (≈0.2 px per frame).
 const REST_VELOCITY: f32 = 10.0;
 
-/// Spring state of one animated rectangle: the four scalars (x, y, width,
-/// height), each with a velocity in px/s.
+/// Spring state of one animated rectangle: four scalars, each with a velocity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Motion {
     rect: Rectangle,
@@ -1261,17 +1128,15 @@ impl Motion {
     }
 }
 
-/// One brick in flight: where it was (with what velocity) at the last
-/// rebase, and where it is heading.
+/// One brick in flight: where it was at the last rebase, and where it heads.
 struct BrickSpring {
     brick: Brick,
     /// State at [`MapState::started`].
     motion: Motion,
     target: Rectangle,
-    /// The brick's resting slot in the current level — the size it reads as at
-    /// scale 1. Equals `target` except during a zoom-*in*, whose springs head
-    /// to a blown-up `target` while `normal` stays the slot the caption and
-    /// silhouettes are measured against ([`zoom_scale`]).
+    /// The brick's resting slot (the size it reads as at scale 1). Equals
+    /// `target` except during a zoom-in, whose springs head to a blown-up
+    /// `target` while `normal` stays the slot captions are measured against.
     normal: Rectangle,
 }
 
@@ -1294,9 +1159,8 @@ impl BrickSpring {
         }
     }
 
-    /// The rectangle to draw `t` seconds after the rebase: an inherited
-    /// shrinking velocity can briefly undershoot a small target — sizes
-    /// are clamped so the path never receives a negative extent.
+    /// The rectangle to draw `t` seconds after the rebase. Sizes are clamped:
+    /// an inherited velocity can briefly undershoot a small target.
     fn rect_at(&self, t: f32) -> Rectangle {
         let rect = self.motion_at(t).rect;
         Rectangle {
@@ -1318,43 +1182,36 @@ impl BrickSpring {
 }
 
 /// Per-widget canvas state: the brick springs and the dark-mode flag of the
-/// last drawn frame (the cache keeps geometry with baked-in colors, so a
-/// theme switch must invalidate it).
+/// last drawn frame (the cache bakes in colors, so a theme switch invalidates it).
 pub struct MapState {
     theme_dark: Cell<Option<bool>>,
     /// One spring per brick of the latest layout, in draw order.
     springs: Vec<BrickSpring>,
     /// When the spring states were last rebased.
     started: Instant,
-    /// When the opening reveal began (the first layout ever shown), anchoring
-    /// the [`warp`] slow-motion window. `None` until then — the spring clock
-    /// runs unwarped. Past the window [`warp`] is the identity, so it stays
-    /// `Some` without distorting any later animation.
+    /// When the opening reveal began, anchoring the [`warp`] slow-motion window.
+    /// `None` until then. Past the window [`warp`] is the identity, so it stays
+    /// `Some` without distorting later animation.
     reveal_started: Option<Instant>,
     animating: bool,
-    /// Whether the running animation is a zoom transition (drives the caption
-    /// scale/fade and silhouette vivify); a scan snapshot or deletion is not.
+    /// Whether the running animation is a zoom (drives caption scale/fade and
+    /// silhouette vivify); a scan snapshot or deletion is not.
     zoom: bool,
-    /// While a zoom-*in* is in flight: the child folder the parent level is
-    /// growing toward, committed to once the pivot fills the screen. `None`
-    /// otherwise. Drives [`DiskMap::update`]'s routing and blocks navigation
+    /// While a zoom-in is in flight: the child folder being grown toward,
+    /// committed to once the pivot fills the screen. Blocks navigation
     /// mid-transition.
     zooming_into: Option<NodeId>,
-    /// The navigated-to node and canvas size of the current layout:
-    /// a change of either snaps instead of animating.
+    /// The node and canvas size of the current layout; a change of either snaps.
     level: Option<NodeId>,
     size: Size,
-    /// Memoized [`level1`] layouts of the folder bricks' contents (in map
-    /// bounds coordinates): animation repaints every frame, while a
-    /// nested layout is a pure function of the tree snapshot and the
-    /// canvas size — the cache drops itself when either changes.
+    /// Memoized [`level1`] layouts of the folder bricks' contents (in map-bounds
+    /// coordinates); dropped when the tree snapshot or canvas size changes.
     nested: RefCell<NestedCache>,
 }
 
-/// See [`MapState::nested`]. The layouts are valid only for the tree
-/// snapshot and canvas size they were computed for: node ids do not
-/// survive a tree replacement, and rectangles live in the map-bounds
-/// space of one canvas size.
+/// See [`MapState::nested`]. Valid only for the tree snapshot and canvas size
+/// they were computed for: node ids do not survive a tree replacement, and
+/// rectangles live in the map-bounds space of one canvas size.
 #[derive(Default)]
 struct NestedCache {
     /// [`FsTree::generation`] of the cached layouts; 0 matches no tree.
@@ -1392,11 +1249,8 @@ impl MapState {
     }
 
     /// Warped spring-clock seconds since the springs were last rebased. While
-    /// the opening reveal's slow-motion window is open ([`reveal_started`]),
-    /// both `started` and `now` are mapped through [`warp`] before
-    /// subtracting, so every spring evaluated this frame shares one warped
-    /// clock — the reveal and any scan-snapshot slides riding alongside it run
-    /// the same [`WARP_FACTOR`]× slower for the first [`WARP_WINDOW`] seconds.
+    /// the reveal's slow-motion window is open, both `started` and `now` are
+    /// mapped through [`warp`], so every spring this frame shares one clock.
     fn elapsed(&self, now: Instant) -> f32 {
         match self.reveal_started {
             Some(origin) => {
@@ -1412,17 +1266,12 @@ impl MapState {
         self.level == Some(level) && self.size == size
     }
 
-    /// Second-level silhouette layout: the folder's children are laid out
-    /// by the same algorithm as the post-zoom level — [`level1`], which
-    /// fills the map bounds (the canvas inset by [`MAP_MARGIN`]) — and
-    /// that area is affinely compressed into the brick's content
-    /// rectangle. A zoom transition thus morphs the silhouettes into the
-    /// very bricks they previewed, keeping the picture proportional
-    /// throughout. The expensive [`level1`] part is memoized per folder:
-    /// an animation repaints every frame, while the layout is a pure
-    /// function of the tree snapshot and the canvas size — a change of
-    /// either purges the cache (stale node ids must not outlive their
-    /// tree), and only the affine remap runs per frame.
+    /// Second-level silhouette layout: the folder's children laid out by
+    /// [`level1`] (filling the map bounds), then affinely compressed into the
+    /// brick's content rectangle, so a zoom morphs the silhouettes into the very
+    /// bricks they previewed. The [`level1`] part is memoized per folder; the
+    /// cache is purged when the tree snapshot or canvas size changes, and only
+    /// the affine remap runs per frame.
     fn nested(
         &self,
         tree: &FsTree,
@@ -1449,15 +1298,11 @@ impl MapState {
             .collect()
     }
 
-    /// The silhouettes of a folder preview, in paint order (a folder before
-    /// its contents): the previewed brick, its rectangle, and the nesting
-    /// level (1 — the folder's children, 2 — grandchildren inside a
-    /// child-folder silhouette). Every level is the [`MapState::nested`]
-    /// layout of its folder compressed into the parent silhouette, so the
-    /// whole preview stays proportional to the post-zoom picture. The
-    /// recursion stops past [`NESTED_DEPTH`], and a folder whose content
-    /// area is below [`MIN_CONTENT_SIDE`] is not descended into (its own
-    /// silhouettes still draw — only the level inside it is skipped).
+    /// The silhouettes of a folder preview, in paint order (a folder before its
+    /// contents): the brick, its rectangle, and the nesting level (1 children,
+    /// 2 grandchildren). Each level is the [`MapState::nested`] layout
+    /// compressed into the parent silhouette. The recursion stops past
+    /// [`NESTED_DEPTH`] and does not descend a folder below [`MIN_CONTENT_SIDE`].
     fn nested_silhouettes(
         &self,
         tree: &FsTree,
@@ -1497,10 +1342,10 @@ impl MapState {
     }
 
     /// The rectangle pair (`from`, `to`) of a zoom transition: every spring
-    /// starts at its target remapped from `from` onto `to`. `None` — the
-    /// transition cannot be built (no zoom requested, the clicked brick is
-    /// not on screen, the folder being left is collapsed into the rest
-    /// tail, or the source frame is degenerate) — the caller snaps instead.
+    /// starts at its target remapped from `from` onto `to`. `None` when the
+    /// transition cannot be built (no zoom requested, the folder is off-screen
+    /// or collapsed into the rest tail, or a degenerate source frame); the
+    /// caller snaps instead.
     fn zoom_frames(
         &self,
         _level: NodeId,
@@ -1510,11 +1355,9 @@ impl MapState {
     ) -> Option<(Rectangle, Rectangle)> {
         let bounds = map_bounds(self.size);
         let (from, to) = match zoom {
-            // Zoom-*in* runs through the dedicated [`MapState::zoom_in`] path
-            // (the parent level blows up and commits), not the generic remap.
+            // Zoom-in runs through [`MapState::zoom_in`], not the generic remap.
             Zoom::Snap | Zoom::In => return None,
-            // Leaving a folder: the map shrinks into that folder's brick on
-            // the parent level.
+            // Leaving a folder: the map shrinks into that folder's parent brick.
             Zoom::Out => {
                 let old = self.level?;
                 let &(_, target) = layout
@@ -1523,15 +1366,13 @@ impl MapState {
                 (target, bounds)
             }
         };
-        // The remap divides by `from`: a degenerate source frame (a sliver
-        // brick) cannot anchor a transition.
+        // The remap divides by `from`: a sliver brick cannot anchor a transition.
         (from.width >= 1.0 && from.height >= 1.0).then_some((from, to))
     }
 
-    /// Accepts a fresh layout. Scan snapshots and deletions (same level,
-    /// same canvas) animate; navigation into a child or back to the parent
-    /// zooms; other navigation and resize snap. Returns whether the
-    /// on-screen picture changed — i.e. the geometry cache is stale.
+    /// Accepts a fresh layout. Scan snapshots and deletions animate; navigation
+    /// into a child or back to the parent zooms; other navigation and resize
+    /// snap. Returns whether the picture changed (the geometry cache is stale).
     fn retarget(
         &mut self,
         level: NodeId,
@@ -1541,21 +1382,18 @@ impl MapState {
         now: Instant,
     ) -> bool {
         if self.level != Some(level) || self.size != size {
-            // A zoom transition only makes sense on the same canvas: a
-            // simultaneous resize would anchor it to stale geometry.
+            // A zoom only makes sense on the same canvas: a simultaneous resize
+            // would anchor it to stale geometry.
             let frames = (self.size == size)
                 .then(|| self.zoom_frames(level, &layout, zoom, now))
                 .flatten();
-            // The very first layout ever shown (no previous level): the bricks
-            // are born as points at the centre of the map and spring out to
-            // their slots — an opening reveal. A later snap (resize, navigation
-            // to an unrelated level) already has springs and lands instantly.
+            // The first layout ever shown springs out from the map centre; a
+            // later snap already has springs and lands instantly.
             let first_ever = self.level.is_none();
             self.level = Some(level);
             self.size = size;
             if let Some((from, to)) = frames {
-                // Zoom-out: springs start blown up (the pivot fills the screen)
-                // and shrink to their resting slots — `normal == target`.
+                // Zoom-out: springs start blown up and shrink to their slots.
                 self.springs = layout
                     .into_iter()
                     .map(|(brick, target)| BrickSpring {
@@ -1572,9 +1410,8 @@ impl MapState {
                 return true;
             }
             if first_ever && !layout.is_empty() {
-                // Every brick starts at its full slot size but stacked on top
-                // of one another at the map centre, then springs out to its
-                // slot. A plain geometry tween (no zoom scale/fade).
+                // Every brick starts at its full slot size, stacked at the map
+                // centre, then springs out. A plain geometry tween.
                 let centre = map_bounds(size).center();
                 self.springs = layout
                     .into_iter()
@@ -1591,9 +1428,7 @@ impl MapState {
                     })
                     .collect();
                 self.started = now;
-                // Open the slow-motion window: the reveal (and any scan
-                // snapshots arriving in its first seconds) drift out in slow
-                // motion.
+                // Open the slow-motion window.
                 self.reveal_started = Some(now);
                 self.zoom = false;
                 self.zooming_into = None;
@@ -1617,9 +1452,8 @@ impl MapState {
             return stale;
         }
         if !self.targets_match(&layout) {
-            // Springs may still be in flight: rebase each one to its state
-            // at this very moment — position *and* velocity carry over, so
-            // a retarget never causes a visible kink in the motion.
+            // Rebase each spring to its current state: position and velocity
+            // carry over, so a retarget never kinks the motion.
             let t = self.elapsed(now);
             let previous: HashMap<BrickKey, Motion> = self
                 .springs
@@ -1630,20 +1464,17 @@ impl MapState {
                 .into_iter()
                 .map(|(brick, target)| {
                     let motion = previous.get(&brick_key(brick)).copied().unwrap_or_else(
-                        // A brick the scanner just discovered grows out
-                        // of the center of its destination.
+                        // A just-discovered brick grows out of its destination's center.
                         || Motion::resting(Rectangle::new(target.center(), Size::ZERO)),
                     );
                     BrickSpring { brick, motion, target, normal: target }
                 })
                 .collect();
             self.started = now;
-            // A scan snapshot / deletion is a plain slide, not a zoom.
             self.zoom = false;
             self.zooming_into = None;
-            // A change may be caption-only (the rest brick's counts drift
-            // while its rectangle stays put): repaint once, but don't run
-            // animation frames for springs that are already at rest.
+            // A change may be caption-only (rest counts drift, rectangle stays):
+            // repaint once, but don't animate springs already at rest.
             self.animating = self.springs.iter().any(|s| !s.settled(0.0));
             return true;
         }
@@ -1656,8 +1487,8 @@ impl MapState {
                 self.animating = false;
                 self.zoom = false;
             }
-            // The completing frame still repaints: the cache holds the
-            // last in-flight picture.
+            // The completing frame still repaints: the cache holds the last
+            // in-flight picture.
             return true;
         }
         false
@@ -1686,10 +1517,9 @@ impl MapState {
         self.zooming_into
     }
 
-    /// The memoized [`level1`] of a folder in map-bounds coordinates (an
-    /// identity remap through [`MapState::nested`], reusing its per-tree
-    /// cache). Used for the zoom-*in* underlay and to warm the destination
-    /// layouts before a zoom-*out* lands them all at once.
+    /// The memoized [`level1`] of a folder in map-bounds coordinates, reusing
+    /// the per-tree cache. Used for the zoom-in underlay and to warm the
+    /// destination layouts before a zoom-out lands them at once.
     fn cached_level1(&self, tree: &FsTree, dir: NodeId, canvas: Size) -> Vec<(Brick, Rectangle)> {
         self.nested(tree, dir, canvas, map_bounds(canvas))
     }
@@ -1697,16 +1527,13 @@ impl MapState {
     /// Per-brick [`ZoomDraw`], parallel to [`bricks`]; `None` at rest or for a
     /// plain scan-snapshot slide.
     ///
-    /// **Zoom-out** is size-keyed: a pivot stays vivid and bared while it still
-    /// fills much of the screen, folding back to an opaque preview brick — its
-    /// caption fading in at slot size — as it shrinks (`scale → 1`).
+    /// Zoom-out is size-keyed: a pivot stays vivid and bared while it fills much
+    /// of the screen, folding back to an opaque preview brick as it shrinks.
     ///
-    /// **Zoom-in** is time-keyed (the spring's ease-out would reach a given
-    /// fraction far too early): the silhouettes hold their faint preview through
-    /// the first quarter and vivify across the middle; the stretching brick
-    /// stays opaque while it grows, then dissolves to transparent over the last
-    /// third ([`bare`] and the caption fade together) — handing off to the
-    /// child level the commit snaps in underneath.
+    /// Zoom-in is time-keyed (the spring's ease-out would reach a fraction far
+    /// too early): silhouettes hold their faint preview, then vivify; the
+    /// stretching brick dissolves to transparent over the last third, handing
+    /// off to the child level snapped in underneath.
     fn zoom_draw(&self, now: Instant) -> Vec<Option<ZoomDraw>> {
         if !(self.animating && self.zoom) {
             return vec![None; self.springs.len()];
@@ -1724,8 +1551,8 @@ impl MapState {
                         scale: zoom_scale(s.rect_at(t), s.normal),
                         bare: dissolve,
                         vivid,
-                        // Silhouettes fade with the shell — the real child
-                        // underlay (see `draw`) takes their place.
+                        // Silhouettes fade with the shell; the real child
+                        // underlay takes their place.
                         silhouette: 1.0 - dissolve,
                         caption: 1.0 - dissolve,
                     })
@@ -1737,9 +1564,8 @@ impl MapState {
             .map(|s| {
                 let scale = zoom_scale(s.rect_at(t), s.normal);
                 let v = ((scale - 1.0) / (VIVID_FULL_SCALE - 1.0)).clamp(0.0, 1.0);
-                // Zoom-out keeps its silhouettes solid: the bared pivot shows the
-                // vivid child squares as it shrinks back into its slot, and the
-                // caption fades in at slot size (the mirror of zoom-in).
+                // Zoom-out keeps its silhouettes solid; the caption fades in at
+                // slot size (the mirror of zoom-in).
                 Some(ZoomDraw {
                     scale,
                     bare: v,
@@ -1751,14 +1577,11 @@ impl MapState {
             .collect()
     }
 
-    /// Drive a zoom-*in* into child folder `target`: animate the *parent*
-    /// level (still displayed) so the pivot's slot grows to fill the screen —
-    /// the time-reverse of a zoom-out. The pivot brick (and its vivifying
-    /// silhouettes) thus grows out of the parent exactly as a zoom-out shrinks
-    /// into it. When the springs reach the blown-up layout the transition
-    /// commits ([`commit_zoom_in`]) to `target`'s own level; a pivot that is
-    /// off-screen or a sliver commits immediately. Returns whether the picture
-    /// changed (the geometry cache is stale).
+    /// Drive a zoom-in into child folder `target`: animate the parent level so
+    /// the pivot's slot grows to fill the screen, the time-reverse of a
+    /// zoom-out. On reaching the blown-up layout it commits ([`commit_zoom_in`])
+    /// to `target`'s level; an off-screen or sliver pivot commits immediately.
+    /// Returns whether the picture changed.
     fn zoom_in(&mut self, tree: &FsTree, parent: NodeId, target: NodeId, size: Size, now: Instant) -> bool {
         let bounds = map_bounds(size);
         if bounds.width < 1.0 || bounds.height < 1.0 {
@@ -1771,16 +1594,16 @@ impl MapState {
             .map(|&(_, rect)| rect)
             .filter(|r| r.width >= 1.0 && r.height >= 1.0);
         let Some(f_slot) = f_slot else {
-            // The folder collapsed into the rest tail or is a sliver — no slot
-            // to grow out of, so jump straight to its level.
+            // The folder collapsed into the rest tail or is a sliver: no slot to
+            // grow out of, so jump straight to its level.
             return self.commit_zoom_in(tree, target, size, now);
         };
         let fresh = self.zooming_into != Some(target)
             || self.level != Some(parent)
             || self.size != size;
         if fresh {
-            // First frame: springs start at rest (the parent map) and head to
-            // the blown-up layout where the pivot slot fills the screen.
+            // First frame: springs start at the parent map and head to the
+            // blown-up layout where the pivot slot fills the screen.
             self.level = Some(parent);
             self.size = size;
             self.zooming_into = Some(target);
@@ -1810,9 +1633,9 @@ impl MapState {
         true
     }
 
-    /// Land a zoom-*in* on `target`'s own level, at rest. The child map has
-    /// already grown to fill the screen as the zoom-in underlay, so the
-    /// hand-off is seamless.
+    /// Land a zoom-in on `target`'s own level, at rest. The child map has
+    /// already grown to fill the screen as the underlay, so the hand-off is
+    /// seamless.
     fn commit_zoom_in(&mut self, tree: &FsTree, target: NodeId, size: Size, now: Instant) -> bool {
         let layout = self.cached_level1(tree, target, size);
         self.level = Some(target);
@@ -1834,11 +1657,9 @@ impl MapState {
     }
 }
 
-/// Label origin aligned to whole pixels: a fractional position changes
-/// each glyph's subpixel bin (`CacheKey::{x_bin,y_bin}`), while bricks
-/// shift slightly on every scan snapshot — without rounding the same
-/// letters are re-rasterized into new bins, and the glyph atlas keeps
-/// evicting/reallocating regions (see the comment on [`zoom_tier_font`]).
+/// Label origin aligned to whole pixels: a fractional position changes each
+/// glyph's subpixel bin, and since bricks shift every scan snapshot, the same
+/// letters would re-rasterize into new bins and churn the glyph atlas.
 fn label_origin(rect: Rectangle) -> Point {
     Point::new((rect.x + 4.0).round(), (rect.y + 4.0).round())
 }
@@ -1855,7 +1676,7 @@ mod tests {
     }
 
     impl MapState {
-        /// Shorthand for tests: a retarget with no zoom transition requested.
+        /// A retarget with no zoom transition requested.
         fn retarget_snap(
             &mut self,
             level: NodeId,
@@ -1867,9 +1688,7 @@ mod tests {
         }
     }
 
-    /// Reference implementation of [`MapState::nested`], sans memoization:
-    /// the [`level1`] layout of the folder compressed from the map bounds
-    /// into the brick's content rectangle.
+    /// Reference [`MapState::nested`] without memoization.
     fn nested_layout(
         tree: &FsTree,
         dir: NodeId,
@@ -1908,8 +1727,6 @@ mod tests {
     #[test]
     fn tail_of_tiny_items_collapses_into_rest() {
         use crate::fs_tree::DIR_ENTRY_SIZE;
-        // Three large files and a small tail: 4 files of 100 KB and 2 empty
-        // folders — every tail item's weight share is ≈1% < 5%.
         let mut entries = vec![(100_000_000, false); 3];
         entries.extend([(100_000, false); 4]);
         entries.extend([(0, true); 2]);
@@ -1933,8 +1750,6 @@ mod tests {
 
     #[test]
     fn single_tiny_item_stays_a_node() {
-        // A single collapse candidate: the rest brick would occupy the same
-        // area, so the item stays a regular brick.
         let tree = tree_with_children(&[
             (100_000_000, false),
             (100_000_000, false),
@@ -1966,9 +1781,6 @@ mod tests {
 
     #[test]
     fn label_unfit_tail_collapses_even_with_large_shares() {
-        // A thimble-sized canvas: shares of 25%, but the 31×16 bricks are
-        // below the caption minimum (height < font + 8) — everything
-        // collapses into a single rest brick.
         let tree = tree_with_children(&[(100_000, false); 4]);
         let bricks = level1(&tree, tree.root, Size::new(70.0, 40.0));
         assert_eq!(bricks.len(), 1, "{bricks:?}");
@@ -1980,9 +1792,6 @@ mod tests {
 
     #[test]
     fn uniform_children_are_not_swallowed_by_rest() {
-        // 25 equal files: each share is 4% < 5%, but hiding the whole map
-        // behind one rest brick is wrong — the heaviest tail items are
-        // released back.
         let tree = tree_with_children(&[(1_000_000, false); 25]);
         let bricks = level1(&tree, tree.root, Size::new(800.0, 500.0));
         assert_eq!(bricks.len(), 25, "{bricks:?}");
@@ -1996,9 +1805,6 @@ mod tests {
 
     #[test]
     fn equal_tail_items_outweighing_each_other_stay_nodes() {
-        // One large file and 30 equal mid-size items: a rest of any two of
-        // them would outweigh each of the others — the tail does not
-        // collapse at all.
         let mut entries = vec![(100_000_000, false)];
         entries.extend([(1_000_000, false); 30]);
         let tree = tree_with_children(&entries);
@@ -2014,9 +1820,6 @@ mod tests {
 
     #[test]
     fn decaying_tail_collapses_into_rest_smaller_than_any_brick() {
-        // A sharply decaying tail (√size weights: 1000, 100, 40, 18, 8, 3):
-        // the rest = 40+18+8+3 = 69 — lighter than the smallest displayed
-        // brick (100).
         let tree = tree_with_children(&[
             (1_000_000, false),
             (10_000, false),
@@ -2036,7 +1839,6 @@ mod tests {
             },
             "{bricks:?}"
         );
-        // Geometrically the rest brick is smaller than every regular brick.
         let rest_area = rest_rect.width * rest_rect.height;
         for (brick, r) in &bricks[..bricks.len() - 1] {
             assert!(
@@ -2048,10 +1850,6 @@ mod tests {
 
     #[test]
     fn nested_layout_is_level1_compressed_into_content() {
-        // The nested silhouettes are the post-zoom level squeezed into the
-        // brick: same bricks in the same order, and each rectangle sits at
-        // the same relative position inside `content` as its level1
-        // counterpart inside the full map bounds.
         let tree = tree_with_children(&[
             (500_000_000, true),
             (300_000_000, false),
@@ -2084,9 +1882,6 @@ mod tests {
 
     #[test]
     fn nested_layout_collapses_tail_exactly_like_level1() {
-        // A decaying tail collapses into a rest brick by level1's rules —
-        // the silhouettes must mirror that, not run their own collapse
-        // heuristic on the tiny content rectangle.
         let tree = tree_with_children(&[
             (1_000_000, false),
             (10_000, false),
@@ -2174,11 +1969,6 @@ mod tests {
 
     #[test]
     fn nested_cache_is_dropped_when_the_tree_is_replaced() {
-        // A rescan can produce a tree whose top-level layout is identical
-        // (so the springs never retarget), yet the folders' contents — and
-        // even the node ids — belong to a different snapshot. The cache is
-        // keyed to the snapshot identity, never serving rectangles of a
-        // tree that is no longer rendered.
         let canvas = Size::new(800.0, 500.0);
         let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(200.0, 125.0));
         let (before, dir) = tree_with_grandchildren(&[500_000_000, 300_000_000]);
@@ -2191,14 +1981,11 @@ mod tests {
             state.nested(&after, dir, canvas, content),
             nested_layout(&after, dir, canvas, content)
         );
-        // The replaced snapshot's layouts are purged, not accumulated.
         assert_eq!(state.nested.borrow().layouts.len(), 1);
     }
 
     #[test]
     fn nested_cache_is_dropped_when_the_canvas_resizes() {
-        // Cached rectangles live in the map-bounds space of one canvas
-        // size: remapping them from another size would skew proportions.
         let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(200.0, 125.0));
         let (tree, dir) = tree_with_grandchildren(&[500_000_000, 300_000_000, 120_000_000]);
         let state = MapState::default();
@@ -2220,7 +2007,7 @@ mod tests {
         }
     }
 
-    /// The full-depth silhouettes of `nested_tree`'s root preview.
+    /// Full-depth silhouettes of `nested_tree`'s root preview.
     fn root_silhouettes(
         state: &MapState,
         tree: &FsTree,
@@ -2233,9 +2020,6 @@ mod tests {
 
     #[test]
     fn nested_silhouettes_recurse_into_folder_silhouettes() {
-        // Root previews "sub" and "c" at level 1; inside the "sub"
-        // silhouette, its own files appear at level 2, laid out as the
-        // nested layout of "sub" compressed into that silhouette.
         let tree = nested_tree();
         let state = MapState::default();
         let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(400.0, 250.0));
@@ -2263,8 +2047,6 @@ mod tests {
 
     #[test]
     fn nested_silhouettes_paint_a_folder_before_its_contents() {
-        // Paint order: a level-2 silhouette goes after its level-1 folder,
-        // on top of it — never before.
         let tree = nested_tree();
         let state = MapState::default();
         let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(400.0, 250.0));
@@ -2282,8 +2064,6 @@ mod tests {
 
     #[test]
     fn nested_silhouettes_skip_grandchildren_in_tiny_silhouettes() {
-        // The content fits level 1, but the "sub" silhouette inside it is
-        // narrower than MIN_CONTENT_SIDE — recursion prunes level 2.
         let tree = nested_tree();
         let state = MapState::default();
         let content = Rectangle::new(Point::new(10.0, 10.0), Size::new(20.0, 14.0));
@@ -2300,7 +2080,6 @@ mod tests {
         let state = MapState::default();
         let first = state.nested(&tree, dir, canvas, content);
         assert!(state.nested.borrow().layouts.contains_key(&dir));
-        // A repeated frame of the same snapshot reuses the entry.
         assert_eq!(state.nested(&tree, dir, canvas, content), first);
         assert_eq!(state.nested.borrow().layouts.len(), 1);
     }
@@ -2319,8 +2098,6 @@ mod tests {
 
     #[test]
     fn spring_from_rest_never_overshoots() {
-        // Critically damped: heading from 0 to 100 stays within [0, 100]
-        // the whole way.
         for i in 0..=100 {
             let t = i as f32 * 0.01;
             let (pos, _) = spring(0.0, 0.0, 100.0, t);
@@ -2330,9 +2107,6 @@ mod tests {
 
     #[test]
     fn spring_rebase_is_seamless() {
-        // The closed form composes: evaluating 150 ms straight equals
-        // evaluating 100 ms, restarting from that state, and evaluating
-        // 50 ms more — a mid-flight retarget keeps position and velocity.
         let (p1, v1) = spring(0.0, 0.0, 100.0, 0.1);
         let (direct, direct_vel) = spring(0.0, 0.0, 100.0, 0.15);
         let (rebased, rebased_vel) = spring(p1, v1, 100.0, 0.05);
@@ -2360,10 +2134,8 @@ mod tests {
 
     const CANVAS: Size = Size::new(800.0, 500.0);
 
-    /// A settled baseline at `level` on the [`CANVAS`], established *without*
-    /// the opening reveal — the springs sit at rest on `layout` and the
-    /// slow-motion [`warp`] never anchors. Spring-dynamics tests use this so
-    /// their clock stays one-to-one; the reveal itself is covered separately.
+    /// A settled baseline at `level` on the [`CANVAS`], without the opening
+    /// reveal, so spring-dynamics tests keep a one-to-one clock.
     fn seed(state: &mut MapState, level: NodeId, layout: &Layout, now: Instant) {
         state.level = Some(level);
         state.size = CANVAS;
@@ -2380,8 +2152,7 @@ mod tests {
         state.animating = false;
     }
 
-    /// Component-wise comparison with a tolerance: spring evaluation goes
-    /// through `exp`, exact f32 equality would be brittle.
+    /// Component-wise comparison with a tolerance.
     fn assert_rects_close(actual: &[(Brick, Rectangle)], expected: &[(Brick, Rectangle)]) {
         assert_eq!(actual.len(), expected.len(), "{actual:?} vs {expected:?}");
         for ((brick, rect), (expected_brick, expected_rect)) in actual.iter().zip(expected) {
@@ -2399,15 +2170,11 @@ mod tests {
 
     #[test]
     fn map_state_reveals_first_layout_from_centre() {
-        // The opening reveal: the very first layout is born stacked at full
-        // size on the centre of the map and springs out to its slots.
         let (l1, _) = spring_layouts();
         let mut state = MapState::default();
         let now = Instant::now();
         assert!(state.retarget_snap(NodeId(0), CANVAS, l1.clone(), now));
         assert!(state.is_animating());
-        // At t0 every brick has its full slot size but is centred at the map
-        // centre, stacked on top of the others.
         let centre = map_bounds(CANVAS).center();
         for ((_, r), (_, target)) in state.bricks(now).iter().zip(&l1) {
             assert!((r.width - target.width).abs() < 0.01, "{r:?}");
@@ -2415,8 +2182,6 @@ mod tests {
             assert!((r.center().x - centre.x).abs() < 0.01, "{r:?}");
             assert!((r.center().y - centre.y).abs() < 0.01, "{r:?}");
         }
-        // Once settled the bricks reach their slots. The slow-motion window
-        // stretches the spring clock, so the reveal takes several real seconds.
         state.retarget_snap(NodeId(0), CANVAS, l1.clone(), now + Duration::from_secs(4));
         assert_eq!(state.bricks(now + Duration::from_secs(4)), l1);
     }
@@ -2430,9 +2195,7 @@ mod tests {
         let t1 = t0 + Duration::from_secs(1);
         assert!(state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1));
         assert!(state.is_animating());
-        // The motion starts where the bricks were…
         assert_rects_close(&state.bricks(t1), &l1);
-        // …100 ms in, every scalar follows the closed-form spring…
         let expected = Rectangle {
             x: spring(0.0, 0.0, 40.0, 0.1).0,
             y: spring(0.0, 0.0, 20.0, 0.1).0,
@@ -2443,15 +2206,11 @@ mod tests {
             &state.bricks(t1 + Duration::from_millis(100)),
             &[(l2[0].0, expected)],
         );
-        // …and converges on the new layout.
         assert_rects_close(&state.bricks(t1 + Duration::from_secs(1)), &l2);
     }
 
     #[test]
     fn spring_outlives_a_display_frame() {
-        // A 60 Hz frame is ~16.7 ms. The motion must still be in flight a
-        // frame after a layout change — otherwise every change becomes an
-        // instant jump and the map visibly twitches during a scan.
         let (l1, l2) = spring_layouts();
         let mut state = MapState::default();
         let t0 = Instant::now();
@@ -2470,8 +2229,6 @@ mod tests {
         let t0 = Instant::now();
         seed(&mut state, NodeId(0), &l1, t0);
         state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t0 + Duration::from_secs(1));
-        // The frame the spring settles on still redraws (the cache holds
-        // the last in-flight frame), the next one is clean.
         let done = t0 + Duration::from_secs(2);
         assert!(state.retarget_snap(NodeId(0), CANVAS, l2.clone(), done));
         assert!(!state.is_animating());
@@ -2485,7 +2242,6 @@ mod tests {
         let mut state = MapState::default();
         let now = Instant::now();
         state.retarget_snap(NodeId(0), CANVAS, l1, now);
-        // Navigation: a different node is displayed — no animation.
         assert!(state.retarget_snap(NodeId(7), CANVAS, l2.clone(), now));
         assert!(!state.is_animating());
         assert_eq!(state.bricks(now), l2);
@@ -2511,15 +2267,12 @@ mod tests {
         seed(&mut state, NodeId(0), &l1, t0);
         let t1 = t0 + Duration::from_secs(1);
         state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1);
-        // A new snapshot lands mid-flight: the bricks continue from where
-        // they are drawn, not from the previous snapshot's layout.
         let mid = t1 + Duration::from_millis(100);
         let displayed = state.bricks(mid);
         assert_ne!(displayed, l1);
         assert_ne!(displayed, l2);
         assert!(state.retarget_snap(NodeId(0), CANVAS, l3.clone(), mid));
         assert_rects_close(&state.bricks(mid), &displayed);
-        // …and the springs converge on the newest target.
         assert_rects_close(&state.bricks(mid + Duration::from_secs(1)), &l3);
     }
 
@@ -2540,8 +2293,6 @@ mod tests {
         seed(&mut state, NodeId(0), &l1, t0);
         let t1 = t0 + Duration::from_secs(1);
         state.retarget_snap(NodeId(0), CANVAS, l2.clone(), t1);
-        // The just-discovered brick starts as a point at the center of its
-        // destination (30, 50) and inflates from there.
         assert_rects_close(
             &state.bricks(t1)[1..],
             &[(second, Rectangle::new(Point::new(30.0, 50.0), Size::ZERO))],
@@ -2567,9 +2318,6 @@ mod tests {
 
     #[test]
     fn map_state_matches_rest_across_snapshots() {
-        // The collapsed tail changes contents every snapshot, but visually
-        // it is the same brick — it slides from its old rectangle instead
-        // of re-growing; the caption is the target one right away.
         let l1 = vec![(
             Brick::Rest { files: 1, dirs: 0, size: 10 },
             rect(100.0, 50.0),
@@ -2589,9 +2337,6 @@ mod tests {
 
     #[test]
     fn map_state_repaints_metadata_change_without_animating() {
-        // Only the rest brick's caption data changes; the geometry is
-        // already at rest. The frame repaints (the caption is baked into
-        // the cache) but no animation frames are requested.
         let rect_a = rect(100.0, 50.0);
         let l1 = vec![(Brick::Rest { files: 1, dirs: 0, size: 10 }, rect_a)];
         let l2 = vec![(Brick::Rest { files: 2, dirs: 0, size: 20 }, rect_a)];
@@ -2606,9 +2351,6 @@ mod tests {
 
     #[test]
     fn hit_test_follows_animated_bricks() {
-        // Two children: the final layout tiles the whole map, but the
-        // previous snapshot parked both bricks as 10×10 tiles in the
-        // top-left corner and the springs have only just departed.
         let tree = tree_with_children(&[(100_000_000, false), (90_000_000, false)]);
         let cache = canvas::Cache::new();
         let map = DiskMap {
@@ -2630,14 +2372,9 @@ mod tests {
             .collect();
         let mut state = MapState::default();
         let now = Instant::now();
-        // `parked` is the at-rest drawn layout; retarget to `target` and probe
-        // mid-flight.
         seed(&mut state, tree.root, &parked, now);
         state.retarget_snap(tree.root, CANVAS, target.clone(), now);
         assert!(state.is_animating());
-        // The probe sits inside the *drawn* rectangle of the first brick
-        // (parked at x 0..10); make sure the final layout disagrees there,
-        // then the cursor must hit what the user currently sees.
         let probe = Point::new(5.0, 5.0);
         let (drawn, _) = *parked.iter().find(|(_, r)| r.contains(probe)).unwrap();
         let (future, _) = *target.iter().find(|(_, r)| r.contains(probe)).unwrap();
@@ -2651,7 +2388,6 @@ mod tests {
         let mut state = MapState::default();
         let now = Instant::now();
         seed(&mut state, NodeId(0), &l1, now);
-        // The same layout again (an ordinary idle redraw): nothing to repaint.
         assert!(!state.retarget_snap(NodeId(0), CANVAS, l1, now + Duration::from_secs(1)));
     }
 
@@ -2681,8 +2417,6 @@ mod tests {
         let (root, sub, file) = (NodeId(0), NodeId(1), NodeId(2));
         assert_eq!(zoom_direction(&tree, Some(root), sub), Zoom::In);
         assert_eq!(zoom_direction(&tree, Some(sub), root), Zoom::Out);
-        // First layout, same level, a jump over two levels, and a stale id
-        // from a replaced tree all snap.
         assert_eq!(zoom_direction(&tree, None, root), Zoom::Snap);
         assert_eq!(zoom_direction(&tree, Some(root), root), Zoom::Snap);
         assert_eq!(zoom_direction(&tree, Some(file), NodeId(4)), Zoom::Snap);
@@ -2696,13 +2430,10 @@ mod tests {
         assert_eq!(map_rect(bounds, bounds, bounds), bounds);
         let target = Rectangle::new(Point::new(400.0, 0.0), Size::new(400.0, 200.0));
         let brick = Rectangle::new(Point::new(100.0, 50.0), Size::new(200.0, 100.0));
-        // The right top quarter of the map lands in the right top quarter
-        // of the brick.
         assert_eq!(
             map_rect(target, bounds, brick),
             Rectangle::new(Point::new(200.0, 50.0), Size::new(100.0, 50.0))
         );
-        // …and the inverse remap restores it.
         assert_eq!(
             map_rect(
                 Rectangle::new(Point::new(200.0, 50.0), Size::new(100.0, 50.0)),
@@ -2733,21 +2464,15 @@ mod tests {
 
     #[test]
     fn zoom_in_grows_parent_into_child_then_commits() {
-        // Zoom-in is the mirror of zoom-out: the parent level (still shown)
-        // blows up so the clicked folder's slot fills the screen, then commits
-        // to the child level.
         let tree = nested_tree();
         let mut state = MapState::default();
         let t0 = Instant::now();
         let root_layout = level1(&tree, NodeId(0), CANVAS);
         seed(&mut state, NodeId(0), &root_layout, t0);
-        // Click into "sub" (NodeId 1).
         assert!(state.zoom_in(&tree, NodeId(0), NodeId(1), CANVAS, t0));
         assert!(state.is_animating());
         assert_eq!(state.zooming_into(), Some(NodeId(1)));
-        // It starts at the resting parent map (scale 1)…
         assert_rects_close(&state.bricks(t0), &root_layout);
-        // …and grows so the pivot slot fills the whole map.
         let sub_slot = root_layout
             .iter()
             .find(|&&(b, _)| b == Brick::Node(NodeId(1)))
@@ -2759,7 +2484,6 @@ mod tests {
             .collect();
         assert_eq!(blown[0].1, canvas_bounds());
         assert_rects_close(&state.bricks(t0 + Duration::from_secs(1)), &blown);
-        // A far-future frame commits to "sub"'s own level, at rest.
         let done = t0 + Duration::from_secs(2);
         assert!(state.zoom_in(&tree, NodeId(0), NodeId(1), CANVAS, done));
         assert_eq!(state.zooming_into(), None);
@@ -2770,7 +2494,6 @@ mod tests {
 
     #[test]
     fn zoom_in_commits_immediately_on_degenerate_canvas() {
-        // No room to grow a pivot out of: jump straight to the child level.
         let tree = nested_tree();
         let mut state = MapState::default();
         let t0 = Instant::now();
@@ -2792,8 +2515,6 @@ mod tests {
         let t1 = t0 + Duration::from_secs(1);
         assert!(state.retarget(NodeId(0), CANVAS, parent.clone(), Zoom::Out, t1));
         assert!(state.is_animating());
-        // The folder being left starts blown up to the whole map (the
-        // inverse of the zoom-in remap) and shrinks into its brick.
         let (_, folder_target) = parent[0];
         let expected: Layout = parent
             .iter()
@@ -2806,8 +2527,6 @@ mod tests {
 
     #[test]
     fn zoom_out_snaps_when_folder_collapsed_into_rest() {
-        // The parent level has no brick for the folder being left — it sits
-        // inside the rest tail: nothing to shrink into.
         let children = halves_layout(Brick::Node(NodeId(2)), Brick::Node(NodeId(3)));
         let parent = halves_layout(
             Brick::Node(NodeId(4)),
@@ -2824,8 +2543,6 @@ mod tests {
 
     #[test]
     fn zoom_snaps_when_canvas_size_changed() {
-        // Navigation and a resize in the same frame: the source rectangle
-        // belongs to the old canvas — anchor nothing, snap.
         let folder = Brick::Node(NodeId(1));
         let children = halves_layout(Brick::Node(NodeId(2)), Brick::Node(NodeId(3)));
         let mut state = MapState::default();
@@ -2847,31 +2564,21 @@ mod tests {
 
     #[test]
     fn tier_font_snaps_to_the_ladder() {
-        // The font is the largest ladder rung that fits — chosen from geometry,
-        // never the name length. A roomy brick takes the top rung.
         assert_eq!(tier_font(rect(200.0, 100.0)), Some(28.0));
-        // Height-bounded: fit = 32 − 8 = 24 → the 22 rung.
         assert_eq!(tier_font(rect(200.0, 32.0)), Some(22.0));
-        // fit = 28 − 8 = 20 → the 16 rung.
         assert_eq!(tier_font(rect(200.0, 28.0)), Some(16.0));
-        // fit = 22 − 8 = 14 → the smallest rung.
         assert_eq!(tier_font(rect(200.0, 22.0)), Some(12.0));
     }
 
     #[test]
     fn tier_font_is_width_bounded_for_narrow_bricks() {
-        // Width caps the font so MIN_LABEL_CHARS fit: (70 − 8)/(0.6 · 4) = 25.8 → 22.
         assert_eq!(tier_font(rect(70.0, 200.0)), Some(22.0));
-        // (40 − 8)/(0.6 · 4) = 13.3 → only the smallest rung fits.
         assert_eq!(tier_font(rect(40.0, 200.0)), Some(12.0));
     }
 
     #[test]
     fn zoom_font_grows_past_the_ladder_and_snaps_even() {
-        // Mid-zoom (scale > 1) the blown-up brick's caption tracks its geometry
-        // up to ZOOM_MAX_FONT, snapped to an even integer (not the ladder).
         assert_eq!(zoom_tier_font(rect(300.0, 400.0), 2.0), Some(ZOOM_MAX_FONT));
-        // fit = 33 − 8 = 25 → even 24 mid-zoom, but the 22 rung at rest.
         assert_eq!(zoom_tier_font(rect(200.0, 33.0), 1.5), Some(24.0));
         assert_eq!(
             zoom_tier_font(rect(200.0, 33.0), 1.0),
@@ -2881,45 +2588,34 @@ mod tests {
 
     #[test]
     fn ellipsis_truncates_long_names() {
-        // Fits whole — returned unchanged.
         assert_eq!(fit_with_ellipsis("report", 6, 10), ("report".to_string(), 6));
-        // Too long — keeps max_chars − 1 characters plus an ellipsis.
         assert_eq!(
             fit_with_ellipsis("node_modules", 12, 6),
             ("node_…".to_string(), 6)
         );
-        // Counts characters, not bytes: Cyrillic stays correct.
         assert_eq!(fit_with_ellipsis("документ", 8, 5), ("доку…".to_string(), 5));
         assert_eq!(fit_with_ellipsis("x", 1, 0), (String::new(), 0));
     }
 
     #[test]
     fn wrap_name_uses_extra_lines_for_long_names() {
-        // Fits one line — unchanged.
         assert_eq!(wrap_name("readme.md", 9, 12, 4), vec!["readme.md"]);
-        // One line allowed — single line with an ellipsis (the non-wrapped case).
         assert_eq!(wrap_name("filegram-desktop", 16, 10, 1), vec!["filegram-…"]);
-        // Wraps, breaking after the separator and keeping the whole name.
         assert_eq!(
             wrap_name("filegram-desktop", 16, 10, 4),
             vec!["filegram-", "desktop"]
         );
-        // No separator — hard break, last line ellipsized when it still overflows.
         assert_eq!(wrap_name("aaaabbbbccccdddd", 16, 4, 2), vec!["aaaa", "bbb…"]);
-        // Characters, not bytes: Cyrillic wraps cleanly.
         assert_eq!(wrap_name("очень_длинное", 13, 7, 3), vec!["очень_", "длинное"]);
     }
 
     #[test]
     fn fit_name_shrinks_to_show_the_whole_name() {
-        let name = "abcdefghijklmnop"; // 16 chars, no separators
-        // A short, narrowish brick can't fit the name at the tier (28); the font
-        // steps down until the whole name fits wrapped — no ellipsis.
+        let name = "abcdefghijklmnop";
         let (font, lines) = fit_name(name, 16, rect(160.0, 60.0), 28.0, LABEL_PAD);
         assert!(font < 28.0);
         assert!(!lines.last().unwrap().ends_with('…'));
         assert_eq!(lines.concat(), name);
-        // A name that already fits keeps the tier on a single line.
         assert_eq!(
             fit_name("short", 5, rect(400.0, 120.0), 28.0, LABEL_PAD),
             (28.0, vec!["short".to_string()])
@@ -2928,9 +2624,6 @@ mod tests {
 
     #[test]
     fn label_origin_is_whole_pixels() {
-        // A fractional text position changes each glyph's subpixel bin;
-        // bricks shift on every scan snapshot, and without rounding
-        // every snapshot re-rasterizes the same letters into new bins.
         let brick = Rectangle::new(Point::new(10.6, 20.4), Size::new(100.0, 50.0));
         let origin = label_origin(brick);
         assert_eq!((origin.x, origin.y), (15.0, 24.0));
@@ -2938,9 +2631,7 @@ mod tests {
 
     #[test]
     fn label_decides_actions_panel_visibility() {
-        // Decided from geometry alone now — no tree lookup needed.
         assert!(has_label(rect(300.0, 100.0)));
-        // A sliver brick: no rung fits — the hover actions are suppressed.
         assert!(!has_label(rect(24.0, 10.0)));
     }
 
@@ -2956,7 +2647,6 @@ mod tests {
                 60.0 - 2.0 * MAP_MARGIN
             )
         );
-        // A canvas smaller than the margins must not produce negative sizes.
         let tiny = map_bounds(Size::new(MAP_MARGIN, MAP_MARGIN));
         assert_eq!((tiny.width, tiny.height), (0.0, 0.0));
     }
@@ -2975,9 +2665,7 @@ mod tests {
 
     #[test]
     fn label_skipped_when_brick_too_small() {
-        // Height below the smallest rung + padding (20 px) — no label.
         assert_eq!(tier_font(rect(200.0, 19.0)), None);
-        // Too narrow for MIN_LABEL_CHARS even at the smallest rung.
         assert_eq!(tier_font(rect(20.0, 100.0)), None);
     }
 }
@@ -2998,11 +2686,8 @@ impl canvas::Program<Message> for DiskMap<'_> {
                 .and_then(|p| self.hit_test(state, bounds.size(), p))
         };
         match event {
-            // Every frame starts here: feed the fresh layout to the tween.
-            // Scan snapshots and deletions slide the bricks into their new
-            // rectangles, parent↔child navigation zooms; while the tween
-            // runs, the next frame is requested and the cached geometry is
-            // repainted.
+            // Feed the fresh layout to the tween each frame; snapshots slide,
+            // parent/child navigation zooms.
             Event::Window(iced::window::Event::RedrawRequested(now)) => {
                 let size = bounds.size();
                 let zoom = zoom_direction(self.tree, state.level, self.current);
@@ -3110,11 +2795,9 @@ impl canvas::Program<Message> for DiskMap<'_> {
             let path =
                 Path::rounded_rectangle(rect.position(), rect.size(), CORNER_RADIUS.into());
             frame.fill(&path, palette.highlight);
-            // The highlight is a translucent wash over the whole brick, caption
-            // included — in the light theme (white at 0.5) it bleaches the text
-            // to mush. Redraw the active brick's caption on top so it stays
-            // crisp. The highlight sits at the slot rect regardless of any zoom,
-            // so the caption is redrawn at rest (`None`) to match it.
+            // The translucent highlight bleaches the caption in the light theme;
+            // redraw it on top so it stays crisp. The highlight sits at the slot
+            // rect regardless of zoom, so the caption is redrawn at rest (`None`).
             let node = self.tree.node(active);
             let text_color = if node.is_dir {
                 palette.folder_text

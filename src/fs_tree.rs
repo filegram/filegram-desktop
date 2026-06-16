@@ -1,30 +1,25 @@
-//! Filesystem tree arena: instead of parent references —
-//! a flat `Vec<FsNode>` with indices. The scanner fills a shared append-only arena of
-//! [`ScanNode`]s; [`FsTree::from_arena`] can at any moment (including mid-scan)
-//! build a tree snapshot out of it: it aggregates folder sizes and sorts children
-//! by size in descending order. Arena indices are stable, so `NodeId`s of one
-//! snapshot remain valid in the next ones.
+//! Filesystem tree arena: a flat `Vec<FsNode>` with indices. The scanner fills
+//! an append-only arena of [`ScanNode`]s; [`FsTree::from_arena`] builds a
+//! snapshot from it at any moment, including mid-scan. Arena indices are stable,
+//! so a snapshot's `NodeId`s stay valid in later snapshots.
 
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// A directory's own entry size is a fixed 4096 bytes, as in the original.
 pub const DIR_ENTRY_SIZE: u64 = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub usize);
 
-/// A node of the shared scan arena. Arena invariants: the root has index 0
-/// and is added first; a parent is added before any of its children
-/// (`parent` is always less than the node's own index; 0 for the root).
-/// `Arc` fields make cloning the arena tail for a snapshot cheap.
+/// A node of the shared scan arena. Invariants: root has index 0 and is added
+/// first; a parent is added before its children, so `parent` is always less
+/// than the node's own index (0 for the root).
 #[derive(Debug, Clone)]
 pub struct ScanNode {
     pub name: Arc<str>,
     pub path: Arc<Path>,
-    /// For files — the file length; for directories it is ignored
-    /// (the aggregate is computed by [`FsTree::from_arena`]).
+    /// File length; ignored for directories.
     pub size: u64,
     pub is_dir: bool,
     pub parent: usize,
@@ -34,14 +29,12 @@ pub struct ScanNode {
 pub struct FsNode {
     pub name: Arc<str>,
     pub path: Arc<Path>,
-    /// For folders — the subtree aggregate (including their own 4096).
+    /// For folders, the subtree aggregate (including their own 4096).
     pub size: u64,
     pub is_dir: bool,
-    /// Number of files (non-directory nodes) in this node's subtree: a file
-    /// counts as 1, a directory as the sum of its descendants. The root's
-    /// value is the whole tree's file count, kept in sync by [`remove_child`].
+    /// File count in this node's subtree, kept in sync by [`remove_child`].
     pub files: u64,
-    /// Sorted by `size` in descending order.
+    /// Sorted by `size` descending.
     pub children: Vec<NodeId>,
 }
 
@@ -49,26 +42,20 @@ pub struct FsNode {
 pub struct FsTree {
     pub nodes: Vec<FsNode>,
     pub root: NodeId,
-    /// Identity of this snapshot: every [`FsTree::from_arena`] call gets
-    /// the next value of a process-wide counter. Caches of data derived
-    /// from the tree compare generations to drop stale entries: sizes and
-    /// layouts shift with every snapshot even within one scan, and ids
-    /// point into a different arena entirely after a rescan.
+    /// Snapshot identity; tree-derived caches compare generations to drop stale entries.
     pub generation: u64,
 }
 
-/// Snapshot counter behind [`FsTree::generation`]; starts at 1 so that a
-/// zero-initialized cache never matches a real tree.
+/// Starts at 1 so a zero-initialized cache never matches a real tree.
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 impl FsTree {
-    /// Builds a tree snapshot from a (possibly partially filled) arena.
-    /// The arena must not be empty: the root is placed there before the scan starts.
+    /// Builds a snapshot from a possibly partial arena, which must not be empty.
     pub fn from_arena(arena: &[ScanNode]) -> FsTree {
         assert!(!arena.is_empty(), "the arena always contains the root");
 
-        // Sizes are aggregated in a single reverse pass: a child is always to the right
-        // of its parent, so by the time sizes[parent] is read all contributions are in.
+        // Reverse pass: a child is always right of its parent, so all
+        // contributions are in by the time sizes[parent] is read.
         let mut sizes: Vec<u64> = arena
             .iter()
             .map(|n| if n.is_dir { DIR_ENTRY_SIZE } else { n.size })
@@ -77,8 +64,6 @@ impl FsTree {
             sizes[arena[i].parent] += sizes[i];
         }
 
-        // File counts aggregate the same way: each file contributes 1, each
-        // directory 0, summed up the same reverse pass.
         let mut files: Vec<u64> = arena
             .iter()
             .map(|n| if n.is_dir { 0 } else { 1 })
@@ -120,11 +105,10 @@ impl FsTree {
         &self.nodes[id.0]
     }
 
-    /// Removes a direct child of `parent` (after a successful filesystem delete)
-    /// and subtracts its size from `parent` and every node in `ancestors` —
-    /// the navigation chain from the root down to `parent`, excluding `parent`
-    /// itself (its size is adjusted here already).
-    /// Returns `false` — and changes nothing — if `child` is not a direct child.
+    /// Removes a direct child of `parent` and subtracts its size from `parent`
+    /// and every node in `ancestors` (the chain from root down to `parent`,
+    /// excluding `parent`). Returns `false` and changes nothing if `child` is
+    /// not a direct child.
     pub fn remove_child(&mut self, parent: NodeId, child: NodeId, ancestors: &[NodeId]) -> bool {
         debug_assert!(
             !ancestors.contains(&parent),
@@ -140,8 +124,7 @@ impl FsTree {
         let removed = self.nodes[child.0].size;
         let removed_files = self.nodes[child.0].files;
         self.nodes[parent.0].children.remove(position);
-        // Saturating: a broken ancestor list must clamp at zero, not wrap
-        // around in release builds and corrupt every size above it.
+        // Saturating: a broken ancestor list clamps at zero instead of wrapping.
         self.nodes[parent.0].size = self.nodes[parent.0].size.saturating_sub(removed);
         self.nodes[parent.0].files = self.nodes[parent.0].files.saturating_sub(removed_files);
         for &ancestor in ancestors {
@@ -221,7 +204,6 @@ mod tests {
         ]);
         let root = tree.node(tree.root);
         assert_eq!(root.size, DIR_ENTRY_SIZE + (DIR_ENTRY_SIZE + 500) + 50);
-        // The subfolder (4596) is larger than the file (50) — it comes first.
         let first = tree.node(root.children[0]);
         assert!(first.is_dir);
         assert_eq!(first.size, DIR_ENTRY_SIZE + 500);
@@ -229,7 +211,6 @@ mod tests {
 
     #[test]
     fn file_count_aggregates_to_root() {
-        // root → sub → a; root also holds b. 4 nodes: 2 dirs + 2 files.
         let tree = FsTree::from_arena(&[
             dir(0, "root"),
             dir(0, "sub"),
@@ -237,15 +218,12 @@ mod tests {
             file(0, "b", 50),
         ]);
         assert_eq!(tree.node(tree.root).files, 2);
-        // The subfolder holds exactly its one file; a leaf file counts as 1.
         assert_eq!(tree.node(NodeId(1)).files, 1);
         assert_eq!(tree.node(NodeId(2)).files, 1);
     }
 
     #[test]
     fn remove_child_updates_file_count() {
-        // root → sub → a(file); root also holds top(file). Removing the
-        // subfolder drops its one file from the root's count.
         let mut tree = FsTree::from_arena(&[
             dir(0, "root"),
             dir(0, "sub"),
@@ -264,8 +242,6 @@ mod tests {
         assert!(tree.node(tree.root).children.is_empty());
     }
 
-    /// A parallel scan interleaves entries of different directories; all that
-    /// matters is the "parent before child" invariant.
     #[test]
     fn interleaved_appends_resolve_to_same_tree() {
         let tree = FsTree::from_arena(&[
@@ -291,7 +267,6 @@ mod tests {
 
     #[test]
     fn remove_child_updates_parent_and_ancestors() {
-        // root → sub → file(500); root also holds top(50).
         let mut tree = FsTree::from_arena(&[
             dir(0, "root"),
             dir(0, "sub"),
@@ -303,14 +278,11 @@ mod tests {
         assert!(tree.node(sub).children.is_empty());
         assert_eq!(tree.node(sub).size, DIR_ENTRY_SIZE);
         assert_eq!(tree.node(tree.root).size, DIR_ENTRY_SIZE * 2 + 50);
-        // The root still has both children: sub and top.
         assert_eq!(tree.node(tree.root).children.len(), 2);
     }
 
     #[test]
     fn remove_child_saturates_on_broken_ancestors() {
-        // A bogus ancestor smaller than the removed child must clamp at
-        // zero instead of wrapping around and corrupting the tree.
         let mut tree = FsTree::from_arena(&[
             dir(0, "root"),
             dir(0, "sub"),
@@ -326,14 +298,11 @@ mod tests {
     fn remove_child_rejects_non_direct_child() {
         let mut tree = FsTree::from_arena(&[dir(0, "root"), dir(0, "sub"), file(1, "a", 500)]);
         let before = tree.node(tree.root).size;
-        // The file is a child of sub, not of root — nothing changes.
         assert!(!tree.remove_child(tree.root, NodeId(2), &[]));
         assert_eq!(tree.node(tree.root).size, before);
         assert_eq!(tree.node(NodeId(1)).children.len(), 1);
     }
 
-    /// A mid-scan snapshot: the folder node is already in the arena, its children are not yet appended.
-    /// `NodeId`s of a partial snapshot are valid in the full one (the arena is append-only).
     #[test]
     fn partial_arena_is_a_valid_snapshot() {
         let mut arena = vec![dir(0, "root"), dir(0, "sub"), file(0, "top", 10)];
@@ -344,7 +313,6 @@ mod tests {
 
         arena.push(file(1, "late", 999));
         let full = FsTree::from_arena(&arena);
-        // The same NodeId points to the same folder, now with a child.
         assert_eq!(full.node(sub_id).name.as_ref(), "sub");
         assert_eq!(full.node(sub_id).size, DIR_ENTRY_SIZE + 999);
         assert_eq!(full.node(sub_id).children.len(), 1);

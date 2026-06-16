@@ -1,14 +1,10 @@
-//! Shared chrome primitives: the styled button and container fills, the
-//! themed SVG icon helpers, and the generic icon buttons. Reused by the start
-//! screen, the brick hover panel and the map/scan bars in `main`.
+//! Shared chrome primitives: styled fills, themed icon helpers, icon buttons.
 
 use iced::widget::{button, container, progress_bar, row, svg, text, tooltip};
 use iced::{Border, Center, Color, Element, Shadow, Theme, Vector};
 
 use crate::Message;
 
-/// An outline chrome button from the light-minimal mockup: transparent fill,
-/// a thin gray border, the regular text color.
 pub(crate) fn chrome_button(theme: &Theme, status: button::Status) -> button::Style {
     let palette = theme.extended_palette();
     let border_color = if palette.is_dark {
@@ -38,7 +34,6 @@ pub(crate) fn chrome_button(theme: &Theme, status: button::Status) -> button::St
     }
 }
 
-/// Top and status bars: a surface lifted from the window background.
 pub(crate) fn bar_style(theme: &Theme) -> container::Style {
     let background = if theme.extended_palette().is_dark {
         Color::from_rgb8(0x33, 0x33, 0x33)
@@ -51,8 +46,6 @@ pub(crate) fn bar_style(theme: &Theme) -> container::Style {
     }
 }
 
-/// The floating hint of an action button: a card lifted above the panel
-/// with a thin border and a soft shadow.
 pub(crate) fn tooltip_style(theme: &Theme) -> container::Style {
     let is_dark = theme.extended_palette().is_dark;
     let (background, border_color) = if is_dark {
@@ -80,7 +73,6 @@ pub(crate) fn tooltip_style(theme: &Theme) -> container::Style {
     }
 }
 
-/// Secondary chrome text: the path bar, the status bar labels.
 pub(crate) fn muted_text(theme: &Theme) -> text::Style {
     text::Style {
         color: Some(muted_color(theme)),
@@ -95,8 +87,6 @@ pub(crate) fn muted_color(theme: &Theme) -> Color {
     }
 }
 
-/// The mini disk-usage bar: an amber fill (the folder-brick accent) on a
-/// muted track, matching the app mockup.
 pub(crate) fn disk_usage_progress_style(theme: &Theme) -> progress_bar::Style {
     let track = if theme.extended_palette().is_dark {
         Color::from_rgb8(0x45, 0x45, 0x45)
@@ -113,16 +103,14 @@ pub(crate) fn disk_usage_progress_style(theme: &Theme) -> progress_bar::Style {
     }
 }
 
-/// An embedded SVG icon tinted with the theme's text color.
-/// `Svg` is invariant over its lifetime, so the caller picks it.
+/// SVG icon tinted with the theme's text color.
 pub(crate) fn themed_icon<'a>(icon: &'static [u8]) -> svg::Svg<'a> {
     svg(svg::Handle::from_memory(icon)).style(|theme: &Theme, _status| svg::Style {
         color: Some(theme.palette().text),
     })
 }
 
-/// Like [`themed_icon`], but tinted with the muted caption color so the icon
-/// matches an adjacent [`muted_text`] label (e.g. the file counter).
+/// Like [`themed_icon`], but tinted with the muted caption color.
 pub(crate) fn muted_icon<'a>(icon: &'static [u8]) -> svg::Svg<'a> {
     svg(svg::Handle::from_memory(icon)).style(|theme: &Theme, _status| svg::Style {
         color: Some(muted_color(theme)),
@@ -140,14 +128,12 @@ pub(crate) fn themed_icon_maybe_disabled<'a>(icon: &'static [u8], disabled: bool
     })
 }
 
-/// An outline chrome button with a leading icon: the Rescan / Select folder pair.
 pub(crate) fn chrome_icon_button<'a>(
     icon: &'static [u8],
     label: &'a str,
     on_press: Message,
 ) -> Element<'a, Message> {
-    // A label never wraps: a two-line button would outgrow its row; long
-    // translations must shorten instead.
+    // Labels never wrap; long translations must shorten instead.
     button(
         row![
             themed_icon(icon).width(16).height(16),
@@ -161,11 +147,8 @@ pub(crate) fn chrome_icon_button<'a>(
     .into()
 }
 
-/// An outline chrome button with only an icon (no label): used for compact
-/// top-bar actions like Go up and Rescan. A tooltip names the action, since
-/// the icon alone carries no text.
-/// An empty text keeps the line height — and thus the button height — equal to
-/// the labeled `chrome_icon_button` next to it.
+/// Icon-only chrome button; tooltip names the action. The empty text keeps the
+/// button height equal to the labeled `chrome_icon_button` beside it.
 pub(crate) fn chrome_icon_only_button<'a>(
     icon: &'static [u8],
     tip: &'a str,
@@ -174,8 +157,7 @@ pub(crate) fn chrome_icon_only_button<'a>(
     chrome_icon_only_button_maybe(icon, tip, Some(on_press))
 }
 
-/// Like [`chrome_icon_only_button`], but with an optional action; a missing
-/// action also mutes the icon tint to match the disabled button state.
+/// Like [`chrome_icon_only_button`], but a missing action also mutes the icon.
 pub(crate) fn chrome_icon_only_button_maybe<'a>(
     icon: &'static [u8],
     tip: &'a str,
@@ -203,9 +185,7 @@ pub(crate) fn chrome_icon_only_button_maybe<'a>(
     .into()
 }
 
-/// A status bar action: an icon button with a tooltip. The caller supplies the
-/// styled icon, so e.g. the hover actions over a brick can tint it to match the
-/// brick's caption text rather than the bar text.
+/// Icon button with a tooltip; caller supplies the styled icon.
 pub(crate) fn action_button<'a>(
     icon: svg::Svg<'a>,
     tip: &'a str,

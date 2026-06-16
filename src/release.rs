@@ -1,15 +1,11 @@
-//! Latest-release check against GitHub.
-//! A single fire-and-forget request on its own thread right after launch;
-//! the UI never waits for it — the result arrives as a message when (and
-//! if) the response comes back, and any failure just leaves the footer
-//! showing the running version alone.
+//! Latest-release check against GitHub. A fire-and-forget request on its own
+//! thread; the result arrives as a message, and any failure is silent.
 
 use std::time::Duration;
 
 use iced::futures::channel::oneshot;
 
-/// Repository home page from Cargo.toml (`repository`) — the single place
-/// the GitHub URL is spelled out; both URLs below derive from it.
+/// Repository home page from Cargo.toml; both URLs below derive from it.
 const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
 
 fn api_url() -> String {
@@ -17,19 +13,18 @@ fn api_url() -> String {
     format!("https://api.github.com/repos/{repo_path}/releases/latest")
 }
 
-/// The page of the specific release the footer shows — not `/releases/latest`,
-/// which could already point to a newer release published while the app runs.
+/// The page of the specific release shown, not `/releases/latest`, which
+/// could point to a newer release published while the app runs.
 pub fn release_url(tag: &str) -> String {
     format!("{REPO_URL}/releases/tag/{tag}")
 }
 
-/// Resolves to the latest release tag (e.g. `v0.2.2`), `None` on any
-/// network or parse failure. The blocking request runs on a dedicated
-/// thread, so the future never occupies the executor.
+/// Resolves to the latest release tag (e.g. `v0.2.2`), `None` on any network
+/// or parse failure. The blocking request runs on a dedicated thread.
 pub fn fetch_latest_tag() -> impl Future<Output = Option<String>> {
     let (tx, rx) = oneshot::channel();
-    // Best-effort: a refused thread (resource exhaustion) must not crash
-    // startup. A failed spawn drops `tx`, the future resolves to `None`.
+    // A refused spawn must not crash startup; it drops `tx` and the future
+    // resolves to `None`.
     let _ = std::thread::Builder::new()
         .name("release-check".into())
         .spawn(move || {

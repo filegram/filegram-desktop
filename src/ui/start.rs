@@ -1,6 +1,4 @@
-//! The start (idle) screen: the path input and Scan button, the quick-folder
-//! and quick-disk rows, the scan history, the language popup and the bottom
-//! corner footer (theme toggle, language menu, version).
+//! Start (idle) screen.
 
 use std::path::{Path, PathBuf};
 
@@ -48,10 +46,6 @@ pub(crate) fn idle_view(app: &App) -> Element<'_, Message> {
     stack![screen, language_menu_overlay(app)].into()
 }
 
-/// The language popup pinned above the footer's globe button: a card with
-/// the short list and a trailing "…" that expands it to every language,
-/// native names, the current one highlighted. The transparent backdrop
-/// closes the menu on a click anywhere else.
 fn language_menu_overlay(app: &App) -> Element<'_, Message> {
     let current = app.lang();
     let listed: &[Lang] = if app.lang_menu_expanded {
@@ -65,8 +59,7 @@ fn language_menu_overlay(app: &App) -> Element<'_, Message> {
         } else {
             button::text
         };
-        // A name never wraps: a two-line entry would break the menu rhythm;
-        // the card is sized so the longest name fits next to the scrollbar.
+        // Names never wrap; card is sized for the longest one.
         button(
             text(lang.native_name())
                 .size(14)
@@ -118,10 +111,7 @@ fn language_menu_overlay(app: &App) -> Element<'_, Message> {
     )
 }
 
-/// The quick disk row right under the folder row: the root of every
-/// mounted volume, a click scans the volume whole. `None` hides the row
-/// when `disk_roots` is empty, like an empty folder row — possible on
-/// Windows only, on Unix the list always holds at least `/`.
+/// `None` hides the row when `disk_roots` is empty (Windows only; Unix always has `/`).
 fn disk_scans(app: &App) -> Option<Element<'_, Message>> {
     let buttons: Vec<Element<'_, Message>> = app
         .disk_roots
@@ -135,8 +125,6 @@ fn disk_scans(app: &App) -> Option<Element<'_, Message>> {
         })
         .collect();
     (!buttons.is_empty()).then(|| {
-        // The same muted header the history row wears, so the two sections
-        // under the folder shortcuts read alike.
         column![
             text(app.strings().disks).size(14).style(muted_text),
             row(buttons).spacing(8).wrap(),
@@ -146,8 +134,6 @@ fn disk_scans(app: &App) -> Option<Element<'_, Message>> {
     })
 }
 
-/// The icon a quick disk row entry wears, by the hardware kind behind
-/// the volume.
 fn disk_icon(kind: disk::DiskKind) -> &'static [u8] {
     match kind {
         disk::DiskKind::Internal => DRIVE_ICON,
@@ -157,10 +143,7 @@ fn disk_icon(kind: disk::DiskKind) -> &'static [u8] {
     }
 }
 
-/// Quick scans of the standard user folders, between the scan row and the
-/// history: a click scans the folder exactly like a history entry. A folder
-/// the OS cannot locate is omitted; `None` when none can be, so the idle
-/// screen does not reserve a blank gap for an empty row.
+/// Folders the OS cannot locate are omitted; `None` when none can be.
 fn quick_scans<'a>(s: &'static i18n::Strings) -> Option<Element<'a, Message>> {
     let folders: [(&[u8], &str, Option<PathBuf>); 4] = [
         (HOME_ICON, s.home, dirs::home_dir()),
@@ -177,12 +160,8 @@ fn quick_scans<'a>(s: &'static i18n::Strings) -> Option<Element<'a, Message>> {
     (!buttons.is_empty()).then(|| row(buttons).spacing(8).into())
 }
 
-/// One entry of the quick rows: an icon with a short name; a click scans
-/// the path exactly like a history entry.
 fn quick_scan_button<'a>(icon: &'static [u8], name: String, path: &Path) -> Element<'a, Message> {
-    // Normalized the way StartScan will see it: a path that normalizes to
-    // blank (a mount point with a line break) gets no on_press, so the
-    // button cannot fire a scan of "".
+    // Normalize as StartScan will; a path normalizing to blank gets no on_press.
     let path = history::normalize(&path.display().to_string()).to_string();
     button(
         row![themed_icon(icon).width(16).height(16), text(name).size(14)]
@@ -195,8 +174,6 @@ fn quick_scan_button<'a>(icon: &'static [u8], name: String, path: &Path) -> Elem
     .into()
 }
 
-/// The scan history under the path input: a click rescans the path, and
-/// hovering a row reveals a trailing cross that removes the entry.
 fn recent_scans(app: &App) -> Element<'_, Message> {
     column![text(app.strings().recent_scans).size(14).style(muted_text)]
         .spacing(2)
@@ -204,12 +181,8 @@ fn recent_scans(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-/// One history row. A click on the path rescans it; the row fills the column
-/// width so the delete cross lands on the same right edge for every entry,
-/// and the `mouse_area` spans that whole width so the hover target is the
-/// entire row, not just the path text. The cross renders only for the hovered
-/// row — at the same font size and vertical padding as the path, so revealing
-/// it never changes the row height and the list below it stays put.
+/// Row fills the column width so the delete cross lands on the same right edge;
+/// the cross matches the path's font size and padding so revealing it keeps row height.
 fn recent_scan_row<'a>(app: &'a App, path: &'a str) -> Element<'a, Message> {
     let scan = button(text(format::shorten_path(path, PATH_BAR_MAX_CHARS)).size(14))
         .style(button::text)
@@ -235,7 +208,6 @@ fn recent_scan_row<'a>(app: &'a App, path: &'a str) -> Element<'a, Message> {
         .into()
 }
 
-/// The theme toggle: an icon button showing the mode a click switches to.
 fn theme_toggle(app: &App) -> Element<'_, Message> {
     let s = app.strings();
     let (icon, tip) = if app.is_dark() {
@@ -246,8 +218,6 @@ fn theme_toggle(app: &App) -> Element<'_, Message> {
     action_button(themed_icon(icon), tip, Some(Message::ToggleTheme))
 }
 
-/// The language menu trigger: the same square icon button as the theme
-/// toggle, a globe with the localized "Language" hint.
 fn language_button(app: &App) -> Element<'_, Message> {
     action_button(
         themed_icon(GLOBE_ICON),
@@ -256,10 +226,8 @@ fn language_button(app: &App) -> Element<'_, Message> {
     )
 }
 
-/// The application version in the bottom-right corner. Once the background
-/// GitHub check finds a release different from the running build (e.g. the
-/// stable release under a dev build), its tag follows in parentheses as a
-/// link to the release page.
+/// When the background check finds a release differing from the running build,
+/// its tag follows in parentheses as a link to the release page.
 fn version_label(app: &App) -> Element<'_, Message> {
     let current = text(concat!("v", env!("CARGO_PKG_VERSION")))
         .size(14)
@@ -283,9 +251,6 @@ fn version_label(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-/// The bottom corners of the start screen: the theme toggle and the
-/// language menu on the left, the version on the right. The map screens
-/// stay free of chrome.
 fn corner_footer(app: &App) -> Element<'_, Message> {
     row![
         theme_toggle(app),

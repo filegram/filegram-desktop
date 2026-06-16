@@ -1,7 +1,6 @@
-//! The persisted settings: `key=value` lines (`theme=dark`, `lang=ru-RU`)
-//! in the platform config dir. A missing file or key means "follow the
-//! system". The pre-0.3 format — a bare `light` / `dark` word — still
-//! reads as the theme.
+//! Persisted settings: `key=value` lines (`theme=dark`, `lang=ru-RU`). A
+//! missing file or key follows the system. The pre-0.3 bare `light`/`dark`
+//! word still reads as the theme.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,9 +16,8 @@ pub struct Settings {
     pub lang: Option<Lang>,
 }
 
-/// Reads the saved choices. A missing file, an unknown key or an
-/// unrecognized value yields the system-following default; any other
-/// read error is returned.
+/// Reads the saved choices. A missing file, unknown key or unrecognized
+/// value yields the default; any other read error is returned.
 pub fn load(path: &Path) -> io::Result<Settings> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -33,8 +31,8 @@ pub fn load(path: &Path) -> io::Result<Settings> {
         match (key.trim(), value.trim()) {
             ("theme", "light") => settings.theme = Some(Mode::Light),
             ("theme", "dark") => settings.theme = Some(Mode::Dark),
-            // Like the theme, keep a previously parsed language when a later
-            // `lang=` line carries an unrecognized tag.
+            // Keep a previously parsed language when a later `lang=` line
+            // carries an unrecognized tag.
             ("lang", tag) => {
                 if let Some(lang) = Lang::from_tag(tag) {
                     settings.lang = Some(lang);
@@ -46,10 +44,9 @@ pub fn load(path: &Path) -> io::Result<Settings> {
     Ok(settings)
 }
 
-/// Writes the choices, creating parent directories as needed; a `None`
-/// field is omitted, so it keeps following the system on the next launch.
-/// `Mode::None` is never a manual choice; it falls back to `light`
-/// defensively.
+/// Writes the choices, creating parent directories as needed. A `None` field
+/// is omitted, so it keeps following the system. `Mode::None` falls back to
+/// `light` defensively.
 pub fn save(path: &Path, settings: Settings) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -84,7 +81,7 @@ mod tests {
     #[test]
     fn save_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        // The parent directory does not exist yet — save must create it.
+        // Parent does not exist yet; save must create it.
         let file = dir.path().join("nested").join("settings.cfg");
         let cases = [
             Settings {
@@ -140,7 +137,7 @@ mod tests {
 
     #[test]
     fn load_unreadable_file_errors() {
-        // A directory cannot be read as a file — the error must surface.
+        // A directory cannot be read as a file; the error must surface.
         let dir = tempfile::tempdir().unwrap();
         assert!(load(dir.path()).is_err());
     }

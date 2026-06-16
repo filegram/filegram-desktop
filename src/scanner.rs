@@ -1,10 +1,6 @@
-//! Parallel filesystem scan.
-//! Instead of the original's worker queue with decaying timeouts — rayon with natural completion;
-//! cancellation via `AtomicBool` actually stops the traversal.
-//!
-//! Nodes are written into a shared append-only arena from which a background thread
-//! periodically builds [`FsTree`] snapshots — the map is drawn already during
-//! the scan.
+//! Parallel filesystem scan. Nodes go into a shared append-only arena; a
+//! background thread periodically builds [`FsTree`] snapshots for progressive
+//! rendering. Cancellation via `AtomicBool`.
 
 #[cfg(unix)]
 use std::collections::HashSet;
@@ -20,14 +16,11 @@ use rayon::prelude::*;
 
 use crate::fs_tree::{FsTree, ScanNode};
 
-/// Oversubscription factor for the scan thread pool. Disk traversal is
-/// I/O-bound — workers spend most of their time blocked in `stat`/`read_dir`,
-/// not on the CPU — so running several times more threads than cores keeps the
-/// storage queue busy while others wait.
+/// Oversubscription factor for the scan pool. Traversal is I/O-bound (workers
+/// block in `stat`/`read_dir`), so more threads than cores keeps the disk busy.
 const SCAN_THREADS_PER_CORE: usize = 4;
 
-/// Number of worker threads for the scan: logical cores × [`SCAN_THREADS_PER_CORE`],
-/// falling back to the factor itself if parallelism can't be detected.
+/// Logical cores x [`SCAN_THREADS_PER_CORE`], falling back to the factor itself.
 fn scan_thread_count() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -35,13 +28,9 @@ fn scan_thread_count() -> usize {
         * SCAN_THREADS_PER_CORE
 }
 
-/// Interval for sending progress to the UI, as in the original.
 pub const PROGRESS_INTERVAL_MS: u64 = 100;
-/// Interval of intermediate tree snapshots for progressive rendering.
-/// Paced to the map's spring (it settles in ≈0.35 s): one new layout per
-/// glide keeps the bricks moving continuously. The spring survives any
-/// cadence without kinks, but much shorter intervals still churn the
-/// layout itself — children are re-sorted by size on every snapshot, so
+/// Snapshot interval, paced to the map's spring (settles in ~0.35 s). Much
+/// shorter churns the layout: children re-sort by size on every snapshot, so
 /// bricks would swap places faster than the eye can follow.
 pub const SNAPSHOT_INTERVAL_MS: u64 = 250;
 
@@ -50,21 +39,17 @@ pub enum ScanEvent {
     Progress {
         current: String,
         files: u64,
-        /// Directories being traversed at this very moment: incremented when a
-        /// `scan_dir` call starts, decremented when it returns. A live snapshot
-        /// of in-flight work, so it rises and falls (bounded by the rayon pool),
-        /// unlike the monotonic file counter.
+        /// Directories in flight right now: rises and falls, unlike the monotonic file counter.
         dirs: u64,
     },
-    /// An intermediate snapshot: the arena is append-only, so the snapshot's `NodeId`s
-    /// remain valid in subsequent snapshots and in the final tree.
+    /// Intermediate snapshot. The arena is append-only, so its `NodeId`s stay
+    /// valid in later snapshots and the final tree.
     Snapshot(Arc<FsTree>),
-    /// The final tree; on cancellation — partial (whatever was traversed).
+    /// Final tree; partial on cancellation.
     Finished(Arc<FsTree>),
 }
 
-/// Starts the scan on a background thread and returns a stream of events
-/// for `iced::Task::run`.
+/// Starts the scan on a background thread, returns a stream of events for `iced::Task::run`.
 pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = ScanEvent> {
     let (tx, rx) = mpsc::unbounded();
     let name: Arc<str> = root
@@ -79,10 +64,8 @@ pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = 
         is_dir: true,
         parent: 0,
     }]));
-    // Condvar instead of a bare flag: the snapshot thread wakes up immediately
-    // when the scan finishes, not after sitting out the rest of the interval
-    // (the stream — and the app's tests — would otherwise hang for up to
-    // SNAPSHOT_INTERVAL_MS after the scan).
+    // Condvar so the snapshot thread wakes immediately when the scan finishes,
+    // instead of hanging out the rest of the interval.
     let done = Arc::new((Mutex::new(false), Condvar::new()));
 
     std::thread::spawn({
@@ -98,10 +81,8 @@ pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = 
             };
             let visited = VisitedDirs::new();
             visited.first_visit(&root);
-            // A dedicated, oversubscribed pool instead of rayon's global one:
-            // `install` makes every nested `into_par_iter` in the recursion run
-            // on these threads. If the pool can't be built, fall back to the
-            // global pool (still parallel, just at core count).
+            // Dedicated oversubscribed pool: `install` runs every nested
+            // `into_par_iter` on these threads. Fall back to the global pool.
             match rayon::ThreadPoolBuilder::new()
                 .num_threads(scan_thread_count())
                 .build()
@@ -117,8 +98,7 @@ pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = 
         }
     });
 
-    // Snapshot thread: only the new tail is taken from the arena under the lock
-    // (cheap Arc clones); the tree itself is built outside the lock.
+    // Snapshot thread: take only the new tail under the lock, build the tree outside it.
     std::thread::spawn(move || {
         let mut mirror: Vec<ScanNode> = Vec::new();
         let (done_flag, done_signal) = &*done;
@@ -148,13 +128,10 @@ pub fn start_scan(root: PathBuf, cancel: Arc<AtomicBool>) -> impl Stream<Item = 
     rx
 }
 
-/// Deduplication of directories by (device, inode). APFS firmlinks (/Users,
-/// /Library etc., listed in /usr/share/firmlinks) are not symlinks — they look
-/// like plain directories but lead into the Data volume, which is itself
-/// mounted at /System/Volumes/Data, so a scan of "/" would count them twice.
-/// Comparing the parent's and child's devices is not enough: /Users legally
-/// lives on another volume and must still be scanned — only a second path to
-/// the same directory is skipped.
+/// Dedups directories by (device, inode). APFS firmlinks (/Users, /Library)
+/// look like plain directories but lead into the Data volume, so a scan of "/"
+/// would count them twice. Comparing parent/child device isn't enough: /Users
+/// legally lives on another volume; only a second path to the same dir is skipped.
 struct VisitedDirs {
     #[cfg(unix)]
     seen: Mutex<HashSet<(u64, u64)>>,
@@ -169,9 +146,7 @@ impl VisitedDirs {
     }
 
     /// Records the directory; `false` means its (device, inode) was already
-    /// visited via another path. Deduplication is unix-only for now: other
-    /// platforms have their own directory aliases (Windows junctions, mount
-    /// points), but those are not handled yet — always `true`, no extra stat.
+    /// seen via another path. Unix-only; other platforms always return `true`.
     fn first_visit(&self, path: &Path) -> bool {
         #[cfg(unix)]
         {
@@ -189,12 +164,12 @@ impl VisitedDirs {
     }
 }
 
-/// Progress: an atomic file counter; updates go to the UI no more often than
+/// Atomic file counter; updates reach the UI no more often than
 /// [`PROGRESS_INTERVAL_MS`]; `try_lock` keeps workers from waiting on each other.
 struct Progress {
     tx: mpsc::UnboundedSender<ScanEvent>,
     files: AtomicU64,
-    /// Count of `scan_dir` calls currently in flight; see [`ScanEvent::Progress`].
+    /// `scan_dir` calls currently in flight; see [`ScanEvent::Progress`].
     active_dirs: AtomicU64,
     last_sent: Mutex<Instant>,
 }
@@ -217,9 +192,8 @@ impl Progress {
     }
 }
 
-/// Keeps [`Progress::active_dirs`] in sync with the live `scan_dir` calls:
-/// bumps the counter on construction, drops it on scope exit — so every return
-/// path (cancellation, read error, normal completion) balances the increment.
+/// Bumps [`Progress::active_dirs`] on construction, drops it on scope exit, so
+/// every return path (cancel, read error, completion) balances the increment.
 struct ActiveDirGuard<'a>(&'a AtomicU64);
 
 impl<'a> ActiveDirGuard<'a> {
@@ -235,11 +209,9 @@ impl Drop for ActiveDirGuard<'_> {
     }
 }
 
-/// Traverses directory `path`, already present in the arena at index `dir_index`:
-/// all directory entries are added to the arena under a single mutex acquisition
-/// (files and subfolder nodes), then subfolders are traversed in parallel via rayon.
-/// Read errors (permission denied etc.) yield an empty branch, as in
-/// the original. The `DT_UNKNOWN` fallback goes through `entry.metadata()`.
+/// Traverses `path`, already in the arena at `dir_index`. Entries are added
+/// under a single mutex acquisition, then subfolders traversed in parallel via
+/// rayon. Read errors yield an empty branch.
 fn scan_dir(
     path: &Path,
     dir_index: usize,
@@ -248,8 +220,6 @@ fn scan_dir(
     progress: &Progress,
     visited: &VisitedDirs,
 ) {
-    // Counts toward "directories in flight" for the whole call, including the
-    // time spent blocked on the parallel traversal of its subfolders below.
     let _active = ActiveDirGuard::enter(&progress.active_dirs);
     if cancel.load(Ordering::Relaxed) {
         return;
@@ -261,8 +231,7 @@ fn scan_dir(
     let mut files = Vec::new();
     let mut dirs = Vec::new();
     for entry in entries.flatten() {
-        // On a huge directory, cancellation mid-enumeration keeps what's
-        // already collected instead of stat'ing the rest.
+        // Cancellation mid-enumeration keeps what's collected, skips stat'ing the rest.
         if cancel.load(Ordering::Relaxed) {
             break;
         }
@@ -272,8 +241,7 @@ fn scan_dir(
         else {
             continue;
         };
-        // As in the original: only regular files and directories,
-        // symlinks/sockets/FIFOs are skipped.
+        // Only regular files and directories; symlinks/sockets/FIFOs are skipped.
         if file_type.is_symlink() {
             continue;
         }
@@ -353,7 +321,6 @@ mod tests {
         // root = 4096 (itself) + sub (4096 + 300) + 100 + 200
         assert_eq!(root.size, DIR_ENTRY_SIZE * 2 + 600);
         assert_eq!(root.children.len(), 3);
-        // Children in descending order: sub (4396), b (200), a (100).
         let names: Vec<&str> = root
             .children
             .iter()
@@ -362,9 +329,6 @@ mod tests {
         assert_eq!(names, vec!["sub", "b.bin", "a.bin"]);
     }
 
-    /// A multi-level tree with known contents: the scan must find every file
-    /// and directory and aggregate the exact total size, not just the root's
-    /// direct children.
     #[test]
     fn scan_counts_files_and_dirs_recursively() {
         let dir = tempfile::tempdir().unwrap();
@@ -387,8 +351,7 @@ mod tests {
         assert_eq!(files, 5, "a, b, c, d, e");
         assert_eq!(dirs, 3, "root, sub, deep");
 
-        // Total = every file byte (100+200+300+50+10) + one DIR_ENTRY_SIZE per
-        // directory (root, sub, deep); the root size carries the whole tree.
+        // file bytes (100+200+300+50+10) + one DIR_ENTRY_SIZE per dir (root, sub, deep)
         assert_eq!(tree.node(tree.root).size, 660 + DIR_ENTRY_SIZE * 3);
     }
 
@@ -416,9 +379,8 @@ mod tests {
         assert!(!visited.first_visit(dir.path()));
     }
 
-    /// A directory whose (device, inode) was already seen is skipped entirely.
-    /// A real firmlink cannot be created in a test, so the second path to the
-    /// same inode is simulated by pre-registering the directory in the set.
+    /// A real firmlink can't be created in a test, so a second path to the same
+    /// inode is simulated by pre-registering the directory in the set.
     #[cfg(unix)]
     #[test]
     fn already_visited_directory_is_skipped() {
@@ -453,8 +415,6 @@ mod tests {
         );
     }
 
-    /// Cancellation no longer wipes the result: `Finished` arrives with whatever
-    /// was traversed so far (here — only the root).
     #[test]
     fn cancel_yields_partial_tree() {
         let dir = tempfile::tempdir().unwrap();
