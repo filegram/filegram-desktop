@@ -1,0 +1,65 @@
+name: filegram
+title: Filegram
+summary: Disk space analyzer with an interactive treemap
+description: |
+  Filegram scans a directory tree and visualizes disk usage as a map of bricks,
+  helping to find what takes up space.
+
+  Features:
+   - Interactive treemap — files and folders are rendered as bricks sized
+     proportionally to their disk usage.
+   - Fast parallel scanning that can be cancelled at any time.
+   - Navigation — dive into folders, go back up, or rescan in place.
+   - File actions — reveal a file in the system file manager or move it to the
+     trash, right from the map.
+   - Light and dark themes that follow the system theme.
+
+# Classic confinement: Filegram is a disk-space analyzer and must be able to
+# scan and act on arbitrary paths across the whole filesystem (not just $HOME),
+# exactly like the .deb / AppImage builds. Classic snaps are reviewed manually
+# by the Snap Store team before they can be released to a public channel.
+confinement: classic
+grade: stable
+license: MIT
+# Built on ubuntu-22.04 to match the glibc baseline of the released binary.
+base: core22
+
+# __VERSION__ is rewritten to the released version by .github/workflows/snap.yml.
+version: '__VERSION__'
+
+# The .desktop file and icon are taken from snap/gui/ (the snapcraft
+# convention): snapcraft copies them into meta/gui/ and snapd registers the
+# launcher, expanding ${SNAP} in the icon path at install time.
+apps:
+  filegram:
+    command: bin/filegram
+
+parts:
+  filegram:
+    # Repackages the released Linux x86_64 binary (the same artifact published
+    # to the GitHub release) rather than rebuilding from source — consistent
+    # with the Homebrew/Chocolatey/Scoop channels. The CI workflow downloads
+    # the binary into ./snap-payload before packing.
+    plugin: dump
+    source: snap-payload
+    organize:
+      filegram: bin/filegram
+    # core22 does not patch ELF rpaths by default; classic confinement needs it
+    # so the prebuilt binary resolves its libraries from the snap and base.
+    build-attributes:
+      - enable-patchelf
+    # Windowing / input libraries the binary links against. GPU drivers
+    # (Mesa/Vulkan/EGL) are loaded from the host, which classic confinement
+    # allows.
+    stage-packages:
+      - libxkbcommon0
+      - libwayland-client0
+      - libwayland-cursor0
+      - libwayland-egl1
+      - libx11-6
+      - libxcb1
+      - libxcursor1
+      - libxi6
+      - libxrandr2
+      - libgl1
+      - libegl1

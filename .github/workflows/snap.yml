@@ -1,0 +1,96 @@
+name: Snap
+
+# Builds the Filegram snap from snap/snapcraft.yaml and pushes it to the Snap
+# Store stable channel. Repackages the released Linux x86_64 binary (the same
+# artifact attached to the GitHub release) into the snap, mirroring the
+# Homebrew/Chocolatey/Scoop channels.
+#
+# Runnable two ways:
+#   - workflow_dispatch: publish any already-released version on demand
+#     (e.g. to backfill 0.2.5).
+#   - workflow_call: invoked by release.yml right after the release is published.
+#
+# Requires the SNAPCRAFT_STORE_CREDENTIALS secret (export from a logged-in
+# `snapcraft export-login`). Without it the job logs a warning and exits
+# cleanly so a release is never blocked on it.
+#
+# One-time manual prerequisites on the Snap Store (cannot be automated):
+#   - Register the name: `snapcraft register filegram`.
+#   - Request classic confinement approval for the snap; until granted, the
+#     store rejects uploads of a classic snap to a public channel.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to publish (e.g. 0.2.5)"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish to Snap Store
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      # The default branch carries the packaging files; the release tag may
+      # predate them (e.g. when backfilling an older version). The binary comes
+      # from the release by version, independent of the checked-out ref.
+      - uses: actions/checkout@v6
+
+      - name: Check for store credentials
+        id: check
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          if [ -z "${SNAPCRAFT_STORE_CREDENTIALS}" ]; then
+            echo "::warning::SNAPCRAFT_STORE_CREDENTIALS secret is not set; skipping Snap publish."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stage the released binary and version
+        if: steps.check.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+
+          # The dump part packs everything under ./snap-payload; the binary must
+          # be named `filegram` for the organize rule in snapcraft.yaml.
+          mkdir -p snap-payload
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'filegram-linux-x86_64' --dir snap-payload
+          mv snap-payload/filegram-linux-x86_64 snap-payload/filegram
+          chmod +x snap-payload/filegram
+
+          # snapcraft.yaml ships a __VERSION__ placeholder (the default branch
+          # tracks a -dev version that must not leak into a published snap).
+          sed -i "s/__VERSION__/${VERSION}/" snap/snapcraft.yaml
+          echo "--- snapcraft.yaml version ---"
+          grep '^version:' snap/snapcraft.yaml
+
+      - name: Build snap
+        if: steps.check.outputs.enabled == 'true'
+        id: build
+        uses: snapcore/action-build@v1
+
+      - name: Publish to the stable channel
+        if: steps.check.outputs.enabled == 'true'
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: stable

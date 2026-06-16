@@ -51,6 +51,18 @@ scoop bucket add filegram https://github.com/filegram/scoop-bucket
 scoop install filegram
 ```
 
+### Linux (Snap)
+
+Filegram is also available on the [Snap Store](https://snapcraft.io/filegram)
+for Ubuntu and other distributions with snapd:
+
+```sh
+sudo snap install filegram --classic
+```
+
+`--classic` is required because Filegram analyzes the whole filesystem, not
+just your home directory.
+
 ## Building from source
 
 Requires Rust 1.88 or newer.

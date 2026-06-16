@@ -1,3 +1,10 @@
 /target
 .idea/
 .DS_Store
+
+# Snap build artifacts (snap/snapcraft.yaml is tracked; build output is not).
+/snap-payload
+/parts
+/stage
+/prime
+*.snap
