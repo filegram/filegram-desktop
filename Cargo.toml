@@ -1,6 +1,6 @@
 [package]
 name = "filegram"
-version = "0.2.6-dev"
+version = "0.2.6"
 edition = "2024"
 rust-version = "1.88"
 description = "Disk space analyzer with an interactive treemap"
