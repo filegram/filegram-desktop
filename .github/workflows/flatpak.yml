@@ -54,12 +54,21 @@ jobs:
       - name: Install flatpak + flatpak-builder
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder python3-aiohttp python3-tomlkit
+          sudo apt-get install -y flatpak flatpak-builder
 
       - name: Add the flathub remote (user)
         run: |
           flatpak remote-add --if-not-exists --user \
             flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      # ubuntu-22.04's python3-tomlkit predates TOMLDocument.unwrap() which
+      # the flatpak-cargo-generator depends on; install fresh wheels into a
+      # venv and put it on PATH so the generator script picks them up.
+      - name: Install cargo-sources generator deps
+        run: |
+          python3 -m venv /tmp/csvenv
+          /tmp/csvenv/bin/pip install --upgrade pip aiohttp tomlkit
+          echo "/tmp/csvenv/bin" >> "$GITHUB_PATH"
 
       # cargo-sources.json checked into the repo may have been generated for a
       # different Cargo.lock; rebuild it to match this tag exactly.
