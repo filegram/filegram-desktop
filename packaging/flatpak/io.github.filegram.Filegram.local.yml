@@ -24,8 +24,6 @@ build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
     CARGO_HOME: /run/build/filegram/cargo
-  build-args:
-    - --share=network=false
 
 modules:
   - name: filegram
