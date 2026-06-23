@@ -92,11 +92,14 @@ jobs:
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
           $numeric = $version -replace '-dev$',''
+          $root = $env:GITHUB_WORKSPACE
           iscc `
             "/DAppVersion=$numeric" `
             "/DAppFullVersion=$version" `
             "/DAppArch=${{ matrix.arch }}" `
-            "/DSourceExe=${{ matrix.asset }}" `
+            "/DSourceExe=$root\${{ matrix.asset }}" `
+            "/DIconFile=$root\assets\icon\filegram.ico" `
+            "/DOutputDir=$root" `
             "/DOutputName=filegram-windows-${{ matrix.arch }}-setup" `
             packaging\windows\filegram.iss
 
