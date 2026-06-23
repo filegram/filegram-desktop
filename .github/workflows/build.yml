@@ -36,12 +36,16 @@ jobs:
             binary: target/release/filegram.exe
             asset: filegram-windows-x86_64.exe
             zip: filegram-windows-x86_64.zip
+            arch: x64
+            setup: filegram-windows-x86_64-setup.exe
           - os: windows-latest
             target: i686-pc-windows-msvc
             artifact: filegram-windows-i686
             binary: target/i686-pc-windows-msvc/release/filegram.exe
             asset: filegram-windows-i686.exe
             zip: filegram-windows-i686.zip
+            arch: x86
+            setup: filegram-windows-i686-setup.exe
 
     steps:
       - uses: actions/checkout@v6
@@ -79,6 +83,23 @@ jobs:
             zip '${{ matrix.zip }}' '${{ matrix.asset }}'
           fi
 
+      # Inno Setup ships preinstalled on windows-latest; iscc is on PATH.
+      # The installer registers App Paths + Apps & Features and drops a Start
+      # Menu shortcut so the app is reachable from Windows Search.
+      - name: Build Inno Setup installer
+        if: matrix.setup
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          $numeric = $version -replace '-dev$',''
+          iscc `
+            "/DAppVersion=$numeric" `
+            "/DAppFullVersion=$version" `
+            "/DAppArch=${{ matrix.arch }}" `
+            "/DSourceExe=${{ matrix.asset }}" `
+            "/DOutputName=filegram-windows-${{ matrix.arch }}-setup" `
+            packaging\windows\filegram.iss
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -86,6 +107,7 @@ jobs:
           path: |
             ${{ matrix.asset }}
             ${{ matrix.zip }}
+            ${{ matrix.setup }}
 
   package-linux:
     name: Build & package (Linux x86_64)
