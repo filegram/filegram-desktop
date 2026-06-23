@@ -1,0 +1,53 @@
+# CI-only flatpak manifest. Builds Filegram from the checked-out worktree
+# instead of a pinned upstream git tag, so the resulting single-file bundle
+# always matches whichever ref the workflow checks out (release tag or master).
+#
+# The upstream-tracking manifest io.github.filegram.Filegram.yml stays the
+# source of truth for any legitimate Flathub submission and pins a git tag.
+id: io.github.filegram.Filegram
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: filegram
+
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  - --filesystem=host
+  - --talk-name=org.freedesktop.FileManager1
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/filegram/cargo
+  build-args:
+    - --share=network=false
+
+modules:
+  - name: filegram
+    buildsystem: simple
+    build-commands:
+      - cargo --offline build --release --verbose
+      - install -Dm755 target/release/filegram /app/bin/filegram
+      - install -Dm644 packaging/flatpak/io.github.filegram.Filegram.desktop
+        /app/share/applications/io.github.filegram.Filegram.desktop
+      - install -Dm644 packaging/flatpak/io.github.filegram.Filegram.metainfo.xml
+        /app/share/metainfo/io.github.filegram.Filegram.metainfo.xml
+      - install -Dm644 assets/icon/icon.svg
+        /app/share/icons/hicolor/scalable/apps/io.github.filegram.Filegram.svg
+      - for s in 16 32 48 64 128 256 512; do
+          install -Dm644 "assets/icon/icon-$s.png"
+          "/app/share/icons/hicolor/${s}x${s}/apps/io.github.filegram.Filegram.png";
+        done
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - target
+          - .flatpak-builder
+      - cargo-sources.json

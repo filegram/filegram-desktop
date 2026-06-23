@@ -145,3 +145,14 @@ jobs:
     secrets: inherit
     with:
       version: ${{ inputs.version }}
+
+  # Build a single-file Flatpak bundle from source and attach it to the GitHub
+  # release. Linux distribution channel that does not go through Flathub.
+  flatpak:
+    name: Build Flatpak bundle
+    needs: [prepare, publish]
+    uses: ./.github/workflows/flatpak.yml
+    permissions:
+      contents: write
+    with:
+      version: ${{ inputs.version }}
