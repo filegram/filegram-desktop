@@ -1,0 +1,88 @@
+name: Flatpak
+
+# Builds a single-file Flatpak bundle (.flatpak) of Filegram from source and
+# attaches it to the GitHub release. Distributes Filegram on Linux without
+# going through Flathub. Users install with:
+#   flatpak install --user filegram-linux-x86_64.flatpak
+#
+# Runnable two ways:
+#   - workflow_dispatch: build the bundle for any already-tagged version and
+#     re-upload it to that release (useful for backfilling).
+#   - workflow_call: invoked by release.yml right after publish.
+#
+# Builds offline-style: regenerates cargo-sources.json from the current
+# Cargo.lock, then flatpak-builder vendors every dependency before disabling
+# network for the cargo invocation. No store credentials required - the bundle
+# is attached to the GitHub release using GITHUB_TOKEN.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to build (e.g. 0.2.7)"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  bundle:
+    name: Build Flatpak bundle
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the release source
+        uses: actions/checkout@v6
+        with:
+          ref: v${{ inputs.version }}
+          fetch-depth: 0
+
+      # The release tag may predate these packaging files (e.g. when
+      # backfilling an older version); pull them from the default branch.
+      - name: Overlay packaging from default branch
+        run: |
+          git checkout "origin/${{ github.event.repository.default_branch }}" -- \
+            packaging/flatpak/io.github.filegram.Filegram.local.yml \
+            packaging/flatpak/generate-cargo-sources.sh
+
+      - name: Install flatpak + flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder python3-aiohttp python3-tomlkit
+
+      - name: Add the flathub remote (user)
+        run: |
+          flatpak remote-add --if-not-exists --user \
+            flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      # cargo-sources.json checked into the repo may have been generated for a
+      # different Cargo.lock; rebuild it to match this tag exactly.
+      - name: Regenerate cargo-sources.json
+        run: ./packaging/flatpak/generate-cargo-sources.sh
+
+      - name: Build the flatpak repo
+        run: |
+          flatpak-builder --user --install-deps-from=flathub --force-clean \
+            --disable-rofiles-fuse \
+            --repo=flatpak-repo build-dir \
+            packaging/flatpak/io.github.filegram.Filegram.local.yml
+
+      - name: Create the single-file bundle
+        run: |
+          flatpak build-bundle flatpak-repo \
+            filegram-linux-x86_64.flatpak \
+            io.github.filegram.Filegram
+
+      - name: Upload as release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ inputs.version }}
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            filegram-linux-x86_64.flatpak
