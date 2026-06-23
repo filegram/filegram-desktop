@@ -93,6 +93,7 @@ jobs:
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
           $numeric = $version -replace '-dev$',''
           $root = $env:GITHUB_WORKSPACE
+          $outputBase = '${{ matrix.setup }}' -replace '\.exe$',''
           iscc `
             "/DAppVersion=$numeric" `
             "/DAppFullVersion=$version" `
@@ -100,7 +101,7 @@ jobs:
             "/DSourceExe=$root\${{ matrix.asset }}" `
             "/DIconFile=$root\assets\icon\filegram.ico" `
             "/DOutputDir=$root" `
-            "/DOutputName=filegram-windows-${{ matrix.arch }}-setup" `
+            "/DOutputName=$outputBase" `
             packaging\windows\filegram.iss
 
       - name: Upload artifact
