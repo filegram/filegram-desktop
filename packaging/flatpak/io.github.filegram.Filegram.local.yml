@@ -12,6 +12,12 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
 command: filegram
 
+# appstream-compose ships with Flathub's builder image but not with the
+# stock Platform/Sdk, so flatpak-builder fails the finalize step on a
+# vanilla Ubuntu runner. The single-file bundle does not need a compiled
+# appdata catalog, so skip the step.
+appstream-compose: false
+
 finish-args:
   - --socket=wayland
   - --socket=fallback-x11
