@@ -42,6 +42,12 @@ Filegram is also available as a [Homebrew](https://brew.sh) cask:
 brew install --cask filegram/tap/filegram
 ```
 
+### Windows (winget)
+
+```powershell
+winget install --id Filegram.FilegramDesktop -e
+```
+
 ### Windows (Scoop)
 
 Filegram is also available via [Scoop](https://scoop.sh):
@@ -49,6 +55,12 @@ Filegram is also available via [Scoop](https://scoop.sh):
 ```powershell
 scoop bucket add filegram https://github.com/filegram/scoop-bucket
 scoop install filegram
+```
+
+### Windows (Chocolatey)
+
+```powershell
+choco install filegram
 ```
 
 ### Linux (Snap)
@@ -62,6 +74,18 @@ sudo snap install filegram --classic
 
 `--classic` is required because Filegram analyzes the whole filesystem, not
 just your home directory.
+
+### Linux (Flatpak)
+
+A single-file Flatpak bundle is attached to every release. Download
+`filegram-linux-x86_64.flatpak` from the
+[latest release](https://github.com/filegram/filegram-desktop/releases/latest)
+and install with:
+
+```sh
+flatpak install --user filegram-linux-x86_64.flatpak
+flatpak run io.github.filegram.Filegram
+```
 
 ## Building from source
 
