@@ -49,6 +49,10 @@ pub fn base_props(channel: &str) -> Map<String, Value> {
     props.insert("os".into(), json!(std::env::consts::OS));
     props.insert("arch".into(), json!(std::env::consts::ARCH));
     props.insert("channel".into(), json!(channel));
+    // Without these two PostHog turns the sender's IP into a city, a postcode
+    // and coordinates, and stores them on the event.
+    props.insert("$ip".into(), Value::Null);
+    props.insert("$geoip_disable".into(), json!(true));
     props
 }
 
@@ -110,6 +114,15 @@ pub fn panic_location(file: &str, line: u32) -> String {
 mod tests {
     use super::*;
     use crate::telemetry::event::{Event, looks_personal};
+
+    #[test]
+    fn geoip_enrichment_is_switched_off_on_every_report() {
+        // PostHog resolves the sender's IP into city, postcode and coordinates
+        // unless the report opts out, which is finer than we ever promised.
+        let report = report("abc", &base_props("direct"), &Event::UpdateNoticed, 0);
+        assert_eq!(report["properties"]["$ip"], Value::Null);
+        assert_eq!(report["properties"]["$geoip_disable"], true);
+    }
 
     #[test]
     fn a_report_carries_the_install_id_the_event_and_its_props() {

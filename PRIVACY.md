@@ -38,8 +38,13 @@ a range is not.
 ## What is never sent
 
 Paths, file and folder names, file contents, your user name, your machine name,
-your IP address beyond what any HTTP request reveals, and the panic message
-(paths reach it too easily — only the source location is reported).
+and the panic message (paths reach it too easily — only the source location is
+reported).
+
+Your IP address is not stored either. PostHog would otherwise turn it into a
+city, a postcode and coordinates; every report switches that off (`$ip: null`
+and `$geoip_disable`), so nothing about your location is kept — not even the
+country.
 
 Nothing here is an aspiration: the test suite asserts it on every event, and a
 new field that carries a raw value fails the build.
