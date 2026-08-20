@@ -60,8 +60,40 @@ pub fn report(distinct_id: &str, base: &Map<String, Value>, event: &Event, at: u
     json!({
         "event": event.name(),
         "properties": properties,
-        "timestamp": at,
+        "timestamp": iso8601(at),
     })
+}
+
+/// `at` (unix seconds) as `YYYY-MM-DDTHH:MM:SSZ`. PostHog rejects a batch
+/// whose timestamp is a bare number, so this is not cosmetic.
+pub fn iso8601(at: u64) -> String {
+    let (days, seconds) = (at / 86_400, at % 86_400);
+    let (year, month, day) = civil_from_days(days);
+    let (hour, minute) = (seconds / 3_600, seconds % 3_600 / 60);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{:02}Z",
+        seconds % 60
+    )
+}
+
+/// Howard Hinnant's days-to-civil algorithm, shifted to an epoch at
+/// 0000-03-01 so leap years need no special case.
+fn civil_from_days(days: u64) -> (u64, u64, u64) {
+    let days = days + 719_468;
+    let era = days / 146_097;
+    let day_of_era = days % 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    (year, month, day)
 }
 
 pub fn batch_body(api_key: &str, batch: &[Value]) -> Value {
@@ -90,7 +122,7 @@ mod tests {
         assert_eq!(report["event"], "update_opened");
         assert_eq!(report["properties"]["distinct_id"], "abc");
         assert_eq!(report["properties"]["channel"], "direct");
-        assert_eq!(report["timestamp"], 1_700_000_000_u64);
+        assert_eq!(report["timestamp"], iso8601(1_700_000_000));
     }
 
     #[test]
@@ -128,6 +160,24 @@ mod tests {
         assert_eq!(body["api_key"], "phc_key");
         assert_eq!(body["batch"].as_array().unwrap().len(), 1);
         assert_eq!(body["batch"][0]["event"], "update_noticed");
+    }
+
+    #[test]
+    fn the_timestamp_is_iso_8601_which_is_all_posthog_accepts() {
+        // 2026-08-20T12:34:56Z
+        assert_eq!(iso8601(1_787_229_296), "2026-08-20T12:34:56Z");
+    }
+
+    #[test]
+    fn the_epoch_and_a_leap_day_both_format() {
+        assert_eq!(iso8601(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso8601(1_709_164_800), "2024-02-29T00:00:00Z");
+    }
+
+    #[test]
+    fn a_report_is_stamped_in_iso_8601() {
+        let report = report("abc", &base_props("direct"), &Event::UpdateNoticed, 0);
+        assert_eq!(report["timestamp"], "1970-01-01T00:00:00Z");
     }
 
     #[test]

@@ -98,6 +98,8 @@ impl Telemetry {
 /// Sends what the queue holds: right away once a batch has piled up, and
 /// otherwise every [`BATCH_WAIT`]. What the sink refuses stays queued.
 fn run(wakeups: &mpsc::Receiver<()>, pending: &Path, sink: &dyn Sink) {
+    // Whatever an earlier launch could not deliver goes first.
+    deliver(pending, sink);
     loop {
         match wakeups.recv_timeout(BATCH_WAIT) {
             Ok(()) if queue::len(pending) < BATCH_SIZE => continue,
@@ -110,14 +112,12 @@ fn run(wakeups: &mpsc::Receiver<()>, pending: &Path, sink: &dyn Sink) {
 }
 
 fn deliver(pending: &Path, sink: &dyn Sink) {
-    let batch = queue::drain(pending);
+    let batch = queue::peek(pending);
     if batch.is_empty() {
         return;
     }
-    if !sink.deliver(&batch) {
-        for report in &batch {
-            queue::append(pending, report);
-        }
+    if sink.deliver(&batch) {
+        queue::remove_front(pending, batch.len());
     }
 }
 
@@ -228,7 +228,7 @@ mod tests {
         let (telemetry, _) = started(&dir, true);
         telemetry.track(Event::UpdateNoticed);
         telemetry.stop();
-        let waiting = queue::drain(&pending);
+        let waiting = queue::peek(&pending);
         assert_eq!(waiting.len(), 1);
         assert_eq!(waiting[0]["event"], "update_noticed");
     }
@@ -240,6 +240,7 @@ mod tests {
         queue::append(&pending, &json!({"event": "from_yesterday"}));
         let (telemetry, delivered) = started(&dir, false);
         telemetry.stop();
+        assert!(queue::peek(&pending).is_empty());
         let delivered = delivered.lock().unwrap();
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0]["event"], "from_yesterday");
@@ -250,7 +251,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pending = dir.path().join("pending.jsonl");
         record_panic(&pending, "abc", "flatpak", "main.rs", 42);
-        let waiting = queue::drain(&pending);
+        let waiting = queue::peek(&pending);
         assert_eq!(waiting.len(), 1);
         assert_eq!(waiting[0]["event"], "panicked");
         assert_eq!(waiting[0]["properties"]["location"], "main.rs:42");

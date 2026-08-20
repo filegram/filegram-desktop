@@ -48,6 +48,8 @@ new field that carries a raw value fails the build.
 
 [PostHog](https://posthog.com) (EU region), using a write-only project key.
 
+Timestamps are sent in UTC, to the second.
+
 ## Turning it on and off
 
 - **Flatpak and Snap builds** ask on first launch and send nothing until you

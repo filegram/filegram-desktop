@@ -36,19 +36,26 @@ pub fn append(path: &Path, report: &Value) {
     let _ = FileExt::unlock(&file);
 }
 
-/// Takes everything pending, leaving the file empty. Unparsable lines, which a
-/// crash mid-write leaves behind, are dropped.
-pub fn drain(path: &Path) -> Vec<Value> {
+/// Drops the first `count` reports, keeping whatever was appended while they
+/// were being sent. Removing only what was delivered means a process killed
+/// mid-send loses nothing.
+pub fn remove_front(path: &Path, count: usize) {
     let Ok(mut file) = OpenOptions::new().read(true).write(true).open(path) else {
-        return Vec::new();
+        return;
     };
     if FileExt::lock(&file).is_err() {
-        return Vec::new();
+        return;
     }
     let reports = parse(&read(&mut file));
+    let kept: String = reports
+        .iter()
+        .skip(count)
+        .map(|report| format!("{report}\n"))
+        .collect();
     let _ = file.set_len(0);
+    let _ = file.seek(SeekFrom::Start(0));
+    let _ = file.write_all(kept.as_bytes());
     let _ = FileExt::unlock(&file);
-    reports
 }
 
 /// Everything pending, left in place. Used by `--telemetry-dump`.
@@ -107,19 +114,10 @@ mod tests {
         let file = queue_file(&dir);
         append(&file, &json!({"event": "first"}));
         append(&file, &json!({"event": "second"}));
-        let drained = drain(&file);
-        assert_eq!(drained.len(), 2);
-        assert_eq!(drained[0]["event"], "first");
-        assert_eq!(drained[1]["event"], "second");
-    }
-
-    #[test]
-    fn draining_empties_the_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = queue_file(&dir);
-        append(&file, &json!({"event": "first"}));
-        drain(&file);
-        assert!(drain(&file).is_empty());
+        let waiting = peek(&file);
+        assert_eq!(waiting.len(), 2);
+        assert_eq!(waiting[0]["event"], "first");
+        assert_eq!(waiting[1]["event"], "second");
     }
 
     #[test]
@@ -129,13 +127,33 @@ mod tests {
         append(&file, &json!({"event": "first"}));
         assert_eq!(peek(&file).len(), 1);
         assert_eq!(peek(&file).len(), 1);
-        assert_eq!(drain(&file).len(), 1);
     }
 
     #[test]
-    fn a_missing_file_drains_to_nothing() {
+    fn only_the_reports_that_went_out_are_removed() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(drain(&dir.path().join("absent.jsonl")).is_empty());
+        let file = queue_file(&dir);
+        append(&file, &json!({"event": "sent"}));
+        append(&file, &json!({"event": "arrived_mid_send"}));
+        remove_front(&file, 1);
+        let left = peek(&file);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0]["event"], "arrived_mid_send");
+    }
+
+    #[test]
+    fn removing_more_than_there_is_empties_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = queue_file(&dir);
+        append(&file, &json!({"event": "only"}));
+        remove_front(&file, 5);
+        assert!(peek(&file).is_empty());
+    }
+
+    #[test]
+    fn a_missing_file_holds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(peek(&dir.path().join("absent.jsonl")).is_empty());
     }
 
     #[test]
@@ -143,9 +161,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("pending.jsonl");
         std::fs::write(&file, "{\"event\": \"good\"}\n{\"event\": \"tru\n").unwrap();
-        let drained = drain(&file);
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0]["event"], "good");
+        let waiting = peek(&file);
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0]["event"], "good");
     }
 
     #[test]
@@ -155,8 +173,8 @@ mod tests {
         for i in 0..MAX_PENDING * 2 {
             append(&file, &json!({"event": "scan_started", "i": i}));
         }
-        let drained = drain(&file);
-        assert!(drained.len() <= MAX_PENDING, "kept {}", drained.len());
-        assert_eq!(drained.last().unwrap()["i"], MAX_PENDING * 2 - 1);
+        let waiting = peek(&file);
+        assert!(waiting.len() <= MAX_PENDING, "kept {}", waiting.len());
+        assert_eq!(waiting.last().unwrap()["i"], MAX_PENDING * 2 - 1);
     }
 }
