@@ -156,3 +156,15 @@ jobs:
       contents: write
     with:
       version: ${{ inputs.version }}
+
+  # Build the armv7hl/aarch64 RPM pair for RuStore's Aurora OS section and
+  # attach both to the GitHub release. RuStore has no public API for Aurora
+  # apps, so the console upload itself stays manual (see packaging/aurora.md).
+  aurora:
+    name: Build Aurora RPMs
+    needs: [prepare, publish]
+    uses: ./.github/workflows/aurora.yml
+    permissions:
+      contents: write
+    with:
+      version: ${{ inputs.version }}
