@@ -2,8 +2,15 @@
 //! A no-op on every other platform; `winresource` is a Windows-only
 //! build-dependency, so the non-Windows variant must not reference it.
 
+/// The reporting key is read with `option_env!`, which a cached build would
+/// otherwise keep from an earlier run.
+fn watch_telemetry_key() {
+    println!("cargo:rerun-if-env-changed=FILEGRAM_POSTHOG_KEY");
+}
+
 #[cfg(windows)]
 fn main() {
+    watch_telemetry_key();
     println!("cargo:rerun-if-changed=assets/icon/filegram.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         winresource::WindowsResource::new()
@@ -14,4 +21,6 @@ fn main() {
 }
 
 #[cfg(not(windows))]
-fn main() {}
+fn main() {
+    watch_telemetry_key();
+}

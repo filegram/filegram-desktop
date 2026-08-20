@@ -22,6 +22,9 @@ Built with [Rust](https://www.rust-lang.org/) and [iced](https://iced.rs/).
 - **Scan history** — recently scanned paths are remembered and offered in the
   path input.
 - **Light and dark themes** — follows the system theme automatically.
+- **Anonymous usage statistics** — off until you allow it on Flatpak and Snap,
+  on by default elsewhere, and switchable from the start screen at any time.
+  Paths and file names are never reported; see [PRIVACY.md](PRIVACY.md).
 
 ## Installation
 

@@ -9,6 +9,7 @@ mod i18n;
 mod release;
 mod scanner;
 mod settings;
+mod telemetry;
 mod treemap;
 mod ui;
 
@@ -61,6 +62,8 @@ const USB_ICON: &[u8] = include_bytes!("../assets/usb.svg");
 const GLOBE_ICON: &[u8] = include_bytes!("../assets/globe.svg");
 const DISC_ICON: &[u8] = include_bytes!("../assets/disc.svg");
 const SUN_ICON: &[u8] = include_bytes!("../assets/sun.svg");
+const STATS_ICON: &[u8] = include_bytes!("../assets/stats.svg");
+const STATS_OFF_ICON: &[u8] = include_bytes!("../assets/stats-off.svg");
 const MOON_ICON: &[u8] = include_bytes!("../assets/moon.svg");
 
 static LIGHT_THEME: LazyLock<Theme> = LazyLock::new(|| {
@@ -112,6 +115,37 @@ struct App {
     /// `FILEGRAM_SMOKE`: close on the first rendered frame so CI can headlessly
     /// flag a broken wgpu/window backend via a non-zero exit.
     smoke: bool,
+    /// Disabled until the user allows reporting; reports nothing until then.
+    telemetry: telemetry::Telemetry,
+    /// The persisted answer, `None` until the user has been asked.
+    telemetry_choice: Option<bool>,
+    telemetry_prompt: TelemetryPrompt,
+    /// `None` disables reporting entirely (tests).
+    telemetry_files: Option<TelemetryFiles>,
+    channel: telemetry::consent::Channel,
+    session_start: Instant,
+    /// Session counters, reported once at the end instead of per click.
+    scans: u32,
+    zoom_ins: u32,
+    go_ups: u32,
+    scan_start: Option<Instant>,
+}
+
+/// Where the install id and the undelivered reports live.
+#[derive(Debug, Clone)]
+struct TelemetryFiles {
+    device: PathBuf,
+    pending: PathBuf,
+}
+
+/// What the start screen owes the user about reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TelemetryPrompt {
+    None,
+    /// Store builds must ask before reporting anything.
+    Dialog,
+    /// Everywhere else: reporting is on, and this says so once.
+    Notice,
 }
 
 enum ScanState {
@@ -152,6 +186,11 @@ enum Message {
     LatestReleaseLoaded(Option<String>),
     LatestReleasePressed,
     SmokeFrameRendered,
+    /// The first-run dialog was answered.
+    TelemetryAnswered(bool),
+    TelemetryNoticeDismissed,
+    TelemetryToggled,
+    WindowClosed,
 }
 
 fn initial_path(history: &history::History) -> String {
@@ -191,6 +230,11 @@ fn boot() -> (App, Task<Message>) {
         .unwrap_or_default();
     app.theme_override = saved.theme;
     app.lang_override = saved.lang;
+    app.telemetry_choice = saved.telemetry;
+    app.telemetry_files = telemetry::default_device_file()
+        .zip(telemetry::default_queue_file())
+        .map(|(device, pending)| TelemetryFiles { device, pending });
+    boot_telemetry(&mut app);
     let mut tasks = vec![
         iced::system::theme().map(Message::SystemThemeChanged),
         // Runs in the background so the window opens without waiting for the network.
@@ -235,7 +279,111 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         latest_release: None,
         delete: |path| trash::delete(path).map_err(std::io::Error::other),
         smoke: false,
+        telemetry: telemetry::Telemetry::disabled(),
+        telemetry_choice: None,
+        telemetry_prompt: TelemetryPrompt::None,
+        telemetry_files: None,
+        channel: telemetry::consent::Channel::Direct,
+        session_start: Instant::now(),
+        scans: 0,
+        zoom_ins: 0,
+        go_ups: 0,
+        scan_start: None,
     }
+}
+
+/// Applies the saved choice, or the channel's default when there is none.
+/// A store build reports nothing until the dialog is answered.
+fn boot_telemetry(app: &mut App) {
+    // Nothing to ask about in a build that cannot report.
+    if !telemetry::sink::configured() {
+        return;
+    }
+    app.channel = telemetry::consent::Channel::detect();
+    match telemetry::consent::decide(app.channel, app.telemetry_choice) {
+        telemetry::consent::Decision::Ask => app.telemetry_prompt = TelemetryPrompt::Dialog,
+        telemetry::consent::Decision::Collect { notice } => {
+            if notice {
+                app.telemetry_prompt = TelemetryPrompt::Notice;
+            }
+            start_telemetry(app, notice);
+        }
+        telemetry::consent::Decision::Off => {}
+    }
+}
+
+/// Starts the reporting thread and sends the launch. `first_launch` marks the
+/// run that has just been told reporting is on.
+fn start_telemetry(app: &mut App, first_launch: bool) {
+    let Some(files) = app.telemetry_files.clone() else {
+        return;
+    };
+    // A build without a project key would only fill the queue.
+    if !telemetry::sink::configured() {
+        return;
+    }
+    let id = telemetry::device::load_or_create(&files.device);
+    install_panic_hook(&files, &id, app.channel);
+    app.telemetry = telemetry::Telemetry::start(
+        id,
+        app.channel.name(),
+        files.pending,
+        Box::new(telemetry::sink::PostHog),
+    );
+    app.telemetry.track(telemetry::Event::AppStarted { first_launch });
+}
+
+/// Reports the panic before the default hook prints it. The location is
+/// recorded straight to disk, since the sending thread rarely survives.
+fn install_panic_hook(files: &TelemetryFiles, id: &str, channel: telemetry::consent::Channel) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let (pending, id) = (files.pending.clone(), id.to_string());
+    // Toggling reporting back on must not stack a second hook.
+    ONCE.call_once(move || {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if let Some(location) = info.location() {
+                telemetry::record_panic(
+                    &pending,
+                    &id,
+                    channel.name(),
+                    location.file(),
+                    location.line(),
+                );
+            }
+            previous(info);
+        }));
+    });
+}
+
+/// Sends the closing event and waits for the thread to drain.
+fn stop_telemetry(app: &mut App) {
+    let telemetry = std::mem::replace(&mut app.telemetry, telemetry::Telemetry::disabled());
+    telemetry.stop();
+}
+
+/// Which of the start screen's entry points a scan came from. The path itself
+/// is never reported.
+fn root_kind(app: &App, path: &str) -> telemetry::event::RootKind {
+    use telemetry::event::RootKind;
+    let well_known = [
+        (dirs::home_dir(), RootKind::Home),
+        (dirs::download_dir(), RootKind::Downloads),
+        (dirs::desktop_dir(), RootKind::Desktop),
+        (dirs::document_dir(), RootKind::Documents),
+    ];
+    for (folder, kind) in well_known {
+        if folder.is_some_and(|folder| folder.display().to_string() == path) {
+            return kind;
+        }
+    }
+    if app.disk_roots.iter().any(|root| root.path.display().to_string() == path) {
+        return RootKind::Disk;
+    }
+    if app.history.entries().iter().any(|entry| entry == path) {
+        return RootKind::Recent;
+    }
+    RootKind::Typed
 }
 
 impl App {
@@ -268,6 +416,7 @@ fn subscription(app: &App) -> Subscription<Message> {
         // No ready-made focus subscription, so filter window events for Focused.
         iced::event::listen_with(|event, _status, _window| match event {
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
+            iced::Event::Window(iced::window::Event::Closed) => Some(Message::WindowClosed),
             _ => None,
         }),
     ];
@@ -323,6 +472,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.history.push(&app.path_input);
                 save_history(app);
             }
+            app.telemetry.track(telemetry::Event::ScanStarted {
+                root: root_kind(app, &app.path_input),
+            });
+            app.scans = app.scans.saturating_add(1);
+            app.scan_start = Some(Instant::now());
             app.disk_usage = disk::usage(Path::new(&app.path_input));
             app.cancel = Arc::new(AtomicBool::new(false));
             app.scan = ScanState::Running {
@@ -342,6 +496,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             )
         }
         Message::CancelScan => {
+            app.telemetry.track(telemetry::Event::ScanCancelled {
+                seconds: scan_seconds(app),
+            });
             app.cancel.store(true, Ordering::Relaxed);
             Task::none()
         }
@@ -375,6 +532,12 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                     }
                     // Re-query the volume so the bar matches the final map.
                     app.disk_usage = root_usage(&tree);
+                    let root = tree.node(tree.root);
+                    app.telemetry.track(telemetry::Event::ScanFinished {
+                        seconds: scan_seconds(app),
+                        files: root.files,
+                        bytes: root.size,
+                    });
                     app.tree = Some(tree);
                     app.scan = ScanState::Done;
                     app.cache.clear();
@@ -390,13 +553,18 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             let node = tree.node(id);
             if node.is_dir {
                 if !node.children.is_empty() {
+                    app.zoom_ins = app.zoom_ins.saturating_add(1);
                     app.nav_stack.push(app.current);
                     app.current = id;
                     app.active = None;
                     app.cache.clear();
                 }
             } else {
-                let _ = open::that_detached(node.path.as_os_str());
+                let opened = open::that_detached(node.path.as_os_str()).is_ok();
+                app.telemetry.track(telemetry::Event::FileAction {
+                    action: telemetry::event::FileAction::Open,
+                    ok: opened,
+                });
             }
             Task::none()
         }
@@ -407,6 +575,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::GoUp => {
             if let Some(previous) = app.nav_stack.pop() {
+                app.go_ups = app.go_ups.saturating_add(1);
                 app.current = previous;
                 app.active = None;
                 app.cache.clear();
@@ -432,10 +601,15 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             update(app, Message::StartScan)
         }
         Message::Reveal(id) => {
-            if let Some(tree) = &app.tree
-                && let Err(error) = opener::reveal(tree.node(id).path.as_ref())
-            {
-                eprintln!("filegram: failed to reveal in the file manager: {error}");
+            if let Some(tree) = &app.tree {
+                let result = opener::reveal(tree.node(id).path.as_ref());
+                app.telemetry.track(telemetry::Event::FileAction {
+                    action: telemetry::event::FileAction::Reveal,
+                    ok: result.is_ok(),
+                });
+                if let Err(error) = result {
+                    eprintln!("filegram: failed to reveal in the file manager: {error}");
+                }
             }
             Task::none()
         }
@@ -474,12 +648,57 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             // Only show a tag that differs from the running build.
             app.latest_release =
                 tag.filter(|tag| tag.trim_start_matches('v') != env!("CARGO_PKG_VERSION"));
+            if app.latest_release.is_some() {
+                app.telemetry.track(telemetry::Event::UpdateNoticed);
+            }
             Task::none()
         }
         Message::LatestReleasePressed => {
             if let Some(tag) = &app.latest_release {
                 let _ = open::that_detached(release::release_url(tag));
+                app.telemetry.track(telemetry::Event::UpdateOpened);
             }
+            Task::none()
+        }
+        Message::TelemetryAnswered(allowed) => {
+            app.telemetry_choice = Some(allowed);
+            app.telemetry_prompt = TelemetryPrompt::None;
+            save_settings(app);
+            if allowed {
+                start_telemetry(app, true);
+            }
+            Task::none()
+        }
+        Message::TelemetryNoticeDismissed => {
+            app.telemetry_prompt = TelemetryPrompt::None;
+            // The notice announced reporting is on; record that as the answer
+            // so it is not shown again.
+            app.telemetry_choice = Some(true);
+            save_settings(app);
+            Task::none()
+        }
+        Message::TelemetryToggled => {
+            let allowed = !app.telemetry_choice.unwrap_or(true);
+            app.telemetry_choice = Some(allowed);
+            app.telemetry_prompt = TelemetryPrompt::None;
+            save_settings(app);
+            if allowed {
+                start_telemetry(app, false);
+            } else {
+                // The last thing reported, so an opt-out is not silent.
+                app.telemetry.track(telemetry::Event::TelemetryDisabled);
+                stop_telemetry(app);
+            }
+            Task::none()
+        }
+        Message::WindowClosed => {
+            app.telemetry.track(telemetry::Event::SessionEnded {
+                seconds: app.session_start.elapsed().as_secs(),
+                scans: app.scans,
+                zoom_ins: app.zoom_ins,
+                go_ups: app.go_ups,
+            });
+            stop_telemetry(app);
             Task::none()
         }
         Message::SmokeFrameRendered => {
@@ -494,6 +713,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::ToggleTheme => {
             let mode = if app.is_dark() { Mode::Light } else { Mode::Dark };
             app.theme_override = Some(mode);
+            app.telemetry.track(telemetry::Event::SettingChanged {
+                key: "theme",
+                value: if matches!(mode, Mode::Dark) { "dark" } else { "light" }.to_string(),
+            });
             save_settings(app);
             Task::none()
         }
@@ -510,6 +733,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::LanguagePicked(lang) => {
             app.lang_override = Some(lang);
             app.lang_menu_open = false;
+            app.telemetry.track(telemetry::Event::SettingChanged {
+                key: "lang",
+                value: lang.tag().to_string(),
+            });
             save_settings(app);
             Task::none()
         }
@@ -525,7 +752,12 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let path = tree.node(id).path.clone();
-            if let Err(error) = (app.delete)(path.as_ref()) {
+            let removed = (app.delete)(path.as_ref());
+            app.telemetry.track(telemetry::Event::FileAction {
+                action: telemetry::event::FileAction::Trash,
+                ok: removed.is_ok(),
+            });
+            if let Err(error) = removed {
                 eprintln!(
                     "filegram: failed to move {} to trash: {error}",
                     path.display()
@@ -542,6 +774,35 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
     }
+}
+
+/// Prints what reporting would send: the choice in force, the install id and
+/// every report still waiting for a network. Reading the queue leaves it alone.
+fn print_telemetry_dump() {
+    let saved = settings::default_file()
+        .and_then(|file| settings::load(&file).ok())
+        .and_then(|settings| settings.telemetry);
+    let channel = telemetry::consent::Channel::detect();
+    println!("channel: {}", channel.name());
+    println!("reporting: {:?}", telemetry::consent::decide(channel, saved));
+    match telemetry::default_device_file() {
+        Some(file) if file.exists() => {
+            println!("install id: {}", telemetry::device::load_or_create(&file));
+        }
+        _ => println!("install id: not created yet"),
+    }
+    let pending = telemetry::default_queue_file()
+        .map(|file| telemetry::queue::peek(&file))
+        .unwrap_or_default();
+    println!("waiting to be sent: {}", pending.len());
+    for report in pending {
+        println!("{report}");
+    }
+}
+
+/// How long the scan in flight has run. No recorded start reads as zero.
+fn scan_seconds(app: &App) -> u64 {
+    app.scan_start.map(|start| start.elapsed().as_secs()).unwrap_or_default()
 }
 
 /// A fresh reading of the volume the scanned tree lives on. `None` (gone or
@@ -575,6 +836,7 @@ fn save_settings(app: &App) {
             settings::Settings {
                 theme: app.theme_override,
                 lang: app.lang_override,
+                telemetry: app.telemetry_choice,
             },
         )
     {
@@ -1013,6 +1275,10 @@ fn map_canvas(app: &App) -> Element<'_, Message> {
 }
 
 fn main() -> iced::Result {
+    if std::env::args().any(|arg| arg == "--telemetry-dump") {
+        print_telemetry_dump();
+        return Ok(());
+    }
     iced::application(boot, update, view)
         .title("Filegram")
         .theme(App::theme)
@@ -1041,6 +1307,85 @@ mod tests {
     /// A disk-isolated `App`: empty in-memory history, no history file.
     fn test_app() -> App {
         initial_app(history::History::default(), None)
+    }
+
+    #[test]
+    fn a_scan_of_a_well_known_folder_is_reported_by_its_kind() {
+        let home = dirs::home_dir().unwrap().display().to_string();
+        let app = test_app();
+        assert_eq!(root_kind(&app, &home), telemetry::event::RootKind::Home);
+    }
+
+    #[test]
+    fn a_scan_of_a_remembered_path_is_reported_as_recent() {
+        let mut app = test_app();
+        app.history.push("/data/archive");
+        assert_eq!(
+            root_kind(&app, "/data/archive"),
+            telemetry::event::RootKind::Recent
+        );
+    }
+
+    #[test]
+    fn any_other_scan_is_reported_as_typed() {
+        let app = test_app();
+        assert_eq!(
+            root_kind(&app, "/data/archive"),
+            telemetry::event::RootKind::Typed
+        );
+    }
+
+    #[test]
+    fn answering_the_first_run_dialog_persists_the_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.cfg");
+        let mut app = test_app();
+        app.settings_file = Some(file.clone());
+        let _ = update(&mut app, Message::TelemetryAnswered(true));
+        assert_eq!(settings::load(&file).unwrap().telemetry, Some(true));
+        assert_eq!(app.telemetry_prompt, TelemetryPrompt::None);
+    }
+
+    #[test]
+    fn declining_leaves_reporting_off() {
+        let mut app = test_app();
+        let _ = update(&mut app, Message::TelemetryAnswered(false));
+        assert_eq!(app.telemetry_choice, Some(false));
+    }
+
+    #[test]
+    fn dismissing_the_notice_records_the_choice_it_announced() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.cfg");
+        let mut app = test_app();
+        app.settings_file = Some(file.clone());
+        app.telemetry_prompt = TelemetryPrompt::Notice;
+        let _ = update(&mut app, Message::TelemetryNoticeDismissed);
+        assert_eq!(app.telemetry_prompt, TelemetryPrompt::None);
+        assert_eq!(settings::load(&file).unwrap().telemetry, Some(true));
+    }
+
+    #[test]
+    fn the_footer_toggle_flips_and_saves_the_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.cfg");
+        let mut app = test_app();
+        app.settings_file = Some(file.clone());
+        app.telemetry_choice = Some(true);
+        let _ = update(&mut app, Message::TelemetryToggled);
+        assert_eq!(app.telemetry_choice, Some(false));
+        assert_eq!(settings::load(&file).unwrap().telemetry, Some(false));
+    }
+
+    #[test]
+    fn a_theme_change_still_saves_the_telemetry_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.cfg");
+        let mut app = test_app();
+        app.settings_file = Some(file.clone());
+        app.telemetry_choice = Some(false);
+        let _ = update(&mut app, Message::ToggleTheme);
+        assert_eq!(settings::load(&file).unwrap().telemetry, Some(false));
     }
 
     /// A scan root that exits immediately: a missing child of a fresh temp dir.
@@ -1250,6 +1595,7 @@ mod tests {
             settings::Settings {
                 theme: Some(Mode::Dark),
                 lang: Some(Lang::JaJp),
+                telemetry: None,
             }
         );
     }

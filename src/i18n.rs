@@ -373,6 +373,14 @@ pub struct Strings {
     pub hint_go_up: &'static str,
     /// Disk-usage bar connector: `{free} {disk_free} {total}`.
     pub disk_free: &'static str,
+    /// First-run consent dialog, shown where a store demands an explicit opt-in.
+    pub telemetry_title: &'static str,
+    pub telemetry_body: &'static str,
+    pub telemetry_accept: &'static str,
+    pub telemetry_decline: &'static str,
+    pub telemetry_got_it: &'static str,
+    pub telemetry_enable: &'static str,
+    pub telemetry_disable: &'static str,
 }
 
 static EN_US: Strings = Strings {
@@ -402,6 +410,13 @@ static EN_US: Strings = Strings {
     hint_select: "select",
     hint_go_up: "go up",
     disk_free: "free of",
+    telemetry_title: "Help improve Filegram?",
+    telemetry_body: "Filegram can send anonymous usage statistics: version, operating system and which features are used. File names and paths never leave your computer.",
+    telemetry_accept: "Send statistics",
+    telemetry_decline: "Don't send",
+    telemetry_got_it: "Got it",
+    telemetry_enable: "Turn on usage statistics",
+    telemetry_disable: "Turn off usage statistics",
 };
 
 static ZH_CN: Strings = Strings {
@@ -431,6 +446,13 @@ static ZH_CN: Strings = Strings {
     hint_select: "选择",
     hint_go_up: "上一级",
     disk_free: "可用，共",
+    telemetry_title: "帮助改进 Filegram？",
+    telemetry_body: "Filegram 可以发送匿名使用统计：版本、操作系统以及使用了哪些功能。文件名和路径绝不会离开您的电脑。",
+    telemetry_accept: "发送统计",
+    telemetry_decline: "不发送",
+    telemetry_got_it: "知道了",
+    telemetry_enable: "开启使用统计",
+    telemetry_disable: "关闭使用统计",
 };
 
 static ES_ES: Strings = Strings {
@@ -460,6 +482,13 @@ static ES_ES: Strings = Strings {
     hint_select: "seleccionar",
     hint_go_up: "subir",
     disk_free: "libres de",
+    telemetry_title: "¿Ayudar a mejorar Filegram?",
+    telemetry_body: "Filegram puede enviar estadísticas de uso anónimas: versión, sistema operativo y qué funciones se usan. Los nombres de archivo y las rutas nunca salen de tu equipo.",
+    telemetry_accept: "Enviar estadísticas",
+    telemetry_decline: "No enviar",
+    telemetry_got_it: "Entendido",
+    telemetry_enable: "Activar estadísticas de uso",
+    telemetry_disable: "Desactivar estadísticas de uso",
 };
 
 static HI_IN: Strings = Strings {
@@ -489,6 +518,13 @@ static HI_IN: Strings = Strings {
     hint_select: "चुनें",
     hint_go_up: "ऊपर जाएँ",
     disk_free: "मुक्त /",
+    telemetry_title: "Filegram को बेहतर बनाने में मदद करें?",
+    telemetry_body: "Filegram गुमनाम उपयोग आँकड़े भेज सकता है: संस्करण, ऑपरेटिंग सिस्टम और कौन-सी सुविधाएँ उपयोग होती हैं। फ़ाइल नाम और पथ कभी आपके कंप्यूटर से बाहर नहीं जाते।",
+    telemetry_accept: "आँकड़े भेजें",
+    telemetry_decline: "न भेजें",
+    telemetry_got_it: "समझ गए",
+    telemetry_enable: "उपयोग आँकड़े चालू करें",
+    telemetry_disable: "उपयोग आँकड़े बंद करें",
 };
 
 static AR: Strings = Strings {
@@ -518,6 +554,13 @@ static AR: Strings = Strings {
     hint_select: "تحديد",
     hint_go_up: "للأعلى",
     disk_free: "حر من",
+    telemetry_title: "هل تساعد في تحسين Filegram؟",
+    telemetry_body: "يمكن لـ Filegram إرسال إحصاءات استخدام مجهولة: الإصدار ونظام التشغيل والميزات المستخدمة. أسماء الملفات والمسارات لا تغادر جهازك أبدًا.",
+    telemetry_accept: "إرسال الإحصاءات",
+    telemetry_decline: "عدم الإرسال",
+    telemetry_got_it: "حسنًا",
+    telemetry_enable: "تفعيل إحصاءات الاستخدام",
+    telemetry_disable: "إيقاف إحصاءات الاستخدام",
 };
 
 static PT_PT: Strings = Strings {
@@ -547,6 +590,13 @@ static PT_PT: Strings = Strings {
     hint_select: "selecionar",
     hint_go_up: "subir",
     disk_free: "livres de",
+    telemetry_title: "Ajudar a melhorar o Filegram?",
+    telemetry_body: "O Filegram pode enviar estatísticas de utilização anónimas: versão, sistema operativo e que funcionalidades são usadas. Os nomes de ficheiros e os caminhos nunca saem do seu computador.",
+    telemetry_accept: "Enviar estatísticas",
+    telemetry_decline: "Não enviar",
+    telemetry_got_it: "Entendido",
+    telemetry_enable: "Ativar estatísticas de utilização",
+    telemetry_disable: "Desativar estatísticas de utilização",
 };
 
 static JA_JP: Strings = Strings {
@@ -576,6 +626,13 @@ static JA_JP: Strings = Strings {
     hint_select: "選択",
     hint_go_up: "上の階層へ",
     disk_free: "空き /",
+    telemetry_title: "Filegram の改善に協力しますか？",
+    telemetry_body: "Filegram は匿名の利用統計（バージョン、OS、使用された機能）を送信できます。ファイル名とパスがコンピューターから出ることはありません。",
+    telemetry_accept: "統計を送信",
+    telemetry_decline: "送信しない",
+    telemetry_got_it: "了解",
+    telemetry_enable: "利用統計をオンにする",
+    telemetry_disable: "利用統計をオフにする",
 };
 
 static RU_RU: Strings = Strings {
@@ -605,6 +662,13 @@ static RU_RU: Strings = Strings {
     hint_select: "выбрать",
     hint_go_up: "наверх",
     disk_free: "свободно из",
+    telemetry_title: "Помочь улучшить Filegram?",
+    telemetry_body: "Filegram может отправлять анонимную статистику использования: версию, операционную систему и то, какие функции используются. Имена файлов и пути никогда не покидают ваш компьютер.",
+    telemetry_accept: "Отправлять статистику",
+    telemetry_decline: "Не отправлять",
+    telemetry_got_it: "Понятно",
+    telemetry_enable: "Включить статистику использования",
+    telemetry_disable: "Выключить статистику использования",
 };
 
 static FR_FR: Strings = Strings {
@@ -634,6 +698,13 @@ static FR_FR: Strings = Strings {
     hint_select: "sélectionner",
     hint_go_up: "remonter",
     disk_free: "libres sur",
+    telemetry_title: "Aider à améliorer Filegram ?",
+    telemetry_body: "Filegram peut envoyer des statistiques d'utilisation anonymes : version, système d'exploitation et fonctionnalités utilisées. Les noms de fichiers et les chemins ne quittent jamais votre ordinateur.",
+    telemetry_accept: "Envoyer les statistiques",
+    telemetry_decline: "Ne pas envoyer",
+    telemetry_got_it: "Compris",
+    telemetry_enable: "Activer les statistiques d'utilisation",
+    telemetry_disable: "Désactiver les statistiques d'utilisation",
 };
 
 static DE_DE: Strings = Strings {
@@ -663,6 +734,13 @@ static DE_DE: Strings = Strings {
     hint_select: "auswählen",
     hint_go_up: "nach oben",
     disk_free: "frei von",
+    telemetry_title: "Filegram verbessern helfen?",
+    telemetry_body: "Filegram kann anonyme Nutzungsstatistiken senden: Version, Betriebssystem und welche Funktionen genutzt werden. Dateinamen und Pfade verlassen Ihren Computer nie.",
+    telemetry_accept: "Statistiken senden",
+    telemetry_decline: "Nicht senden",
+    telemetry_got_it: "Verstanden",
+    telemetry_enable: "Nutzungsstatistiken einschalten",
+    telemetry_disable: "Nutzungsstatistiken ausschalten",
 };
 
 static ES_419: Strings = Strings {
@@ -692,6 +770,13 @@ static ES_419: Strings = Strings {
     hint_select: "seleccionar",
     hint_go_up: "subir",
     disk_free: "libres de",
+    telemetry_title: "¿Ayudar a mejorar Filegram?",
+    telemetry_body: "Filegram puede enviar estadísticas de uso anónimas: versión, sistema operativo y qué funciones se usan. Los nombres de archivo y las rutas nunca salen de tu computadora.",
+    telemetry_accept: "Enviar estadísticas",
+    telemetry_decline: "No enviar",
+    telemetry_got_it: "Entendido",
+    telemetry_enable: "Activar estadísticas de uso",
+    telemetry_disable: "Desactivar estadísticas de uso",
 };
 
 static ID: Strings = Strings {
@@ -721,6 +806,13 @@ static ID: Strings = Strings {
     hint_select: "pilih",
     hint_go_up: "naik",
     disk_free: "tersedia dari",
+    telemetry_title: "Bantu tingkatkan Filegram?",
+    telemetry_body: "Filegram dapat mengirim statistik penggunaan anonim: versi, sistem operasi, dan fitur mana yang dipakai. Nama file dan jalur tidak pernah meninggalkan komputer Anda.",
+    telemetry_accept: "Kirim statistik",
+    telemetry_decline: "Jangan kirim",
+    telemetry_got_it: "Mengerti",
+    telemetry_enable: "Aktifkan statistik penggunaan",
+    telemetry_disable: "Matikan statistik penggunaan",
 };
 
 static IT_IT: Strings = Strings {
@@ -750,6 +842,13 @@ static IT_IT: Strings = Strings {
     hint_select: "seleziona",
     hint_go_up: "su",
     disk_free: "liberi di",
+    telemetry_title: "Vuoi aiutare a migliorare Filegram?",
+    telemetry_body: "Filegram può inviare statistiche d'uso anonime: versione, sistema operativo e quali funzioni vengono usate. Nomi dei file e percorsi non lasciano mai il tuo computer.",
+    telemetry_accept: "Invia statistiche",
+    telemetry_decline: "Non inviare",
+    telemetry_got_it: "Ho capito",
+    telemetry_enable: "Attiva le statistiche d'uso",
+    telemetry_disable: "Disattiva le statistiche d'uso",
 };
 
 static KO: Strings = Strings {
@@ -779,6 +878,13 @@ static KO: Strings = Strings {
     hint_select: "선택",
     hint_go_up: "위로",
     disk_free: "사용 가능 /",
+    telemetry_title: "Filegram 개선에 참여하시겠어요?",
+    telemetry_body: "Filegram은 익명 사용 통계(버전, 운영체제, 사용한 기능)를 보낼 수 있습니다. 파일 이름과 경로는 절대 컴퓨터를 벗어나지 않습니다.",
+    telemetry_accept: "통계 보내기",
+    telemetry_decline: "보내지 않기",
+    telemetry_got_it: "확인",
+    telemetry_enable: "사용 통계 켜기",
+    telemetry_disable: "사용 통계 끄기",
 };
 
 static PT_BR: Strings = Strings {
@@ -808,6 +914,13 @@ static PT_BR: Strings = Strings {
     hint_select: "selecionar",
     hint_go_up: "subir",
     disk_free: "livres de",
+    telemetry_title: "Ajudar a melhorar o Filegram?",
+    telemetry_body: "O Filegram pode enviar estatísticas de uso anônimas: versão, sistema operacional e quais recursos são usados. Nomes de arquivos e caminhos nunca saem do seu computador.",
+    telemetry_accept: "Enviar estatísticas",
+    telemetry_decline: "Não enviar",
+    telemetry_got_it: "Entendi",
+    telemetry_enable: "Ativar estatísticas de uso",
+    telemetry_disable: "Desativar estatísticas de uso",
 };
 
 static TH: Strings = Strings {
@@ -837,6 +950,13 @@ static TH: Strings = Strings {
     hint_select: "เลือก",
     hint_go_up: "ขึ้นหนึ่งระดับ",
     disk_free: "ว่างจาก",
+    telemetry_title: "ช่วยพัฒนา Filegram ไหม",
+    telemetry_body: "Filegram สามารถส่งสถิติการใช้งานแบบไม่ระบุตัวตน ได้แก่ เวอร์ชัน ระบบปฏิบัติการ และฟีเจอร์ที่ใช้ ชื่อไฟล์และพาธจะไม่ออกจากเครื่องของคุณ",
+    telemetry_accept: "ส่งสถิติ",
+    telemetry_decline: "ไม่ส่ง",
+    telemetry_got_it: "เข้าใจแล้ว",
+    telemetry_enable: "เปิดสถิติการใช้งาน",
+    telemetry_disable: "ปิดสถิติการใช้งาน",
 };
 
 static TR: Strings = Strings {
@@ -866,6 +986,13 @@ static TR: Strings = Strings {
     hint_select: "seç",
     hint_go_up: "yukarı",
     disk_free: "boş /",
+    telemetry_title: "Filegram'ı geliştirmeye yardım eder misiniz?",
+    telemetry_body: "Filegram anonim kullanım istatistikleri gönderebilir: sürüm, işletim sistemi ve hangi özelliklerin kullanıldığı. Dosya adları ve yollar bilgisayarınızdan asla çıkmaz.",
+    telemetry_accept: "İstatistik gönder",
+    telemetry_decline: "Gönderme",
+    telemetry_got_it: "Anladım",
+    telemetry_enable: "Kullanım istatistiklerini aç",
+    telemetry_disable: "Kullanım istatistiklerini kapat",
 };
 
 static FA: Strings = Strings {
@@ -895,6 +1022,13 @@ static FA: Strings = Strings {
     hint_select: "انتخاب",
     hint_go_up: "بالا",
     disk_free: "آزاد از",
+    telemetry_title: "به بهبود Filegram کمک می‌کنید؟",
+    telemetry_body: "Filegram می‌تواند آمار استفادهٔ ناشناس بفرستد: نسخه، سیستم‌عامل و اینکه کدام قابلیت‌ها استفاده می‌شوند. نام فایل‌ها و مسیرها هرگز از رایانهٔ شما خارج نمی‌شوند.",
+    telemetry_accept: "ارسال آمار",
+    telemetry_decline: "ارسال نکن",
+    telemetry_got_it: "متوجه شدم",
+    telemetry_enable: "روشن کردن آمار استفاده",
+    telemetry_disable: "خاموش کردن آمار استفاده",
 };
 
 static NL: Strings = Strings {
@@ -924,6 +1058,13 @@ static NL: Strings = Strings {
     hint_select: "selecteren",
     hint_go_up: "omhoog",
     disk_free: "vrij van",
+    telemetry_title: "Help je Filegram verbeteren?",
+    telemetry_body: "Filegram kan anonieme gebruiksstatistieken sturen: versie, besturingssysteem en welke functies worden gebruikt. Bestandsnamen en paden verlaten je computer nooit.",
+    telemetry_accept: "Statistieken sturen",
+    telemetry_decline: "Niet sturen",
+    telemetry_got_it: "Duidelijk",
+    telemetry_enable: "Gebruiksstatistieken inschakelen",
+    telemetry_disable: "Gebruiksstatistieken uitschakelen",
 };
 
 static PL: Strings = Strings {
@@ -953,6 +1094,13 @@ static PL: Strings = Strings {
     hint_select: "wybierz",
     hint_go_up: "w górę",
     disk_free: "wolne z",
+    telemetry_title: "Pomóc ulepszyć Filegram?",
+    telemetry_body: "Filegram może wysyłać anonimowe statystyki użycia: wersję, system operacyjny i to, z których funkcji korzystasz. Nazwy plików i ścieżki nigdy nie opuszczają twojego komputera.",
+    telemetry_accept: "Wysyłaj statystyki",
+    telemetry_decline: "Nie wysyłaj",
+    telemetry_got_it: "Rozumiem",
+    telemetry_enable: "Włącz statystyki użycia",
+    telemetry_disable: "Wyłącz statystyki użycia",
 };
 
 static VI: Strings = Strings {
@@ -982,6 +1130,13 @@ static VI: Strings = Strings {
     hint_select: "chọn",
     hint_go_up: "lên trên",
     disk_free: "trống trên",
+    telemetry_title: "Giúp cải thiện Filegram?",
+    telemetry_body: "Filegram có thể gửi thống kê sử dụng ẩn danh: phiên bản, hệ điều hành và những tính năng được dùng. Tên tệp và đường dẫn không bao giờ rời khỏi máy của bạn.",
+    telemetry_accept: "Gửi thống kê",
+    telemetry_decline: "Không gửi",
+    telemetry_got_it: "Đã hiểu",
+    telemetry_enable: "Bật thống kê sử dụng",
+    telemetry_disable: "Tắt thống kê sử dụng",
 };
 
 static CS: Strings = Strings {
@@ -1011,6 +1166,13 @@ static CS: Strings = Strings {
     hint_select: "vybrat",
     hint_go_up: "nahoru",
     disk_free: "volných z",
+    telemetry_title: "Pomoci vylepšit Filegram?",
+    telemetry_body: "Filegram může odesílat anonymní statistiky používání: verzi, operační systém a to, které funkce se používají. Názvy souborů a cesty nikdy neopustí váš počítač.",
+    telemetry_accept: "Odesílat statistiky",
+    telemetry_decline: "Neodesílat",
+    telemetry_got_it: "Rozumím",
+    telemetry_enable: "Zapnout statistiky používání",
+    telemetry_disable: "Vypnout statistiky používání",
 };
 
 static EL: Strings = Strings {
@@ -1040,6 +1202,13 @@ static EL: Strings = Strings {
     hint_select: "επιλογή",
     hint_go_up: "επάνω",
     disk_free: "ελεύθερα από",
+    telemetry_title: "Θέλετε να βοηθήσετε το Filegram;",
+    telemetry_body: "Το Filegram μπορεί να στέλνει ανώνυμα στατιστικά χρήσης: έκδοση, λειτουργικό σύστημα και ποιες λειτουργίες χρησιμοποιούνται. Τα ονόματα αρχείων και οι διαδρομές δεν φεύγουν ποτέ από τον υπολογιστή σας.",
+    telemetry_accept: "Αποστολή στατιστικών",
+    telemetry_decline: "Χωρίς αποστολή",
+    telemetry_got_it: "Κατάλαβα",
+    telemetry_enable: "Ενεργοποίηση στατιστικών χρήσης",
+    telemetry_disable: "Απενεργοποίηση στατιστικών χρήσης",
 };
 
 static SV: Strings = Strings {
@@ -1069,6 +1238,13 @@ static SV: Strings = Strings {
     hint_select: "välj",
     hint_go_up: "uppåt",
     disk_free: "ledigt av",
+    telemetry_title: "Vill du hjälpa till att förbättra Filegram?",
+    telemetry_body: "Filegram kan skicka anonym användningsstatistik: version, operativsystem och vilka funktioner som används. Filnamn och sökvägar lämnar aldrig din dator.",
+    telemetry_accept: "Skicka statistik",
+    telemetry_decline: "Skicka inte",
+    telemetry_got_it: "Uppfattat",
+    telemetry_enable: "Slå på användningsstatistik",
+    telemetry_disable: "Stäng av användningsstatistik",
 };
 
 static UK: Strings = Strings {
@@ -1098,6 +1274,13 @@ static UK: Strings = Strings {
     hint_select: "вибрати",
     hint_go_up: "вгору",
     disk_free: "вільно з",
+    telemetry_title: "Допомогти покращити Filegram?",
+    telemetry_body: "Filegram може надсилати анонімну статистику використання: версію, операційну систему й те, які функції використовуються. Імена файлів і шляхи ніколи не залишають ваш комп'ютер.",
+    telemetry_accept: "Надсилати статистику",
+    telemetry_decline: "Не надсилати",
+    telemetry_got_it: "Зрозуміло",
+    telemetry_enable: "Увімкнути статистику використання",
+    telemetry_disable: "Вимкнути статистику використання",
 };
 
 static HU: Strings = Strings {
@@ -1127,6 +1310,13 @@ static HU: Strings = Strings {
     hint_select: "kijelölés",
     hint_go_up: "fel",
     disk_free: "szabad ebből",
+    telemetry_title: "Segítesz jobbá tenni a Filegramot?",
+    telemetry_body: "A Filegram névtelen használati statisztikát küldhet: verzió, operációs rendszer és a használt funkciók. A fájlnevek és útvonalak soha nem hagyják el a gépedet.",
+    telemetry_accept: "Statisztika küldése",
+    telemetry_decline: "Ne küldjön",
+    telemetry_got_it: "Értem",
+    telemetry_enable: "Használati statisztika bekapcsolása",
+    telemetry_disable: "Használati statisztika kikapcsolása",
 };
 
 static RO: Strings = Strings {
@@ -1156,6 +1346,13 @@ static RO: Strings = Strings {
     hint_select: "selectează",
     hint_go_up: "în sus",
     disk_free: "liberi din",
+    telemetry_title: "Ajuți la îmbunătățirea Filegram?",
+    telemetry_body: "Filegram poate trimite statistici de utilizare anonime: versiunea, sistemul de operare și ce funcții sunt folosite. Numele fișierelor și căile nu părăsesc niciodată computerul tău.",
+    telemetry_accept: "Trimite statistici",
+    telemetry_decline: "Nu trimite",
+    telemetry_got_it: "Am înțeles",
+    telemetry_enable: "Activează statisticile de utilizare",
+    telemetry_disable: "Dezactivează statisticile de utilizare",
 };
 
 static DA: Strings = Strings {
@@ -1185,6 +1382,13 @@ static DA: Strings = Strings {
     hint_select: "vælg",
     hint_go_up: "op",
     disk_free: "ledig af",
+    telemetry_title: "Vil du hjælpe med at forbedre Filegram?",
+    telemetry_body: "Filegram kan sende anonym brugsstatistik: version, styresystem og hvilke funktioner der bruges. Filnavne og stier forlader aldrig din computer.",
+    telemetry_accept: "Send statistik",
+    telemetry_decline: "Send ikke",
+    telemetry_got_it: "Forstået",
+    telemetry_enable: "Slå brugsstatistik til",
+    telemetry_disable: "Slå brugsstatistik fra",
 };
 
 static FI: Strings = Strings {
@@ -1214,6 +1418,13 @@ static FI: Strings = Strings {
     hint_select: "valitse",
     hint_go_up: "ylös",
     disk_free: "vapaana /",
+    telemetry_title: "Autatko parantamaan Filegramia?",
+    telemetry_body: "Filegram voi lähettää nimettömiä käyttötilastoja: version, käyttöjärjestelmän ja käytetyt toiminnot. Tiedostonimet ja polut eivät koskaan poistu koneeltasi.",
+    telemetry_accept: "Lähetä tilastot",
+    telemetry_decline: "Älä lähetä",
+    telemetry_got_it: "Selvä",
+    telemetry_enable: "Ota käyttötilastot käyttöön",
+    telemetry_disable: "Poista käyttötilastot käytöstä",
 };
 
 static NO: Strings = Strings {
@@ -1243,6 +1454,13 @@ static NO: Strings = Strings {
     hint_select: "velg",
     hint_go_up: "opp",
     disk_free: "ledig av",
+    telemetry_title: "Vil du hjelpe med å forbedre Filegram?",
+    telemetry_body: "Filegram kan sende anonym bruksstatistikk: versjon, operativsystem og hvilke funksjoner som brukes. Filnavn og stier forlater aldri datamaskinen din.",
+    telemetry_accept: "Send statistikk",
+    telemetry_decline: "Ikke send",
+    telemetry_got_it: "Forstått",
+    telemetry_enable: "Slå på bruksstatistikk",
+    telemetry_disable: "Slå av bruksstatistikk",
 };
 
 static SK: Strings = Strings {
@@ -1272,6 +1490,13 @@ static SK: Strings = Strings {
     hint_select: "vybrať",
     hint_go_up: "nahor",
     disk_free: "voľných z",
+    telemetry_title: "Pomôcť vylepšiť Filegram?",
+    telemetry_body: "Filegram môže odosielať anonymné štatistiky používania: verziu, operačný systém a to, ktoré funkcie sa používajú. Názvy súborov a cesty nikdy neopustia váš počítač.",
+    telemetry_accept: "Odosielať štatistiky",
+    telemetry_decline: "Neodosielať",
+    telemetry_got_it: "Rozumiem",
+    telemetry_enable: "Zapnúť štatistiky používania",
+    telemetry_disable: "Vypnúť štatistiky používania",
 };
 
 static BG: Strings = Strings {
@@ -1301,6 +1526,13 @@ static BG: Strings = Strings {
     hint_select: "избор",
     hint_go_up: "нагоре",
     disk_free: "свободни от",
+    telemetry_title: "Да помогнете за подобряването на Filegram?",
+    telemetry_body: "Filegram може да изпраща анонимна статистика за употреба: версия, операционна система и кои функции се използват. Имената на файловете и пътищата никога не напускат компютъра ви.",
+    telemetry_accept: "Изпращай статистика",
+    telemetry_decline: "Без изпращане",
+    telemetry_got_it: "Разбрах",
+    telemetry_enable: "Включване на статистиката за употреба",
+    telemetry_disable: "Изключване на статистиката за употреба",
 };
 
 static HR: Strings = Strings {
@@ -1330,6 +1562,13 @@ static HR: Strings = Strings {
     hint_select: "odaberi",
     hint_go_up: "gore",
     disk_free: "slobodno od",
+    telemetry_title: "Želite pomoći poboljšati Filegram?",
+    telemetry_body: "Filegram može slati anonimnu statistiku korištenja: verziju, operacijski sustav i koje se značajke koriste. Nazivi datoteka i putanje nikada ne napuštaju vaše računalo.",
+    telemetry_accept: "Šalji statistiku",
+    telemetry_decline: "Ne šalji",
+    telemetry_got_it: "Razumijem",
+    telemetry_enable: "Uključi statistiku korištenja",
+    telemetry_disable: "Isključi statistiku korištenja",
 };
 
 static LT: Strings = Strings {
@@ -1359,6 +1598,13 @@ static LT: Strings = Strings {
     hint_select: "pasirinkti",
     hint_go_up: "aukštyn",
     disk_free: "laisva iš",
+    telemetry_title: "Padėti tobulinti „Filegram“?",
+    telemetry_body: "„Filegram“ gali siųsti anoniminę naudojimo statistiką: versiją, operacinę sistemą ir tai, kurios funkcijos naudojamos. Failų vardai ir keliai niekada nepalieka jūsų kompiuterio.",
+    telemetry_accept: "Siųsti statistiką",
+    telemetry_decline: "Nesiųsti",
+    telemetry_got_it: "Supratau",
+    telemetry_enable: "Įjungti naudojimo statistiką",
+    telemetry_disable: "Išjungti naudojimo statistiką",
 };
 
 static SR: Strings = Strings {
@@ -1388,6 +1634,13 @@ static SR: Strings = Strings {
     hint_select: "изабери",
     hint_go_up: "нагоре",
     disk_free: "слободно од",
+    telemetry_title: "Желите да помогнете да Filegram буде бољи?",
+    telemetry_body: "Filegram може да шаље анонимну статистику коришћења: верзију, оперативни систем и које се функције користе. Називи датотека и путање никада не напуштају ваш рачунар.",
+    telemetry_accept: "Шаљи статистику",
+    telemetry_decline: "Не шаљи",
+    telemetry_got_it: "Разумем",
+    telemetry_enable: "Укључи статистику коришћења",
+    telemetry_disable: "Искључи статистику коришћења",
 };
 
 static LV: Strings = Strings {
@@ -1417,6 +1670,13 @@ static LV: Strings = Strings {
     hint_select: "izvēlēties",
     hint_go_up: "uz augšu",
     disk_free: "brīvs no",
+    telemetry_title: "Vai palīdzēsiet uzlabot Filegram?",
+    telemetry_body: "Filegram var sūtīt anonīmu lietojuma statistiku: versiju, operētājsistēmu un to, kuras funkcijas tiek lietotas. Failu nosaukumi un ceļi nekad neatstāj jūsu datoru.",
+    telemetry_accept: "Sūtīt statistiku",
+    telemetry_decline: "Nesūtīt",
+    telemetry_got_it: "Sapratu",
+    telemetry_enable: "Ieslēgt lietojuma statistiku",
+    telemetry_disable: "Izslēgt lietojuma statistiku",
 };
 
 static SL: Strings = Strings {
@@ -1446,6 +1706,13 @@ static SL: Strings = Strings {
     hint_select: "izberi",
     hint_go_up: "navzgor",
     disk_free: "prosto od",
+    telemetry_title: "Želite pomagati izboljšati Filegram?",
+    telemetry_body: "Filegram lahko pošilja anonimno statistiko uporabe: različico, operacijski sistem in katere funkcije so v uporabi. Imena datotek in poti nikoli ne zapustijo vašega računalnika.",
+    telemetry_accept: "Pošiljaj statistiko",
+    telemetry_decline: "Ne pošiljaj",
+    telemetry_got_it: "Razumem",
+    telemetry_enable: "Vklopi statistiko uporabe",
+    telemetry_disable: "Izklopi statistiko uporabe",
 };
 
 static ET: Strings = Strings {
@@ -1475,6 +1742,13 @@ static ET: Strings = Strings {
     hint_select: "vali",
     hint_go_up: "üles",
     disk_free: "vaba /",
+    telemetry_title: "Kas aitad Filegrami paremaks teha?",
+    telemetry_body: "Filegram võib saata anonüümset kasutusstatistikat: versiooni, operatsioonisüsteemi ja kasutatud funktsioonid. Failinimed ja teed ei lahku kunagi sinu arvutist.",
+    telemetry_accept: "Saada statistikat",
+    telemetry_decline: "Ära saada",
+    telemetry_got_it: "Selge",
+    telemetry_enable: "Lülita kasutusstatistika sisse",
+    telemetry_disable: "Lülita kasutusstatistika välja",
 };
 
 static HE: Strings = Strings {
@@ -1504,6 +1778,13 @@ static HE: Strings = Strings {
     hint_select: "בחירה",
     hint_go_up: "למעלה",
     disk_free: "פנוי מתוך",
+    telemetry_title: "לעזור לשפר את Filegram?",
+    telemetry_body: "‏Filegram יכול לשלוח סטטיסטיקת שימוש אנונימית: גרסה, מערכת הפעלה ואילו יכולות בשימוש. שמות קבצים ונתיבים לעולם אינם יוצאים מהמחשב שלך.",
+    telemetry_accept: "שליחת סטטיסטיקה",
+    telemetry_decline: "לא לשלוח",
+    telemetry_got_it: "הבנתי",
+    telemetry_enable: "הפעלת סטטיסטיקת שימוש",
+    telemetry_disable: "כיבוי סטטיסטיקת שימוש",
 };
 
 static MS: Strings = Strings {
@@ -1533,6 +1814,13 @@ static MS: Strings = Strings {
     hint_select: "pilih",
     hint_go_up: "naik",
     disk_free: "bebas daripada",
+    telemetry_title: "Bantu tingkatkan Filegram?",
+    telemetry_body: "Filegram boleh menghantar statistik penggunaan tanpa nama: versi, sistem pengendalian dan ciri yang digunakan. Nama fail dan laluan tidak pernah meninggalkan komputer anda.",
+    telemetry_accept: "Hantar statistik",
+    telemetry_decline: "Jangan hantar",
+    telemetry_got_it: "Faham",
+    telemetry_enable: "Hidupkan statistik penggunaan",
+    telemetry_disable: "Matikan statistik penggunaan",
 };
 
 static FIL: Strings = Strings {
@@ -1562,6 +1850,13 @@ static FIL: Strings = Strings {
     hint_select: "pumili",
     hint_go_up: "pataas",
     disk_free: "libre sa",
+    telemetry_title: "Gusto mong tumulong sa Filegram?",
+    telemetry_body: "Puwedeng magpadala ang Filegram ng anonimong istatistika ng paggamit: bersyon, operating system at kung anong mga feature ang ginagamit. Hindi kailanman lumalabas sa computer mo ang pangalan ng file at mga path.",
+    telemetry_accept: "Magpadala ng istatistika",
+    telemetry_decline: "Huwag ipadala",
+    telemetry_got_it: "Nakuha ko",
+    telemetry_enable: "I-on ang istatistika ng paggamit",
+    telemetry_disable: "I-off ang istatistika ng paggamit",
 };
 
 #[cfg(test)]

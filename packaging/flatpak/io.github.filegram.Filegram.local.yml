@@ -30,6 +30,9 @@ build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
     CARGO_HOME: /run/build/filegram/cargo
+    # Flathub builds from source and sees no CI secrets, so the write-only
+    # ingest key lives here. It ships inside every binary anyway.
+    FILEGRAM_POSTHOG_KEY: phc_zoHYjUvNraXjAh3hNerL2oGNp5feyT9WeprutU9YzYXA
 
 modules:
   - name: filegram
