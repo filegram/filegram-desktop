@@ -9,10 +9,11 @@ use iced::widget::{
 use iced::{Center, Element, Fill, Padding, Theme};
 
 use crate::ui::chrome::{action_button, chrome_icon_button, muted_text, themed_icon, tooltip_style};
+use crate::ui::chrome::chrome_button;
 use crate::{
     App, BRICKS_ICON, DESKTOP_ICON, DISC_ICON, DOCUMENTS_ICON, DOWNLOADS_ICON, DRIVE_ICON,
-    GLOBE_ICON, HOME_ICON, MOON_ICON, Message, PATH_BAR_MAX_CHARS, SUN_ICON, USB_ICON, disk, format,
-    history, i18n,
+    GLOBE_ICON, HOME_ICON, MOON_ICON, Message, PATH_BAR_MAX_CHARS, STATS_ICON, STATS_OFF_ICON,
+    SUN_ICON, TelemetryPrompt, USB_ICON, disk, format, history, i18n,
 };
 use i18n::Lang;
 
@@ -39,11 +40,75 @@ pub(crate) fn idle_view(app: &App) -> Element<'_, Message> {
     if !app.history.entries().is_empty() {
         content = content.push(recent_scans(app));
     }
-    let screen = column![center(content), corner_footer(app)];
-    if !app.lang_menu_open {
-        return screen.into();
+    if app.telemetry_prompt == TelemetryPrompt::Notice {
+        content = content.push(telemetry_notice(app));
     }
-    stack![screen, language_menu_overlay(app)].into()
+    let screen = column![center(content), corner_footer(app)];
+    if app.telemetry_prompt == TelemetryPrompt::Dialog {
+        return stack![screen, consent_dialog(app)].into();
+    }
+    if app.lang_menu_open {
+        return stack![screen, language_menu_overlay(app)].into();
+    }
+    screen.into()
+}
+
+/// Shown once on store builds, which may report nothing until it is answered.
+/// Both answers are one click away; neither is preselected.
+fn consent_dialog(app: &App) -> Element<'_, Message> {
+    let s = app.strings();
+    let card = container(
+        column![
+            text(s.telemetry_title).size(20),
+            text(s.telemetry_body).size(14),
+            row![
+                button(text(s.telemetry_decline))
+                    .style(chrome_button)
+                    .on_press(Message::TelemetryAnswered(false)),
+                button(text(s.telemetry_accept))
+                    .style(chrome_button)
+                    .on_press(Message::TelemetryAnswered(true)),
+            ]
+            .spacing(8),
+        ]
+        .spacing(16)
+        .align_x(Center),
+    )
+    .padding(24)
+    .max_width(480)
+    .style(container::rounded_box);
+    opaque(center(opaque(card)))
+}
+
+/// The one-time line for builds that report by default; the footer toggle
+/// beside it is how reporting gets switched off.
+fn telemetry_notice(app: &App) -> Element<'_, Message> {
+    let s = app.strings();
+    container(
+        row![
+            text(s.telemetry_body).size(13).style(muted_text),
+            button(text(s.telemetry_got_it).size(13))
+                .style(chrome_button)
+                .on_press(Message::TelemetryNoticeDismissed),
+        ]
+        .spacing(12)
+        .align_y(Center),
+    )
+    .padding(8)
+    .max_width(600)
+    .into()
+}
+
+/// Reporting is on unless the user has switched it off; the tooltip names what
+/// pressing it does, not the current state.
+fn telemetry_toggle(app: &App) -> Element<'_, Message> {
+    let s = app.strings();
+    let (icon, tip) = if app.telemetry_choice.unwrap_or(true) {
+        (STATS_ICON, s.telemetry_disable)
+    } else {
+        (STATS_OFF_ICON, s.telemetry_enable)
+    };
+    action_button(themed_icon(icon), tip, Some(Message::TelemetryToggled))
 }
 
 fn language_menu_overlay(app: &App) -> Element<'_, Message> {
@@ -255,6 +320,7 @@ fn corner_footer(app: &App) -> Element<'_, Message> {
     row![
         theme_toggle(app),
         language_button(app),
+        telemetry_toggle(app),
         container(version_label(app)).width(Fill).align_x(iced::Right),
     ]
     .spacing(2)

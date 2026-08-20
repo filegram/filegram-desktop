@@ -14,6 +14,8 @@ use crate::i18n::Lang;
 pub struct Settings {
     pub theme: Option<Mode>,
     pub lang: Option<Lang>,
+    /// `None` means the user has not been asked yet.
+    pub telemetry: Option<bool>,
 }
 
 /// Reads the saved choices. A missing file, unknown key or unrecognized
@@ -33,6 +35,8 @@ pub fn load(path: &Path) -> io::Result<Settings> {
             ("theme", "dark") => settings.theme = Some(Mode::Dark),
             // Keep a previously parsed language when a later `lang=` line
             // carries an unrecognized tag.
+            ("telemetry", "on") => settings.telemetry = Some(true),
+            ("telemetry", "off") => settings.telemetry = Some(false),
             ("lang", tag) => {
                 if let Some(lang) = Lang::from_tag(tag) {
                     settings.lang = Some(lang);
@@ -66,6 +70,11 @@ pub fn save(path: &Path, settings: Settings) -> io::Result<()> {
         text.push_str(lang.tag());
         text.push('\n');
     }
+    if let Some(on) = settings.telemetry {
+        text.push_str("telemetry=");
+        text.push_str(if on { "on" } else { "off" });
+        text.push('\n');
+    }
     std::fs::write(path, text)
 }
 
@@ -87,14 +96,17 @@ mod tests {
             Settings {
                 theme: Some(Mode::Dark),
                 lang: None,
+                telemetry: None,
             },
             Settings {
                 theme: None,
                 lang: Some(Lang::RuRu),
+                telemetry: Some(true),
             },
             Settings {
                 theme: Some(Mode::Light),
                 lang: Some(Lang::Es419),
+                telemetry: Some(false),
             },
             Settings::default(),
         ];
@@ -123,6 +135,7 @@ mod tests {
             Settings {
                 theme: Some(Mode::Dark),
                 lang: None,
+                telemetry: None,
             }
         );
     }
@@ -140,5 +153,45 @@ mod tests {
         // A directory cannot be read as a file; the error must surface.
         let dir = tempfile::tempdir().unwrap();
         assert!(load(dir.path()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod telemetry_tests {
+    use super::*;
+
+    #[test]
+    fn telemetry_choice_survives_a_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.cfg");
+        for choice in [Some(true), Some(false), None] {
+            let settings = Settings {
+                telemetry: choice,
+                ..Settings::default()
+            };
+            save(&file, settings).unwrap();
+            assert_eq!(load(&file).unwrap(), settings);
+        }
+    }
+
+    #[test]
+    fn telemetry_defaults_to_undecided() {
+        assert_eq!(Settings::default().telemetry, None);
+    }
+
+    #[test]
+    fn unrecognized_telemetry_value_reads_as_undecided() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.cfg");
+        std::fs::write(&file, "telemetry=maybe\n").unwrap();
+        assert_eq!(load(&file).unwrap().telemetry, None);
+    }
+
+    #[test]
+    fn telemetry_line_is_omitted_while_undecided() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.cfg");
+        save(&file, Settings::default()).unwrap();
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("telemetry"));
     }
 }
