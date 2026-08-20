@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "filegram"
-version = "0.2.8"
+version = "0.2.9-dev"
 dependencies = [
  "dirs",
  "fs4",
