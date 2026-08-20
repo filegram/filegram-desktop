@@ -1,0 +1,95 @@
+name: Aurora
+
+# Builds the RPM pair RuStore's Aurora OS section requires — armv7hl (32-bit)
+# and aarch64 (64-bit) — and attaches both to the GitHub release. RuStore has
+# no public API for Aurora apps (the dev console rides on an httpOnly VK ID
+# session), so the final upload stays manual: take these two files to
+# https://console.rustore.ru/aurora-apps. See packaging/aurora.md.
+#
+# Runnable two ways:
+#   - workflow_dispatch: build packages for any already-released version.
+#   - workflow_call: invoked by release.yml right after the release is published.
+#
+# Runs on the arm64 runner: aarch64 builds natively, armv7hl cross-compiles
+# with the armhf toolchain (on arm64 hosts armhf comes from the same ports
+# archive, no sources.list surgery needed).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to package (e.g. 0.2.7)"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build Aurora RPMs
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ inputs.version }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-gnueabihf
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-24.04-arm-aurora
+
+      - name: Install build dependencies
+        run: |
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libwayland-dev pkg-config \
+            gcc-arm-linux-gnueabihf libc6-dev-armhf-cross \
+            libxkbcommon-dev:armhf libwayland-dev:armhf
+
+      - name: Cache packaging tools
+        id: tools-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-generate-rpm
+          key: packaging-tools-ubuntu-24.04-arm-generate-rpm-0.21.0
+
+      - name: Install packaging tools
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-generate-rpm@0.21.0
+
+      - name: Build aarch64 RPM
+        run: |
+          cargo build --release --locked
+          cargo generate-rpm
+          cp target/generate-rpm/*.rpm filegram-aurora-aarch64.rpm
+
+      - name: Build armv7hl RPM
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
+        run: |
+          cargo build --release --locked --target armv7-unknown-linux-gnueabihf
+          # RuStore validates the arch header and wants armv7hl, not armv7.
+          cargo generate-rpm --target armv7-unknown-linux-gnueabihf --arch armv7hl
+          cp target/armv7-unknown-linux-gnueabihf/generate-rpm/*.armv7hl.rpm \
+            filegram-aurora-armv7hl.rpm
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release upload "v${VERSION}" --repo "$GITHUB_REPOSITORY" --clobber \
+            filegram-aurora-aarch64.rpm filegram-aurora-armv7hl.rpm
