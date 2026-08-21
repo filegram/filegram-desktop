@@ -67,7 +67,7 @@ jobs:
           $sum32 = (Get-FileHash dl/filegram-windows-i686.exe   -Algorithm SHA256).Hash
 
           Push-Location packaging/chocolatey
-          foreach ($f in 'filegram.nuspec', 'tools/chocolateyinstall.ps1', 'tools/VERIFICATION.txt') {
+          foreach ($f in 'filegram.nuspec', 'tools/chocolateyinstall.ps1') {
             (Get-Content $f -Raw).
               Replace('__VERSION__',    $version).
               Replace('__CHECKSUM64__', $sum64).
