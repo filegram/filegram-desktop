@@ -10,7 +10,6 @@
     <authors>Filegram contributors</authors>
     <owners>filegram</owners>
     <projectUrl>https://github.com/filegram/filegram-desktop</projectUrl>
-    <projectSourceUrl>https://github.com/filegram/filegram-desktop</projectSourceUrl>
     <packageSourceUrl>https://github.com/filegram/filegram-desktop/tree/master/packaging/chocolatey</packageSourceUrl>
     <bugTrackerUrl>https://github.com/filegram/filegram-desktop/issues</bugTrackerUrl>
     <docsUrl>https://github.com/filegram/filegram-desktop/blob/master/README.md</docsUrl>
