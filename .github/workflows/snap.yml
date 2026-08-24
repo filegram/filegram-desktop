@@ -14,10 +14,8 @@ name: Snap
 # `snapcraft export-login`). Without it the job logs a warning and exits
 # cleanly so a release is never blocked on it.
 #
-# One-time manual prerequisites on the Snap Store (cannot be automated):
+# One-time manual prerequisite on the Snap Store (cannot be automated):
 #   - Register the name: `snapcraft register filegram`.
-#   - Request classic confinement approval for the snap; until granted, the
-#     store rejects uploads of a classic snap to a public channel.
 on:
   workflow_dispatch:
     inputs:

@@ -72,11 +72,12 @@ Filegram is also available on the [Snap Store](https://snapcraft.io/filegram)
 for Ubuntu and other distributions with snapd:
 
 ```sh
-sudo snap install filegram --classic
+sudo snap install filegram
 ```
 
-`--classic` is required because Filegram analyzes the whole filesystem, not
-just your home directory.
+The snap is strictly confined, so it can scan your home directory and any
+mounted drive. Use the .deb, the AppImage or the Flatpak to scan system paths
+such as `/usr` or `/var`.
 
 ### Linux (Flatpak)
 
