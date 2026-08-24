@@ -14,11 +14,11 @@ description: |
      trash, right from the map.
    - Light and dark themes that follow the system theme.
 
-# Classic confinement: Filegram is a disk-space analyzer and must be able to
-# scan and act on arbitrary paths across the whole filesystem (not just $HOME),
-# exactly like the .deb / AppImage builds. Classic snaps are reviewed manually
-# by the Snap Store team before they can be released to a public channel.
-confinement: classic
+# Strict confinement: home covers $HOME and removable-media covers mounted
+# drives, which is what the store's classic review process expects a disk
+# analyzer to use. System paths outside those two are not readable from the
+# snap.
+confinement: strict
 grade: stable
 license: MIT
 # Built on ubuntu-22.04 to match the glibc baseline of the released binary.
@@ -33,6 +33,16 @@ version: '__VERSION__'
 apps:
   filegram:
     command: bin/filegram
+    plugs:
+      - home
+      - removable-media
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+      - opengl
+      # Update checks and, when the user leaves it on, usage reporting.
+      - network
 
 parts:
   filegram:
@@ -44,13 +54,12 @@ parts:
     source: snap-payload
     organize:
       filegram: bin/filegram
-    # core22 does not patch ELF rpaths by default; classic confinement needs it
-    # so the prebuilt binary resolves its libraries from the snap and base.
+    # core22 does not patch ELF rpaths by default; the prebuilt binary needs it
+    # to resolve its libraries from the snap and base.
     build-attributes:
       - enable-patchelf
-    # Windowing / input libraries the binary links against. GPU drivers
-    # (Mesa/Vulkan/EGL) are loaded from the host, which classic confinement
-    # allows.
+    # Windowing / input libraries the binary links against. GPU drivers come
+    # from the opengl plug.
     stage-packages:
       - libxkbcommon0
       - libwayland-client0
