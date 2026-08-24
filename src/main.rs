@@ -10,6 +10,7 @@ mod release;
 mod scanner;
 mod settings;
 mod telemetry;
+mod trashing;
 mod treemap;
 mod ui;
 
@@ -277,7 +278,7 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         hovered_history: None,
         settings_file: None,
         latest_release: None,
-        delete: |path| trash::delete(path).map_err(std::io::Error::other),
+        delete: trashing::delete,
         smoke: false,
         telemetry: telemetry::Telemetry::disabled(),
         telemetry_choice: None,

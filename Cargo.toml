@@ -53,6 +53,10 @@ sys-locale = "0.3"
 ureq = { version = "3", features = ["json"] }
 serde_json = "1.0.151"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Talking to the trash portal; already in the tree via opener.
+zbus = "5"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 

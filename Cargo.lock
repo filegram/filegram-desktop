@@ -950,6 +950,7 @@ dependencies = [
  "trash",
  "ureq",
  "winresource",
+ "zbus",
 ]
 
 [[package]]
