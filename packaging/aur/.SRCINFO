@@ -1,0 +1,21 @@
+pkgbase = filegram-bin
+	pkgdesc = Disk space analyzer with an interactive treemap
+	pkgver = 0.2.12
+	pkgrel = 1
+	url = https://github.com/filegram/filegram-desktop
+	arch = x86_64
+	license = MIT
+	depends = glibc
+	depends = gcc-libs
+	provides = filegram
+	conflicts = filegram
+	source = filegram-bin-0.2.12.zip::https://github.com/filegram/filegram-desktop/releases/download/v0.2.12/filegram-linux-x86_64.zip
+	sha256sums = c53042d183941398cb2f92d9ef1522e4fad455baea7a2637f2e2a6d64936563a
+	source = filegram-0.2.12.desktop::https://raw.githubusercontent.com/filegram/filegram-desktop/v0.2.12/packaging/linux/filegram.desktop
+	sha256sums = cf92853a5d29a9283a3e793c8f210df51e65e91a4d5a29d8e27c0f9ec3bde935
+	source = filegram-0.2.12.svg::https://raw.githubusercontent.com/filegram/filegram-desktop/v0.2.12/assets/icon/icon.svg
+	sha256sums = 18394b7cc664255d02eccee349fd4eead45654a7a3fe64c37b82037aa1e0af96
+	source = filegram-0.2.12-LICENSE::https://raw.githubusercontent.com/filegram/filegram-desktop/v0.2.12/LICENSE
+	sha256sums = bcff0ea4324cc65a9f91086b6d79a944460f6ede95ad2621c9c5b8261fa6a1a6
+
+pkgname = filegram-bin

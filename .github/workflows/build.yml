@@ -142,7 +142,7 @@ jobs:
         run: |
           sudo apt-get update
           # dpkg-dev provides dpkg-shlibdeps for cargo-deb's $auto depends.
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config dpkg-dev
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev pkg-config dpkg-dev
 
       # Built from source: the prebuilt cargo-deb binaries target a glibc
       # newer than ubuntu-22.04 ships. The compiled tools are cached.
@@ -210,9 +210,11 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT=filegram-linux-x86_64.AppImage \
             ./linuxdeploy-x86_64.AppImage --appdir AppDir \
               --executable target/release/filegram \
+              --library /usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 \
               --desktop-file packaging/linux/filegram.desktop \
               "${icon_args[@]}" \
               --output appimage
+          test -f AppDir/usr/lib/libxkbcommon-x11.so.0
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
