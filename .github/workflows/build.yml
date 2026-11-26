@@ -248,7 +248,7 @@ jobs:
         run: cargo test --locked
 
   smoke-test:
-    name: Headless smoke test (Linux container)
+    name: Headless GUI tests (Linux container)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -279,6 +279,12 @@ jobs:
       # hang past the entrypoint timeout) fails the job.
       - name: Run the headless smoke test
         run: docker run --rm filegram-smoke:latest
+
+      # Drives navigation, the delete dialog, theme switching and the new-scan
+      # screen through the same messages as the real controls. Assertions and
+      # the entrypoint timeout turn a broken workflow into a non-zero exit.
+      - name: Run the functional GUI scenario
+        run: docker run --rm -e FILEGRAM_FUNCTIONAL_TEST=1 filegram-smoke:latest
 
   dev-release:
     name: Update dev pre-release

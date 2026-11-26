@@ -1,11 +1,10 @@
-# Headless smoke test for filegram.
+# Headless smoke and functional GUI tests for filegram.
 #
 # Builds the release binary, then launches it inside a virtual X display
-# with Mesa's software Vulkan (lavapipe) standing in for a GPU. The app
-# runs in FILEGRAM_SMOKE mode, which closes the window the instant the
-# first frame draws and exits 0. A broken window/wgpu/link path never
-# reaches that frame — it panics or aborts, so the container exits
-# non-zero and CI goes red.
+# with Mesa's software Vulkan (lavapipe) standing in for a GPU. The default
+# FILEGRAM_SMOKE mode closes the window after the treemap's first frame.
+# FILEGRAM_FUNCTIONAL_TEST instead drives and verifies a complete GUI workflow.
+# A broken window/wgpu/link path or failed assertion exits non-zero, so CI goes red.
 
 # ---- dependency planning (cargo-chef) -------------------------------------
 # Track stable to mirror CI's dtolnay/rust-toolchain@stable: pinning an
@@ -77,8 +76,8 @@ RUN mkdir -p /run/xdg && chmod 700 /run/xdg
 
 # There is no GPU and no Wayland compositor in here: force lavapipe as the
 # only Vulkan device, the Vulkan backend in wgpu, and winit's X11 backend.
-# FILEGRAM_SMOKE_PATH makes the app scan the fixture and render its treemap
-# before exiting, instead of leaving on the bare start screen.
+# FILEGRAM_SMOKE_PATH makes both test modes scan the fixture and render its
+# treemap instead of stopping on the bare start screen.
 ENV VK_ICD_FILENAMES=/etc/lvp_icd.json \
     WGPU_BACKEND=vulkan \
     WINIT_UNIX_BACKEND=x11 \

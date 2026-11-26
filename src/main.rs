@@ -4,6 +4,7 @@ mod disk;
 mod diskmap;
 mod format;
 mod fs_tree;
+mod functional_test;
 mod history;
 mod i18n;
 mod release;
@@ -116,6 +117,8 @@ struct App {
     /// `FILEGRAM_SMOKE`: close on the first rendered frame so CI can headlessly
     /// flag a broken wgpu/window backend via a non-zero exit.
     smoke: bool,
+    /// `FILEGRAM_FUNCTIONAL_TEST`: drive and verify a GUI workflow frame by frame.
+    functional: Option<functional_test::Stage>,
     /// Disabled until the user allows reporting; reports nothing until then.
     telemetry: telemetry::Telemetry,
     /// The persisted answer, `None` until the user has been asked.
@@ -187,6 +190,7 @@ enum Message {
     LatestReleaseLoaded(Option<String>),
     LatestReleasePressed,
     SmokeFrameRendered,
+    FunctionalFrameRendered,
     /// The first-run dialog was answered.
     TelemetryAnswered(bool),
     TelemetryNoticeDismissed,
@@ -216,6 +220,8 @@ fn boot() -> (App, Task<Message>) {
     };
     let mut app = initial_app(history, history_file);
     app.smoke = std::env::var_os("FILEGRAM_SMOKE").is_some();
+    app.functional =
+        std::env::var_os("FILEGRAM_FUNCTIONAL_TEST").map(|_| functional_test::Stage::Scan);
     app.settings_file = settings::default_file();
     // Safe to save over an unreadable settings file: the next toggle or
     // language pick rewrites the whole file anyway.
@@ -243,7 +249,7 @@ fn boot() -> (App, Task<Message>) {
     ];
     // `FILEGRAM_SMOKE_PATH` drives the full StartScan flow so CI exercises the
     // scan, tree build and treemap render, not just the first frame.
-    if app.smoke
+    if (app.smoke || app.functional.is_some())
         && let Some(path) = std::env::var_os("FILEGRAM_SMOKE_PATH")
     {
         app.path_input = path.to_string_lossy().into_owned();
@@ -280,6 +286,7 @@ fn initial_app(history: history::History, history_file: Option<PathBuf>) -> App 
         latest_release: None,
         delete: trashing::delete,
         smoke: false,
+        functional: None,
         telemetry: telemetry::Telemetry::disabled(),
         telemetry_choice: None,
         telemetry_prompt: TelemetryPrompt::None,
@@ -421,7 +428,9 @@ fn subscription(app: &App) -> Subscription<Message> {
             _ => None,
         }),
     ];
-    if app.smoke {
+    if app.functional.is_some() {
+        subs.push(iced::window::frames().map(|_| Message::FunctionalFrameRendered));
+    } else if app.smoke {
         // The first frame tick means the wgpu surface drew, all the smoke test proves.
         subs.push(iced::window::frames().map(|_| Message::SmokeFrameRendered));
     }
@@ -711,6 +720,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             eprintln!("filegram: smoke test rendered a frame, exiting");
             iced::exit()
         }
+        Message::FunctionalFrameRendered => functional_test::on_frame(app),
         Message::ToggleTheme => {
             let mode = if app.is_dark() { Mode::Light } else { Mode::Dark };
             app.theme_override = Some(mode);
