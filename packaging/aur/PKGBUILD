@@ -11,6 +11,7 @@ license=('MIT')
 depends=('glibc' 'gcc-libs')
 provides=('filegram')
 conflicts=('filegram')
+options=('!debug')
 source=(
   "$pkgname-$pkgver.zip::https://github.com/filegram/filegram-desktop/releases/download/v$pkgver/filegram-linux-x86_64.zip"
   "filegram-$pkgver.desktop::https://raw.githubusercontent.com/filegram/filegram-desktop/v$pkgver/packaging/linux/filegram.desktop"
