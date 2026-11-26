@@ -28,7 +28,8 @@ fi
 %cargo_build
 
 %install
-%cargo_install --root %{buildroot}%{_prefix}
+%cargo_install
+install -Dm755 .cargo/bin/filegram %{buildroot}%{_bindir}/filegram
 install -Dm644 packaging/linux/filegram.desktop %{buildroot}%{_datadir}/applications/filegram.desktop
 install -Dm644 assets/icon/icon.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/filegram.svg
 
