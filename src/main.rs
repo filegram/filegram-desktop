@@ -426,15 +426,26 @@ impl App {
     }
 }
 
+fn event_message(event: iced::Event) -> Option<Message> {
+    match event {
+        iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
+        iced::Event::Window(iced::window::Event::Closed) => Some(Message::WindowClosed),
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key:
+                iced::keyboard::Key::Named(
+                    iced::keyboard::key::Named::Escape | iced::keyboard::key::Named::Backspace,
+                ),
+            ..
+        }) => Some(Message::GoUp),
+        _ => None,
+    }
+}
+
 fn subscription(app: &App) -> Subscription<Message> {
     let mut subs = vec![
         iced::system::theme_changes().map(Message::SystemThemeChanged),
         // No ready-made focus subscription, so filter window events for Focused.
-        iced::event::listen_with(|event, _status, _window| match event {
-            iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
-            iced::Event::Window(iced::window::Event::Closed) => Some(Message::WindowClosed),
-            _ => None,
-        }),
+        iced::event::listen_with(|event, _status, _window| event_message(event)),
     ];
     if app.functional.is_some() {
         subs.push(iced::window::frames().map(|_| Message::FunctionalFrameRendered));
@@ -592,7 +603,9 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::GoUp => {
-            if let Some(previous) = app.nav_stack.pop() {
+            if app.pending_delete.is_none()
+                && let Some(previous) = app.nav_stack.pop()
+            {
                 app.go_ups = app.go_ups.saturating_add(1);
                 app.current = previous;
                 app.active = None;
@@ -1326,6 +1339,75 @@ mod tests {
     /// A disk-isolated `App`: empty in-memory history, no history file.
     fn test_app() -> App {
         initial_app(history::History::default(), None)
+    }
+
+    fn key_press(
+        named: iced::keyboard::key::Named,
+        code: iced::keyboard::key::Code,
+    ) -> iced::Event {
+        use iced::keyboard::{Event, Key, Location, Modifiers, key};
+
+        let key = Key::Named(named);
+        iced::Event::Keyboard(Event::KeyPressed {
+            modified_key: key.clone(),
+            key,
+            physical_key: key::Physical::Code(code),
+            location: Location::Standard,
+            modifiers: Modifiers::NONE,
+            text: None,
+            repeat: false,
+        })
+    }
+
+    #[test]
+    fn escape_and_backspace_go_up_and_stop_at_the_root() {
+        use iced::keyboard::key::{Code, Named};
+
+        for (named, code) in [
+            (Named::Escape, Code::Escape),
+            (Named::Backspace, Code::Backspace),
+        ] {
+            let mut app = test_app();
+            app.current = NodeId(1);
+            app.nav_stack = vec![NodeId(0)];
+            app.active = Some(NodeId(2));
+
+            let message = event_message(key_press(named, code)).expect("key should go up");
+            let _ = update(&mut app, message);
+            assert_eq!(app.current, NodeId(0));
+            assert!(app.nav_stack.is_empty());
+            assert_eq!(app.active, None);
+            assert_eq!(app.go_ups, 1);
+
+            let message = event_message(key_press(named, code)).expect("key should go up");
+            let _ = update(&mut app, message);
+            assert_eq!(app.current, NodeId(0));
+            assert_eq!(app.go_ups, 1);
+        }
+    }
+
+    #[test]
+    fn unrelated_keys_do_not_navigate() {
+        use iced::keyboard::key::{Code, Named};
+
+        assert!(event_message(key_press(Named::Enter, Code::Enter)).is_none());
+    }
+
+    #[test]
+    fn navigation_keys_do_not_go_up_behind_the_delete_dialog() {
+        use iced::keyboard::key::{Code, Named};
+
+        let mut app = test_app();
+        app.current = NodeId(1);
+        app.nav_stack = vec![NodeId(0)];
+        app.pending_delete = Some(NodeId(2));
+
+        let message =
+            event_message(key_press(Named::Escape, Code::Escape)).expect("key should go up");
+        let _ = update(&mut app, message);
+        assert_eq!(app.current, NodeId(1));
+        assert_eq!(app.nav_stack, vec![NodeId(0)]);
+        assert_eq!(app.go_ups, 0);
     }
 
     #[test]
