@@ -20,6 +20,9 @@ treemap, helping to find what takes up space.
 
 %prep
 %autosetup -n filegram-desktop-%{version}
+if ! grep -q '^\[profile.rpm\]' Cargo.toml; then
+    printf '\n[profile.rpm]\ninherits = "release"\n' >> Cargo.toml
+fi
 
 %build
 %cargo_build

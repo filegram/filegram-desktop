@@ -19,10 +19,10 @@ jobs:
         run: |
           set -euo pipefail
           pacman -Sy --noconfirm --needed base-devel namcap
-          makepkg --printsrcinfo > .SRCINFO.generated
-          diff -u .SRCINFO .SRCINFO.generated
           useradd -m builder
           chmod -R a+rwX .
+          runuser -u builder -- makepkg --printsrcinfo > .SRCINFO.generated
+          diff -u .SRCINFO .SRCINFO.generated
           runuser -u builder -- makepkg -f --nodeps --noconfirm
           namcap PKGBUILD filegram-bin-*.pkg.tar.zst
 
