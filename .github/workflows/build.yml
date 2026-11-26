@@ -207,7 +207,8 @@ jobs:
           done
           cp assets/icon/icon.svg icons/filegram.svg
           icon_args+=(--icon-file icons/filegram.svg)
-          APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT=filegram-linux-x86_64.AppImage \
+          APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT=Filegram-x86_64.AppImage \
+            UPDATE_INFORMATION='gh-releases-zsync|filegram|filegram-desktop|latest|Filegram-x86_64.AppImage.zsync' \
             ./linuxdeploy-x86_64.AppImage --appdir AppDir \
               --executable target/release/filegram \
               --library /usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 \
@@ -215,6 +216,7 @@ jobs:
               "${icon_args[@]}" \
               --output appimage
           test -f AppDir/usr/lib/libxkbcommon-x11.so.0
+          test -f Filegram-x86_64.AppImage.zsync
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -223,7 +225,8 @@ jobs:
           path: |
             filegram-linux-x86_64.deb
             filegram-linux-x86_64.rpm
-            filegram-linux-x86_64.AppImage
+            Filegram-x86_64.AppImage
+            Filegram-x86_64.AppImage.zsync
 
   test:
     name: Unit tests (Linux)
