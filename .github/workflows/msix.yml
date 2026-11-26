@@ -1,0 +1,54 @@
+name: MSIX
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version (e.g. 0.2.12)"
+        required: true
+        type: string
+      package_name:
+        description: "Partner Center Identity.Name"
+        required: true
+        type: string
+      publisher:
+        description: "Partner Center Identity.Publisher"
+        required: true
+        type: string
+      publisher_display_name:
+        description: "Partner Center PublisherDisplayName"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package Windows ${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            asset: filegram-windows-x86_64.exe
+          - arch: x86
+            asset: filegram-windows-i686.exe
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download released executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "v${{ inputs.version }}" --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.asset }}" --dir input
+
+      - name: Build MSIX
+        shell: pwsh
+        run: ./scripts/package-msix.ps1 -Version '${{ inputs.version }}' -Arch '${{ matrix.arch }}' -PackageName '${{ inputs.package_name }}' -Publisher '${{ inputs.publisher }}' -PublisherDisplayName '${{ inputs.publisher_display_name }}' -Executable 'input/${{ matrix.asset }}' -OutputDirectory '$env:GITHUB_WORKSPACE/dist'
+
+      - name: Upload MSIX
+        uses: actions/upload-artifact@v7
+        with:
+          name: filegram-msix-${{ matrix.arch }}
+          path: dist/*.msix
