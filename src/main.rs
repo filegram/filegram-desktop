@@ -220,8 +220,16 @@ fn boot() -> (App, Task<Message>) {
     };
     let mut app = initial_app(history, history_file);
     app.smoke = std::env::var_os("FILEGRAM_SMOKE").is_some();
-    app.functional =
-        std::env::var_os("FILEGRAM_FUNCTIONAL_TEST").map(|_| functional_test::Stage::Scan);
+    app.functional = std::env::var_os("FILEGRAM_FUNCTIONAL_TEST").map(|scenario| {
+        if scenario == std::ffi::OsStr::new("edge-cases") {
+            functional_test::Stage::Edge(functional_test::EdgeStage::Scan)
+        } else {
+            functional_test::Stage::Scan
+        }
+    });
+    if matches!(app.functional, Some(functional_test::Stage::Edge(_))) {
+        app.delete = |path| std::fs::remove_file(path);
+    }
     app.settings_file = settings::default_file();
     // Safe to save over an unreadable settings file: the next toggle or
     // language pick rewrites the whole file anyway.

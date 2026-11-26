@@ -3,7 +3,7 @@
 # Builds the release binary, then launches it inside a virtual X display
 # with Mesa's software Vulkan (lavapipe) standing in for a GPU. The default
 # FILEGRAM_SMOKE mode closes the window after the treemap's first frame.
-# FILEGRAM_FUNCTIONAL_TEST instead drives and verifies a complete GUI workflow.
+# FILEGRAM_FUNCTIONAL_TEST instead drives and verifies functional GUI workflows.
 # A broken window/wgpu/link path or failed assertion exits non-zero, so CI goes red.
 
 # ---- dependency planning (cargo-chef) -------------------------------------

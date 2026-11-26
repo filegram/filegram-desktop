@@ -286,6 +286,11 @@ jobs:
       - name: Run the functional GUI scenario
         run: docker run --rm -e FILEGRAM_FUNCTIONAL_TEST=1 filegram-smoke:latest
 
+      # Empty directories, zero-byte/Unicode names, symlink loops, confirmed
+      # deletion, external changes between rescans and blank path input.
+      - name: Run functional GUI edge cases
+        run: docker run --rm -e FILEGRAM_FUNCTIONAL_TEST=edge-cases filegram-smoke:latest
+
   dev-release:
     name: Update dev pre-release
     needs: [build, package-linux]
