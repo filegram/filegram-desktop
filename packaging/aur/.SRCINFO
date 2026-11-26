@@ -9,6 +9,7 @@ pkgbase = filegram-bin
 	depends = gcc-libs
 	provides = filegram
 	conflicts = filegram
+	options = !debug
 	source = filegram-bin-0.2.12.zip::https://github.com/filegram/filegram-desktop/releases/download/v0.2.12/filegram-linux-x86_64.zip
 	source = filegram-0.2.12.desktop::https://raw.githubusercontent.com/filegram/filegram-desktop/v0.2.12/packaging/linux/filegram.desktop
 	source = filegram-0.2.12.svg::https://raw.githubusercontent.com/filegram/filegram-desktop/v0.2.12/assets/icon/icon.svg
