@@ -1,0 +1,33 @@
+name: AUR package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Validate filegram-bin
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check metadata and build package
+        working-directory: packaging/aur
+        run: |
+          set -euo pipefail
+          pacman -Sy --noconfirm --needed base-devel namcap
+          makepkg --printsrcinfo > .SRCINFO.generated
+          diff -u .SRCINFO .SRCINFO.generated
+          useradd -m builder
+          chmod -R a+rwX .
+          runuser -u builder -- makepkg -f --nodeps --noconfirm
+          namcap PKGBUILD filegram-bin-*.pkg.tar.zst
+
+      - name: Upload AUR package
+        uses: actions/upload-artifact@v7
+        with:
+          name: filegram-aur-package
+          path: packaging/aur/filegram-bin-*.pkg.tar.zst
