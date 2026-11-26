@@ -1,4 +1,4 @@
-VERSION ?= 0.2.12
+VERSION ?= $(shell git describe --tags --exact-match HEAD 2>/dev/null | sed -n 's/^v//p')
 
 srpm:
 	@set -e; \

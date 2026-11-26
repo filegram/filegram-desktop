@@ -29,4 +29,4 @@ make -f .copr/Makefile srpm \
   spec="$PWD/packaging/copr/filegram.spec"
 ```
 
-The version must be numeric and must identify a published tag. The initial 0.2.12 build uses the bootstrap default because that release tag predates the COPR files. Subsequent packages should set `VERSION` from the exact release tag.
+The version must be numeric and must identify a published tag. If `VERSION` is omitted, the Makefile reads it from an exact `vX.Y.Z` tag on `HEAD`. For the initial 0.2.12 package, run the **COPR package** workflow with `version=0.2.12` and upload the resulting SRPM directly with `copr-cli build filegram <package.src.rpm>`; subsequent packages can use the SCM source above.
